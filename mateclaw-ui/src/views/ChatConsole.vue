@@ -1482,8 +1482,24 @@ async function refreshCurrentConversationMessages(conversationId: string) {
 }
 
 async function hydrateStateFromRoute() {
-  const agentId = route.query.agentId ? String(route.query.agentId) : ''
-  const conversationId = String(route.query.conversationId || '')
+  let agentId = route.query.agentId ? String(route.query.agentId) : ''
+  let conversationId = String(route.query.conversationId || '')
+
+  // The URL can outlive its workspace: switching workspaces remounts this view
+  // (via the router-view key) but keeps the query string, so agentId /
+  // conversationId may still point at entities of the previous workspace. An
+  // agentId missing from the workspace-scoped agent list is such a leftover —
+  // drop it so the default-select below picks a real employee instead of the
+  // picker rendering the unresolvable raw id.
+  if (agentId && agents.value.length > 0 && !agents.value.some(a => String(a.id) === agentId)) {
+    agentId = ''
+    // Only follow the paired conversationId when it resolves locally (e.g. a
+    // Sessions-page jump within this workspace); otherwise it is equally stale
+    // and would attach the fallback agent to a foreign conversation.
+    if (!conversations.value.some(conv => conv.conversationId === conversationId)) {
+      conversationId = ''
+    }
+  }
 
   if (agentId && agentId !== String(selectedAgentId.value)) {
     selectedAgentId.value = agentId
@@ -2075,6 +2091,9 @@ function normalizeMessage(raw: Message, preserveGeneratingStatus?: boolean): Mes
   // 保留后端返回的 token 字段（MessageVO 新增）
   if ((raw as any).promptTokens) msg.promptTokens = (raw as any).promptTokens
   if ((raw as any).completionTokens) msg.completionTokens = (raw as any).completionTokens
+  if ((raw as any).cacheReadTokens) msg.cacheReadTokens = (raw as any).cacheReadTokens
+  if ((raw as any).cacheWriteTokens) msg.cacheWriteTokens = (raw as any).cacheWriteTokens
+  if ((raw as any).reasoningTokens) msg.reasoningTokens = (raw as any).reasoningTokens
   if ((raw as any).runtimeModel) msg.runtimeModel = (raw as any).runtimeModel
   if ((raw as any).runtimeProvider) msg.runtimeProvider = (raw as any).runtimeProvider
 

@@ -136,6 +136,9 @@ export interface Message {
   // Token 统计
   promptTokens?: number
   completionTokens?: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  reasoningTokens?: number
   // Runtime model attribution (assistant messages): the model that actually produced this reply
   runtimeModel?: string
   runtimeProvider?: string
@@ -239,6 +242,13 @@ export interface MessageSegment {
   toolSuccess?: boolean
   /** LLM-provided tool call id, used to pair tool_call_started ↔ tool_call_completed */
   toolCallId?: string
+  /**
+   * For a top-level delegation segment (toolName starts with "→"): the depth-1
+   * child agent's own token usage, kept as numbers (alongside the human-readable
+   * suffix in toolArgs) so the message footer can roll children up into a turn total.
+   */
+  delegPromptTokens?: number
+  delegCompletionTokens?: number
   /** type=content */
   text?: string
   /** type=phase */
@@ -843,6 +853,21 @@ export interface SystemSettings {
   klingSecretKey?: string
   klingAccessKeyMasked?: string
   klingSecretKeyMasked?: string
+}
+
+export interface SearchProviderCatalogEntry {
+  id: string
+  label: string
+  builtin: boolean
+  requiresCredential: boolean
+  available: boolean
+  pluginName: string | null
+}
+
+export interface SearchProviderCatalog {
+  providers: SearchProviderCatalogEntry[]
+  resolvedId: string | null
+  resolvedSource: string | null
 }
 
 export interface ProviderModelInfo {

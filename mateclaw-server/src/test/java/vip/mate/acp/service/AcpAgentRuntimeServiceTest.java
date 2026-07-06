@@ -87,7 +87,7 @@ class AcpAgentRuntimeServiceTest {
         String prompt = (String) method.invoke(service, agent);
 
         assertNotNull(prompt);
-        assertTrue(prompt.contains("System note from MateClaw"));
+        assertTrue(prompt.contains("System note from HHAIOS"));
         assertTrue(prompt.contains("Employee: Codex 员工"));
         assertTrue(prompt.contains("## Backstory\n严格遵守项目身份卡"));
     }
