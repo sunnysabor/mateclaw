@@ -54,7 +54,7 @@ class BuiltinSkillSeedServiceTest {
         assertEquals("builtin", built.getSkillType());
         assertEquals(Boolean.TRUE, built.getBuiltin());
         assertEquals(Boolean.TRUE, built.getEnabled());
-        assertEquals("MateClaw", built.getAuthor(), "default author");
+        assertEquals("HHAIOS", built.getAuthor(), "default author");
         assertEquals("🛠️", built.getIcon(), "default icon");
         assertEquals("my_skill", built.getTags(), "default tag = name");
         assertNotNull(built.getSkillContent());
