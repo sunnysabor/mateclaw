@@ -59,6 +59,30 @@
             </div>
           </div>
 
+          <div class="wiz-runtime-card">
+            <div class="wiz-runtime-head">
+              <span class="wiz-runtime-kicker">{{ t('agents.wizard.runtimeKicker') }}</span>
+              <h2>{{ t('agents.wizard.runtimeTitle') }}</h2>
+              <p>{{ t('agents.wizard.runtimeDesc') }}</p>
+            </div>
+            <div class="wiz-runtime-grid">
+              <button
+                v-for="runtime in externalRuntimeChoices"
+                :key="runtime.value"
+                type="button"
+                class="wiz-runtime-option"
+                :disabled="generating"
+                @click="startExternalRuntime(runtime)"
+              >
+                <span class="wiz-runtime-option__mark">{{ runtime.mark }}</span>
+                <span class="wiz-runtime-option__text">
+                  <span class="wiz-runtime-option__title">{{ runtime.label }}</span>
+                  <span class="wiz-runtime-option__desc">{{ runtime.description }}</span>
+                </span>
+              </button>
+            </div>
+          </div>
+
           <div class="wiz-examples">
             <span class="wiz-try">{{ t('agents.wizard.tryLabel') }}</span>
             <button
@@ -97,13 +121,22 @@
                 <select v-model="draft.agentType" class="wiz-control">
                   <option value="react">{{ t('agents.types.react') }}</option>
                   <option value="plan_execute">{{ t('agents.types.planExecute') }}</option>
+                  <option value="acp">{{ t('agents.types.acp') }}</option>
+                </select>
+              </div>
+              <div v-if="isAcpRuntime" class="wiz-field">
+                <label>{{ t('agents.fields.acpEndpoint') }}</label>
+                <select v-model="draft.acpEndpointName" class="wiz-control">
+                  <option v-for="endpoint in managedAcpEndpoints" :key="endpoint.value" :value="endpoint.value">
+                    {{ endpoint.label }}
+                  </option>
                 </select>
               </div>
               <div class="wiz-field wiz-full">
                 <label>{{ t('agents.wizard.fields.description') }}</label>
                 <input v-model="draft.description" class="wiz-control" />
               </div>
-              <div class="wiz-field wiz-full">
+              <div v-if="!isAcpRuntime" class="wiz-field wiz-full">
                 <label>{{ t('agents.wizard.fields.persona') }}</label>
                 <textarea v-model="draft.systemPrompt" class="wiz-control" rows="4"></textarea>
               </div>
@@ -116,6 +149,7 @@
 
           <!-- Skills — chosen-first, full catalog on demand. -->
           <WizardCapabilityPicker
+            v-if="!isAcpRuntime"
             kind="skills"
             v-model="selectedSkillIds"
             :items="skillItems"
@@ -130,6 +164,7 @@
 
           <!-- Tools & MCP -->
           <WizardCapabilityPicker
+            v-if="!isAcpRuntime"
             kind="tools"
             v-model="selectedToolNames"
             :items="toolItems"
@@ -143,7 +178,7 @@
           />
 
           <!-- Knowledge base -->
-          <div class="wiz-card">
+          <div v-if="!isAcpRuntime" class="wiz-card">
             <div class="wiz-sec-head">
               <svg class="wiz-sec-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
               <span class="wiz-sec-title">{{ t('agents.wizard.sections.kb') }}</span>
@@ -187,7 +222,7 @@
                 <p class="wiz-success-desc">{{ createdAgent.description }}</p>
               </div>
             </div>
-            <div class="wiz-stats">
+            <div v-if="createdAgent.agentType !== 'acp'" class="wiz-stats">
               <div class="wiz-stat"><div class="wiz-stat-num">{{ selectedSkillIds.length }}</div><div class="wiz-stat-label">{{ t('agents.wizard.stat.skills') }}</div></div>
               <div class="wiz-stat"><div class="wiz-stat-num">{{ selectedToolNames.length }}</div><div class="wiz-stat-label">{{ t('agents.wizard.stat.tools') }}</div></div>
               <div class="wiz-stat"><div class="wiz-stat-num">{{ selectedKbId ? 1 : 0 }}</div><div class="wiz-stat-label">{{ t('agents.wizard.stat.kb') }}</div></div>
@@ -234,6 +269,7 @@ interface Draft {
   icon: string
   description: string
   agentType: string
+  acpEndpointName?: string | null
   systemPrompt: string
   role?: string
   goal?: string
@@ -254,6 +290,20 @@ const availableSkills = ref<any[]>([])
 const selectedSkillIds = ref<string[]>([])
 const bindableKBs = ref<any[]>([])
 const selectedKbId = ref<string | null>(null)
+const managedAcpEndpoints = [
+  { value: 'hermes', label: 'Hermes' },
+  { value: 'codex', label: 'Codex' },
+  { value: 'openclaw', label: 'OpenClaw' },
+]
+const externalRuntimeChoices = computed(() =>
+  managedAcpEndpoints.map((endpoint) => ({
+    value: endpoint.value,
+    label: endpoint.label,
+    mark: endpoint.label.slice(0, 1),
+    description: t('agents.runtime.externalDesc', { name: endpoint.label }),
+  })),
+)
+const isAcpRuntime = computed(() => draft.value?.agentType === 'acp')
 
 const exampleList = computed<string[]>(() => {
   const ex = tm('agents.wizard.examples') as unknown
@@ -308,6 +358,7 @@ async function generate() {
       icon: d.icon || '🤖',
       description: d.description || '',
       agentType: d.agentType || 'react',
+      acpEndpointName: d.acpEndpointName || 'codex',
       systemPrompt: d.systemPrompt || '',
       role: d.role,
       goal: d.goal,
@@ -329,6 +380,30 @@ async function generate() {
   }
 }
 
+function startExternalRuntime(runtime: { value: string; label: string }) {
+  draft.value = {
+    name: runtime.label,
+    icon: '',
+    description: t('agents.runtime.externalDefaultDescription', { name: runtime.label }),
+    agentType: 'acp',
+    acpEndpointName: runtime.value,
+    systemPrompt: '',
+    role: '',
+    goal: '',
+    tags: [],
+    recommendedQuestions: [],
+    tools: [],
+    skillIds: [],
+    primaryKbId: null,
+  }
+  tagsText.value = ''
+  selectedToolNames.value = []
+  selectedSkillIds.value = []
+  selectedKbId.value = null
+  createdAgent.value = null
+  step.value = 'confirm'
+}
+
 async function confirmCreate() {
   if (!draft.value || !draft.value.name.trim()) return
   creating.value = true
@@ -343,12 +418,21 @@ async function confirmCreate() {
       icon: draft.value.icon,
       description: draft.value.description,
       agentType: draft.value.agentType,
+      // External ACP employees also keep the local identity card. The backend
+      // injects it as an HHAIOS instruction note before forwarding each turn.
       systemPrompt: draft.value.systemPrompt,
       tags,
       enabled: true,
       maxIterations: 10,
       // primaryKbId kept as string to preserve Snowflake precision.
-      primaryKbId: selectedKbId.value,
+      primaryKbId: isAcpRuntime.value ? null : selectedKbId.value,
+    }
+    if (isAcpRuntime.value) {
+      payload.acpEndpointName = draft.value.acpEndpointName || 'codex'
+      payload.modelName = ''
+      payload.skillsDisabled = true
+      payload.toolsDisabled = true
+      payload.wikiDisabled = true
     }
     const res: any = await agentApi.create(payload)
     const agentId = res.data?.id
@@ -356,9 +440,11 @@ async function confirmCreate() {
 
     // Apply capability bindings sequentially so a partial failure is
     // attributable. IDs flow through as strings (Snowflake contract).
-    await agentBindingApi.setSkills(agentId, selectedSkillIds.value as any)
-    await agentBindingApi.setTools(agentId, selectedToolNames.value)
-    await agentBindingApi.setKbs(agentId, selectedKbId.value ? [selectedKbId.value] : [])
+    if (!isAcpRuntime.value) {
+      await agentBindingApi.setSkills(agentId, selectedSkillIds.value as any)
+      await agentBindingApi.setTools(agentId, selectedToolNames.value)
+      await agentBindingApi.setKbs(agentId, selectedKbId.value ? [selectedKbId.value] : [])
+    }
 
     createdAgent.value = res.data
     step.value = 'success'
@@ -437,6 +523,105 @@ function goRoster() {
 .wiz-input-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
 .wiz-hint { font-size: 12px; color: var(--mc-text-tertiary); }
 
+.wiz-runtime-card {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--mc-border-light);
+  border-radius: 16px;
+  background: var(--mc-bg-elevated);
+  box-shadow: var(--mc-shadow-soft);
+}
+.wiz-runtime-head {
+  margin-bottom: 10px;
+}
+.wiz-runtime-kicker {
+  display: block;
+  margin-bottom: 3px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--mc-primary);
+}
+.wiz-runtime-head h2 {
+  margin: 0 0 3px;
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--mc-text-primary);
+}
+.wiz-runtime-head p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--mc-text-tertiary);
+}
+.wiz-runtime-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.wiz-runtime-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--mc-border);
+  border-radius: 12px;
+  background: var(--mc-bg);
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.15s;
+}
+.wiz-runtime-option:hover {
+  border-color: var(--mc-primary);
+  background: var(--mc-primary-bg);
+  transform: translateY(-1px);
+}
+.wiz-runtime-option:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+.wiz-runtime-option__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: var(--mc-bg-muted);
+  color: var(--mc-primary);
+  font-size: 12px;
+  font-weight: 800;
+}
+.wiz-runtime-option__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.wiz-runtime-option__title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--mc-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wiz-runtime-option__desc {
+  font-size: 11.5px;
+  color: var(--mc-text-tertiary);
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 /* Examples */
 .wiz-examples { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 14px; }
 .wiz-try { font-size: 12px; color: var(--mc-text-tertiary); }
@@ -511,6 +696,7 @@ textarea.wiz-control { resize: vertical; line-height: 1.6; }
   .wiz-card { padding: 14px 14px; }
   .wiz-input-foot { flex-direction: column; align-items: stretch; gap: 10px; }
   .wiz-input-foot .wiz-btn-primary { width: 100%; }
+  .wiz-runtime-grid { grid-template-columns: 1fr; }
   .wiz-actions { flex-wrap: wrap; gap: 10px; }
   .wiz-actions--success { flex-direction: column; align-items: stretch; }
   .wiz-actions--success .wiz-btn-primary,

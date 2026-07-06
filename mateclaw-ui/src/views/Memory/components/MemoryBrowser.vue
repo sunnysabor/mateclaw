@@ -33,7 +33,7 @@
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
-import { http, agentContextApi } from '@/api'
+import { http } from '@/api'
 import MemoryIcon from './MemoryIcon.vue'
 import MemorySkeleton from './MemorySkeleton.vue'
 import MemoryEmptyState from './MemoryEmptyState.vue'
@@ -55,7 +55,7 @@ watch(() => props.agentId, () => { loadFileList() }, { immediate: true })
 
 async function loadFileList() {
   try {
-    const res: any = await agentContextApi.listFiles(props.agentId)
+    const res: any = await http.get(`/memory/${props.agentId}/files`)
     const allFiles: FileInfo[] = res.data || []
     // Memory-relevant files only: MEMORY.md, PROFILE.md, SOUL.md, structured/*.md
     const filtered = allFiles.filter((f: FileInfo) =>
@@ -76,7 +76,7 @@ async function loadFile(filename: string) {
   currentFile.value = filename
   loading.value = true
   try {
-    const res: any = await agentContextApi.getFile(props.agentId, filename)
+    const res: any = await http.get(`/memory/${props.agentId}/files/${encodeFilePath(filename)}`)
     const content: string = res.data?.content || ''
     sections.value = parseSections(content)
   } catch { sections.value = [] }
@@ -123,13 +123,13 @@ async function saveSection(sec: MemorySectionData, body: string) {
     // The preamble (content before the first ## heading) has no section key
     // the HiL endpoint can address — rewrite it through the workspace file
     // API, preserving every real `## ` section that follows.
-    const res: any = await agentContextApi.getFile(props.agentId, currentFile.value)
+    const res: any = await http.get(`/memory/${props.agentId}/files/${encodeFilePath(currentFile.value)}`)
     const content: string = res.data?.content || ''
     const headingIdx = content.search(/^## /m)
     const rest = headingIdx >= 0 ? content.slice(headingIdx) : ''
     const preamble = body.trim()
     const merged = preamble && rest ? `${preamble}\n\n${rest}` : preamble + rest
-    await agentContextApi.saveFile(props.agentId, currentFile.value, merged)
+    await http.put(`/memory/${props.agentId}/files/${encodeFilePath(currentFile.value)}`, { content: merged })
   } else {
     // Use HiL edit endpoint to write back with user-edited metadata.
     // `filename` tells the backend which memory file to edit — without it the
@@ -143,6 +143,9 @@ async function saveSection(sec: MemorySectionData, body: string) {
   // Reload file to see changes
   await loadFile(currentFile.value)
 }
+
+const encodeFilePath = (filename: string) =>
+  filename.split('/').map(encodeURIComponent).join('/')
 
 // Registry icon key for each memory file type.
 function fileIconName(filename: string): MemoryIconName {

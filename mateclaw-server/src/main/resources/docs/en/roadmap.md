@@ -12,7 +12,7 @@ Everyone deserves an AI assistant that actually understands them.
 
 Not a chat toy. Not a tech demo. A **digital counterpart** — one that knows how you work, connects to all your tools, thinks for you, executes for you, and remembers for you.
 
-**MateClaw is that thing.**
+**HHAIOS is that thing.**
 
 ---
 
@@ -65,7 +65,7 @@ Full story: [v1.2.0 release notes](./releases/1.2.0.md).
 
 Each digital employee being able to do work is just the beginning. **Real collaboration needs orchestration.**
 
-The v1.3 line is **graduating MateClaw from a chatbot framework to a business-process OS** — a flow is no longer the sum of several employees chatting separately, but a publishable, triggerable, replayable **linear-step DSL**.
+The v1.3 line is **graduating HHAIOS from a chatbot framework to a business-process OS** — a flow is no longer the sum of several employees chatting separately, but a publishable, triggerable, replayable **linear-step DSL**.
 
 Full story: [v1.3.0 release notes](./releases/1.3.0.md).
 
@@ -161,11 +161,11 @@ Each one is **a one-click-importable workflow template + trigger config + recomm
 
 | Cut | Why | When it might return |
 |-----|-----|---------------------|
-| **Full RBAC permission model** | MateClaw is a digital-employee system, not an enterprise management platform. A single team doesn't need 100 permission combinations | When real multi-team SaaS customers need fine-grained permissions |
+| **Full RBAC permission model** | HHAIOS is a digital-employee system, not an enterprise management platform. A single team doesn't need 100 permission combinations | When real multi-team SaaS customers need fine-grained permissions |
 | **Multi-tenancy** | Same as above. Premature multi-tenancy is architectural cancer | When there's a clear SaaS commercialization path |
 | **SSO / LDAP / SAML** | Enterprise integration is a bottomless pit | When paying enterprise customers explicitly ask |
 | **30+ node visual workflow editor** | Most users won't reach for it. **v1.3's 7 step modes already cover 90% of real-world scenarios**; the rest is pushed to LLM natural-language generation | When a user case actually needs 30+ nodes (rare) |
-| **Native mobile app** | 8 IM channels + desktop + Web already cover it. On your phone, you use MateClaw via DingTalk / Feishu / Telegram | When Web / IM channels can't deliver an irreplaceable mobile-only feature |
+| **Native mobile app** | 8 IM channels + desktop + Web already cover it. On your phone, you use HHAIOS via DingTalk / Feishu / Telegram | When Web / IM channels can't deliver an irreplaceable mobile-only feature |
 | **Replacing ReAct / Plan-Execute** | Workflow and those two engines **collaborate**, not replace — single-agent multi-turn reasoning still lives there | Never replaces |
 
 ---
@@ -184,7 +184,7 @@ Each one is **a one-click-importable workflow template + trigger config + recomm
 
 ## One More Thing
 
-We're not building MateClaw to chase ChatGPT, not to be the next Dify, not to add another buzzword to a funding deck.
+We're not building HHAIOS to chase ChatGPT, not to be the next Dify, not to add another buzzword to a funding deck.
 
 We're building it because we believe one thing:
 

@@ -2,9 +2,7 @@ package vip.mate.memory.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
-import vip.mate.memory.event.MemoryWriteEvent;
 import vip.mate.workspace.document.WorkspaceFileService;
 import vip.mate.workspace.document.model.WorkspaceFileEntity;
 
@@ -104,7 +102,6 @@ public class StructuredMemoryService {
     private record ScoredEntry(String type, String key, String body, int score, String updated) {}
 
     private final WorkspaceFileService workspaceFileService;
-    private final ApplicationEventPublisher eventPublisher;
     private final vip.mate.memory.MemoryProperties properties;
 
     /** Per-file lock to prevent concurrent read-modify-write on the same file */
@@ -145,8 +142,6 @@ public class StructuredMemoryService {
             saveStructured(agentId, filename, updated, ownerKey);
             log.info("[StructuredMemory] {} entry '{}' for agent={} (source={})",
                     existingSection != null ? "Updated" : "Added", key, agentId, source);
-            // Publish event for SOUL auto-evolution (Phase 2)
-            eventPublisher.publishEvent(new MemoryWriteEvent(agentId, filename, "remember", content));
         } finally {
             lock.unlock();
         }
@@ -169,7 +164,7 @@ public class StructuredMemoryService {
         List<Map<String, String>> results = new ArrayList<>();
 
         for (String t : types) {
-            String fileContent = readFileSafe(agentId, toFilename(t), ownerKey);
+            String fileContent = readVisibleFileSafe(agentId, toFilename(t), ownerKey);
             if (fileContent.isBlank()) continue;
 
             Map<String, String> sections = parseSections(fileContent);
@@ -420,7 +415,7 @@ public class StructuredMemoryService {
 
         List<ScoredEntry> matches = new ArrayList<>();
         for (String t : types) {
-            String fileContent = readFileSafe(agentId, toFilename(t), ownerKey);
+            String fileContent = readVisibleFileSafe(agentId, toFilename(t), ownerKey);
             if (fileContent.isBlank()) continue;
 
             for (Map.Entry<String, String> entry : parseSections(fileContent).entrySet()) {
@@ -528,7 +523,7 @@ public class StructuredMemoryService {
         String filename = toFilename(type);
         List<String> owners = new ArrayList<>();
         owners.add(null); // shared (TEAM/GLOBAL) bucket
-        for (WorkspaceFileEntity f : workspaceFileService.listFiles(agentId)) {
+        for (WorkspaceFileEntity f : workspaceFileService.listAllFilesForMaintenance(agentId)) {
             if (filename.equals(f.getFilename()) && isPersonal(f.getOwnerKey())
                     && !owners.contains(f.getOwnerKey())) {
                 owners.add(f.getOwnerKey());
@@ -610,6 +605,23 @@ public class StructuredMemoryService {
         } catch (Exception e) {
             return "";
         }
+    }
+
+    /**
+     * Read the content visible to an owner: shared entries first, then that
+     * owner's personal entries. Parsing into a LinkedHashMap means same-key
+     * personal sections override shared defaults, while shared project/reference
+     * entries remain recallable for everyone.
+     */
+    private String readVisibleFileSafe(Long agentId, String filename, String ownerKey) {
+        if (!isPersonal(ownerKey)) {
+            return readFileSafe(agentId, filename, null);
+        }
+        String shared = readFileSafe(agentId, filename, null);
+        String personal = readFileSafe(agentId, filename, ownerKey);
+        if (shared.isBlank()) return personal;
+        if (personal.isBlank()) return shared;
+        return shared.trim() + "\n\n" + personal.trim();
     }
 
     /** Persist structured memory to the owner's PERSONAL bucket, or shared when no real owner. */

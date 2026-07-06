@@ -333,8 +333,8 @@ async function batchDeleteSelected() {
     emit('deleted', ids)
     selectedConvIds.value = []
     selectMode.value = false
-  } catch {
-    mcToast.error(t('chat.batchDeleteFailed'))
+  } catch (e: any) {
+    mcToast.error(e?.message || t('chat.batchDeleteFailed'))
   }
 }
 
@@ -395,8 +395,8 @@ async function confirmDelete(conv: Conversation) {
   try {
     await conversationApi.delete(conv.conversationId)
     emit('deleted', [conv.conversationId])
-  } catch {
-    mcToast.error(t('chat.deleteConversationFailed'))
+  } catch (e: any) {
+    mcToast.error(e?.message || t('chat.deleteConversationFailed'))
   }
 }
 

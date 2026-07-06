@@ -5,6 +5,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
 import vip.mate.MateClawApplication;
 import vip.mate.agent.model.AgentEntity;
@@ -36,7 +37,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 @TestPropertySource(properties = {
         "spring.datasource.url=jdbc:h2:mem:agent_unique_test_${random.uuid};MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE;DB_CLOSE_DELAY=-1",
         "spring.ai.dashscope.api-key=test-key",
-        "spring.main.web-application-type=none"
+        "spring.main.web-application-type=none",
+        // Keep MyBatis DEBUG parameter dumps out of this test: the long
+        // identity-card regression intentionally writes >64KiB prompt text.
+        "spring.profiles.active=test"
 })
 class AgentServiceUniquenessTest {
 
@@ -50,6 +54,9 @@ class AgentServiceUniquenessTest {
 
     @Autowired
     private AgentService agentService;
+
+    @Autowired
+    private JdbcTemplate jdbc;
 
     private long workspaceA;
     private long workspaceB;
@@ -141,5 +148,25 @@ class AgentServiceUniquenessTest {
         assertDoesNotThrow(() -> agentService.updateAgent(created));
         assertEquals("Foxtrot-renamed",
                 agentService.getAgent(created.getId()).getName());
+    }
+
+    @Test
+    @DisplayName("长身份卡可保存并完整读回（V169: system_prompt 大文本）")
+    void createPersistsLongIdentityCard() {
+        AgentEntity agent = newAgent("LongIdentityCard", workspaceA);
+        String longIdentityCard = "## Role\n长期身份卡测试员\n\n## Goal\n确保背景字段可以保存长提示词\n\n## Backstory\n"
+                + "身份卡内容：".repeat(8_000);
+        agent.setSystemPrompt(longIdentityCard);
+
+        AgentEntity created = agentService.createAgent(agent);
+        AgentEntity reloaded = agentService.getAgent(created.getId());
+
+        assertEquals(longIdentityCard.length(), reloaded.getSystemPrompt().length());
+        assertEquals(longIdentityCard, reloaded.getSystemPrompt());
+        String columnType = jdbc.queryForObject(
+                "SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS " +
+                        "WHERE TABLE_NAME = 'mate_agent' AND COLUMN_NAME = 'system_prompt'",
+                String.class);
+        assertEquals("character large object", columnType.toLowerCase());
     }
 }

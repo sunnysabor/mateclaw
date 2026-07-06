@@ -14,11 +14,11 @@
     <artifactId>mateclaw-server</artifactId>
     <packaging>jar</packaging>
 
-    <name>MateClaw Server</name>
-    <description>MateClaw - Java+Vue Personal AI Assistant powered by Spring AI Alibaba</description>
+    <name>HHAIOS Server</name>
+    <description>HHAIOS - Java+Vue AI Assistant powered by Spring AI Alibaba</description>
 
     <dependencies>
-        <!-- ===== MateClaw Plugin API ===== -->
+        <!-- ===== HHAIOS Plugin API ===== -->
         <dependency>
             <groupId>vip.mate</groupId>
             <artifactId>mateclaw-plugin-api</artifactId>

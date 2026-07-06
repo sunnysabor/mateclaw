@@ -310,8 +310,9 @@ public class ChatController {
                     // Carry the request-thread base URL so any file a replayed
                     // tool generates gets an absolute download link.
                     replayOrigin = replayOrigin.withBaseUrl(requestBaseUrl);
+                    final vip.mate.agent.context.ChatOrigin capturedReplayOrigin = replayOrigin;
                     Disposable disposable = agentService.chatWithReplayStream(
-                            replayAgentId, replayPrompt, conversationId, finalConsumed.getToolCallPayload(), username, replayOrigin)
+                            replayAgentId, replayPrompt, conversationId, finalConsumed.getToolCallPayload(), username, capturedReplayOrigin)
                             .doOnNext(delta -> {
                                 if (approvalEmitterDone.get()) return;
                                 try {
@@ -373,6 +374,13 @@ public class ChatController {
                                             "hasThinking", !accumulator.getThinking().isBlank(),
                                             "hasContent", !text.isBlank()
                                     ));
+                                    if (!replayWasStopped && !replayIsError
+                                            && !accumulator.isAwaitingApproval()
+                                            && !agentService.isAcpAgent(replayAgentId)) {
+                                        completionPublisher.publish(replayAgentId, conversationId,
+                                                replayPrompt, text, "web",
+                                                memoryOwnerResolver.resolve(capturedReplayOrigin));
+                                    }
                                     int msgCount = conversationService.getMessageCount(conversationId);
                                     broadcastEvent(conversationId, "done", buildDonePayload(
                                             conversationId, persistStatus, savedAssistant, 0, 0,
@@ -506,9 +514,13 @@ public class ChatController {
             return emitter;
         }
 
+        vip.mate.agent.context.ChatOrigin requestMemoryOrigin =
+                memoryOrigin(conversationId, username, workspaceId, request.getEndUserId())
+                        .withBaseUrl(requestBaseUrl);
+
         // ---- 正常请求：注册流状态并附着首个订阅者 ----
         streamTracker.register(conversationId);
-        streamTracker.bindRunMeta(conversationId, agentId, username);
+        streamTracker.bindRunMeta(conversationId, agentId, username, requestMemoryOrigin);
         registerEmitterCallbacks(emitter, conversationId);
         streamTracker.attach(conversationId, emitter);
 
@@ -555,9 +567,7 @@ public class ChatController {
                 // RFC-063r §2.5: web entry — null channelId / no ChannelTarget;
                 // tools that need a workspace path read it from the agent (origin
                 // is enriched with workspaceBasePath in StateGraph buildInitialState).
-                vip.mate.agent.context.ChatOrigin webOrigin =
-                        memoryOrigin(conversationId, username, workspaceId, request.getEndUserId())
-                                .withBaseUrl(requestBaseUrl);
+                vip.mate.agent.context.ChatOrigin webOrigin = requestMemoryOrigin;
                 Disposable disposable = agentService.chatStructuredStream(agentId, promptText, conversationId, username, request.getThinkingLevel(), webOrigin)
                         .doOnNext(delta -> {
                             if (emitterDone.get()) return;
@@ -643,7 +653,8 @@ public class ChatController {
                                 // RFC-049 follow-up: also skip on isError — error turns persist
                                 // garbage like "[错误] Bad request..." as the assistant reply,
                                 // which would pollute the memory extraction pipeline if propagated.
-                                if (!wasStopped && !isError) {
+                                if (!wasStopped && !isError && !accumulator.isAwaitingApproval()
+                                        && !agentService.isAcpAgent(agentId)) {
                                     // Attribute the memory write to the same owner the read
                                     // path recalled this turn — the publish runs in a reactive
                                     // completion callback after the origin holder is cleared,
@@ -1015,7 +1026,8 @@ public class ChatController {
 
         // 仅入队、不 dispose。延迟持久化到 startQueuedMessage（让 Asst-N 先在 doOnComplete 落库，
         // 否则 listMessages ORDER BY create_time ASC 会把 Q(N+1) 排到 Asst-N 前面）
-        boolean queued = streamTracker.enqueueMessage(conversationId, message, agentId, false, contentParts);
+        boolean queued = streamTracker.enqueueMessage(conversationId, message, agentId, false,
+                contentParts, streamTracker.getRunOrigin(conversationId));
         log.info("Enqueued follow-up message during running turn: conversationId={}, user={}, queueSize={}, awaitingApproval={}",
                 conversationId, username, streamTracker.getQueueSize(conversationId), isAwaitingApproval);
 
@@ -1063,8 +1075,10 @@ public class ChatController {
         conversationService.saveMessage(request.getConversationId(), "assistant", response, null, "completed",
                 result.promptTokens(), result.completionTokens(),
                 result.runtimeModel(), result.runtimeProvider());
-        completionPublisher.publish(agentId, request.getConversationId(), request.getMessage(), response, "web",
-                memoryOwnerResolver.resolve(webOrigin));
+        if (!agentService.isAcpAgent(agentId)) {
+            completionPublisher.publish(agentId, request.getConversationId(), request.getMessage(), response, "web",
+                    memoryOwnerResolver.resolve(webOrigin));
+        }
         return R.ok(response);
     }
 
@@ -1326,8 +1340,11 @@ public class ChatController {
         // a web-origin ChatOrigin so any cron job created during the queued
         // turn keeps a consistent (null-channel) binding.
         vip.mate.agent.context.ChatOrigin queuedOrigin =
-                vip.mate.agent.context.ChatOrigin.web(conversationId, requesterId, null, null)
-                        .withBaseUrl(baseUrl);
+                preConsumedInput.origin() != null
+                        ? preConsumedInput.origin().withConversationId(conversationId).withBaseUrl(baseUrl)
+                        : vip.mate.agent.context.ChatOrigin.web(conversationId, requesterId, null, null)
+                                .withBaseUrl(baseUrl);
+        streamTracker.bindRunMeta(conversationId, agentId, requesterId, queuedOrigin);
         Disposable disposable = agentService.chatStructuredStream(agentId, queuedMessage, conversationId, requesterId, null, queuedOrigin)
                 .doOnNext(delta -> {
                     if (emitterDone.get()) return;
@@ -1369,6 +1386,13 @@ public class ChatController {
                         } else {
                             savedAssistant = saveEmptyAssistantPlaceholder(
                                     conversationId, persistStatus, accumulator, "SSE queued doOnComplete");
+                        }
+                        if (!queuedWasStopped && !queuedIsError
+                                && !accumulator.isAwaitingApproval()
+                                && !agentService.isAcpAgent(agentId)) {
+                            completionPublisher.publish(agentId, conversationId,
+                                    queuedMessage, text, "web",
+                                    memoryOwnerResolver.resolve(queuedOrigin));
                         }
                         broadcastEvent(conversationId, "message_complete", Map.of(
                                 "status", persistStatus,

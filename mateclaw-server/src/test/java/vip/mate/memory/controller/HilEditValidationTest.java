@@ -39,12 +39,14 @@ class HilEditValidationTest {
     @Mock private DreamEventBroadcaster eventBroadcaster;
     @Mock private AuthService authService;
 
+    private vip.mate.memory.MemoryProperties memoryProperties;
     private DreamController controller;
 
     @BeforeEach
     void setUp() {
+        memoryProperties = new vip.mate.memory.MemoryProperties();
         controller = new DreamController(dreamReportMapper, recallMapper,
-                morningCardService, hilService, eventBroadcaster, authService);
+                morningCardService, hilService, eventBroadcaster, authService, memoryProperties);
     }
 
     @Test

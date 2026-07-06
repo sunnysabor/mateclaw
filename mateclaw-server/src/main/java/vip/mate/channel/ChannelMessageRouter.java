@@ -842,7 +842,7 @@ public class ChannelMessageRouter {
                                 conversationId, "assistant", reply, null, status,
                                 usage[0], usage[1], modelInfo[0], modelInfo[1]);
                         savedAssistantId = saved != null ? saved.getId() : null;
-                        if (!isError) {
+                        if (!isError && !agentService.isAcpAgent(agentId)) {
                             publishConversationCompletedEvent(agentId, conversationId, message.getContent(), reply, chatOrigin);
                         }
                         adapter.renderAndSend(replyTarget, reply);
@@ -990,7 +990,7 @@ public class ChannelMessageRouter {
                 MessageEntity saved = conversationService.saveMessage(
                         conversationId, "assistant", finalContent, null, status,
                         usage[0], usage[1], modelInfo[0], modelInfo[1]);
-                if (!isError) {
+                if (!isError && !agentService.isAcpAgent(agentId)) {
                     publishConversationCompletedEvent(agentId, conversationId, promptText, finalContent, chatOrigin);
                 }
                 log.info("[{}] Streaming completed: contentLen={}, isError={}",
@@ -1169,6 +1169,9 @@ public class ChannelMessageRouter {
     private void publishConversationCompletedEvent(Long agentId, String conversationId,
                                                     String userMessage, String assistantReply,
                                                     ChatOrigin origin) {
+        if (agentService.isAcpAgent(agentId)) {
+            return;
+        }
         // Attribute the memory write to the same external sender the read path
         // recalled for, so per-sender IM memory is both written and recalled
         // under the same owner key.

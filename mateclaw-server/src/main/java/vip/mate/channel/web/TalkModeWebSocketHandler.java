@@ -162,8 +162,10 @@ public class TalkModeWebSocketHandler extends AbstractWebSocketHandler {
                     chatResult.runtimeModel(), chatResult.runtimeProvider());
 
             // Publish conversation-completed event so memory extraction runs for voice turns too.
-            completionPublisher.publishForOrigin(talkSession.agentId, talkSession.conversationId,
-                    transcript, reply, "talk", talkOrigin);
+            if (!agentService.isAcpAgent(talkSession.agentId)) {
+                completionPublisher.publishForOrigin(talkSession.agentId, talkSession.conversationId,
+                        transcript, reply, "talk", talkOrigin);
+            }
 
             // 7. 推送文字回复
             sendJson(session, Map.of("type", "reply", "text", reply));

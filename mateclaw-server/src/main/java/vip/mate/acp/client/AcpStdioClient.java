@@ -11,15 +11,25 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * RFC-090 Phase 7 — minimal Java ACP (Agent Communication Protocol)
@@ -60,8 +70,16 @@ public class AcpStdioClient implements AutoCloseable {
     private final BufferedReader stdout;
     private final Thread readerThread;
     private final AtomicLong nextRequestId = new AtomicLong(1);
+    private final AtomicLong stdoutBytesRead = new AtomicLong(0);
     private final Map<Long, CompletableFuture<JsonNode>> pending = new ConcurrentHashMap<>();
+    private final AtomicReference<IOException> terminalError = new AtomicReference<>();
+    private final Deque<String> recentStderr = new ArrayDeque<>();
+    private volatile long stdoutBufferLimitBytes = 50L * 1024L * 1024L;
     private volatile boolean closed = false;
+
+    private static final int STDERR_HISTORY_LINES = 200;
+    private static final Pattern HERMES_CREATED_SESSION_PATTERN =
+            Pattern.compile("\\bCreated ACP session\\s+([0-9a-fA-F-]{16,})\\b");
 
     /**
      * RFC-090 Phase 7b — invoked when the agent sends a JSON-RPC
@@ -111,7 +129,7 @@ public class AcpStdioClient implements AutoCloseable {
             throw new IllegalArgumentException("ACP command is required");
         }
         java.util.List<String> cmdline = new java.util.ArrayList<>();
-        cmdline.add(command);
+        cmdline.add(resolveCommand(command));
         if (args != null) cmdline.addAll(args);
         ProcessBuilder pb = new ProcessBuilder(cmdline);
         Map<String, String> env = pb.environment();
@@ -125,17 +143,76 @@ public class AcpStdioClient implements AutoCloseable {
         Process proc = pb.start();
         // Drain stderr in the background — many CLIs print diagnostics
         // there (e.g. Zed agents print version on startup).
-        Thread errDrain = new Thread(() -> drainStream(proc.getErrorStream()), "acp-stdio-stderr");
+        AtomicReference<AcpStdioClient> clientRef = new AtomicReference<>();
+        Thread errDrain = new Thread(() -> drainStream(proc.getErrorStream(), clientRef), "acp-stdio-stderr");
         errDrain.setDaemon(true);
         errDrain.start();
-        return new AcpStdioClient(mapper, proc);
+        AcpStdioClient client = new AcpStdioClient(mapper, proc);
+        clientRef.set(client);
+        return client;
     }
 
-    private static void drainStream(java.io.InputStream in) {
+    static String resolveCommand(String command) {
+        String trimmed = command == null ? "" : command.trim();
+        if (trimmed.isBlank()) return trimmed;
+        if (trimmed.contains("/") || trimmed.contains(java.io.File.separator)) {
+            return trimmed;
+        }
+
+        Set<String> candidates = new LinkedHashSet<>();
+        String pathEnv = System.getenv("PATH");
+        if (pathEnv != null && !pathEnv.isBlank()) {
+            for (String dir : pathEnv.split(java.io.File.pathSeparator)) {
+                if (!dir.isBlank()) candidates.add(Path.of(dir, trimmed).toString());
+            }
+        }
+        String home = System.getProperty("user.home", "");
+        if (!home.isBlank()) {
+            candidates.add(Path.of(home, ".local", "bin", trimmed).toString());
+            // CLIs installed via npm under nvm (Codex/OpenClaw, etc.) are not
+            // visible to launchd/IDE-started JVMs because their PATH usually
+            // does not include ~/.nvm/versions/node/*/bin. Probe those bins
+            // explicitly so an endpoint can safely store just `openclaw`.
+            addNvmNodeBinCandidates(candidates, home, trimmed);
+            candidates.add(Path.of(home, ".bun", "bin", trimmed).toString());
+            candidates.add(Path.of(home, ".npm-global", "bin", trimmed).toString());
+            candidates.add(Path.of(home, ".hermes", "bin", trimmed).toString());
+        }
+        candidates.add(Path.of("/opt/homebrew/bin", trimmed).toString());
+        candidates.add(Path.of("/usr/local/bin", trimmed).toString());
+
+        for (String candidate : candidates) {
+            Path path = Path.of(candidate);
+            if (Files.isRegularFile(path) && Files.isExecutable(path)) {
+                return path.toString();
+            }
+        }
+        return trimmed;
+    }
+
+
+    private static void addNvmNodeBinCandidates(Set<String> candidates, String home, String binaryName) {
+        Path nodeVersions = Path.of(home, ".nvm", "versions", "node");
+        if (!Files.isDirectory(nodeVersions)) return;
+        try (var stream = Files.list(nodeVersions)) {
+            stream.filter(Files::isDirectory)
+                    .sorted(Comparator.reverseOrder())
+                    .map(path -> path.resolve("bin").resolve(binaryName))
+                    .map(Path::toString)
+                    .forEach(candidates::add);
+        } catch (IOException e) {
+            log.debug("Failed to inspect nvm node bins for ACP command '{}': {}",
+                    binaryName, e.getMessage());
+        }
+    }
+
+    private static void drainStream(java.io.InputStream in, AtomicReference<AcpStdioClient> clientRef) {
         try (BufferedReader br = new BufferedReader(
                 new InputStreamReader(in, StandardCharsets.UTF_8))) {
             String line;
             while ((line = br.readLine()) != null) {
+                AcpStdioClient client = clientRef.get();
+                if (client != null) client.recordStderr(line);
                 if (log.isDebugEnabled()) log.debug("[acp-stderr] {}", line);
             }
         } catch (IOException ignore) {
@@ -196,6 +273,8 @@ public class AcpStdioClient implements AutoCloseable {
     public JsonNode sendRequest(String method, JsonNode params, long timeoutMillis)
             throws IOException, InterruptedException {
         if (closed) throw new IOException("ACP client is closed");
+        IOException existingError = terminalError.get();
+        if (existingError != null) throw existingError;
         long id = nextRequestId.getAndIncrement();
         CompletableFuture<JsonNode> future = new CompletableFuture<>();
         pending.put(id, future);
@@ -220,8 +299,41 @@ public class AcpStdioClient implements AutoCloseable {
             throw new IOException("ACP request failed: " + (cause != null ? cause.getMessage() : "unknown"));
         } catch (java.util.concurrent.TimeoutException e) {
             pending.remove(id);
+            JsonNode fallback = maybeRecoverTimedOutRequest(method);
+            if (fallback != null) return fallback;
             throw new IOException("ACP request timed out after " + timeoutMillis + "ms");
         }
+    }
+
+    private void recordStderr(String line) {
+        synchronized (recentStderr) {
+            recentStderr.addLast(line);
+            while (recentStderr.size() > STDERR_HISTORY_LINES) {
+                recentStderr.removeFirst();
+            }
+        }
+    }
+
+    private JsonNode maybeRecoverTimedOutRequest(String method) {
+        if (!"session/new".equals(method)) return null;
+        String sessionId = findHermesCreatedSessionId();
+        if (sessionId == null || sessionId.isBlank()) return null;
+        log.warn("ACP session/new did not return a JSON-RPC response; recovered Hermes sessionId from stderr: {}",
+                sessionId);
+        ObjectNode result = mapper.createObjectNode();
+        result.put("sessionId", sessionId);
+        return result;
+    }
+
+    private String findHermesCreatedSessionId() {
+        synchronized (recentStderr) {
+            java.util.Iterator<String> it = recentStderr.descendingIterator();
+            while (it.hasNext()) {
+                Matcher matcher = HERMES_CREATED_SESSION_PATTERN.matcher(it.next());
+                if (matcher.find()) return matcher.group(1);
+            }
+        }
+        return null;
     }
 
     private void readLoop() {
@@ -229,6 +341,7 @@ public class AcpStdioClient implements AutoCloseable {
             String line;
             while (!closed && (line = stdout.readLine()) != null) {
                 if (line.isEmpty()) continue;
+                enforceStdoutLimit(line);
                 try {
                     JsonNode msg = mapper.readTree(line);
                     routeMessage(msg);
@@ -237,6 +350,7 @@ public class AcpStdioClient implements AutoCloseable {
                 }
             }
         } catch (IOException e) {
+            terminalError.compareAndSet(null, e);
             if (!closed) {
                 log.debug("ACP stdio reader closed: {}", e.getMessage());
             }
@@ -244,9 +358,24 @@ public class AcpStdioClient implements AutoCloseable {
             // If the process exited mid-await, fail every pending future.
             for (Map.Entry<Long, CompletableFuture<JsonNode>> entry : pending.entrySet()) {
                 entry.getValue().completeExceptionally(
-                        new IOException("ACP process exited before responding"));
+                        terminalError.get() != null
+                                ? terminalError.get()
+                                : new IOException("ACP process exited before responding"));
             }
             pending.clear();
+        }
+    }
+
+    private void enforceStdoutLimit(String line) throws IOException {
+        long limit = stdoutBufferLimitBytes;
+        if (limit <= 0) return;
+        long lineBytes = line.getBytes(StandardCharsets.UTF_8).length + 1L;
+        long total = stdoutBytesRead.addAndGet(lineBytes);
+        if (total > limit) {
+            IOException ex = new IOException("Subprocess output exceeded buffer limit of "
+                    + limit + " bytes");
+            terminalError.compareAndSet(null, ex);
+            throw ex;
         }
     }
 
@@ -332,6 +461,14 @@ public class AcpStdioClient implements AutoCloseable {
      */
     public void setRequestHandler(Function<JsonNode, JsonNode> handler) {
         this.requestHandler = handler != null ? handler : msg -> null;
+    }
+
+    /**
+     * Cap cumulative stdout bytes read from this ACP subprocess. The limit is
+     * per client/session; use {@code <= 0} to disable.
+     */
+    public void setStdoutBufferLimitBytes(long bytes) {
+        this.stdoutBufferLimitBytes = bytes;
     }
 
     @Override

@@ -34,6 +34,10 @@ public abstract class MemoryProviderDecorator implements MemoryProvider {
     @Override public void onMemoryWrite(Long agentId, String target, String action, String content) {
         delegate.onMemoryWrite(agentId, target, action, content);
     }
+    @Override public void onMemoryWrite(Long agentId, String target, String action, String content,
+                                        String ownerKey, String scope) {
+        delegate.onMemoryWrite(agentId, target, action, content, ownerKey, scope);
+    }
     @Override public void warmup(Long agentId) { delegate.warmup(agentId); }
     @Override public void evict(Long agentId) { delegate.evict(agentId); }
 }

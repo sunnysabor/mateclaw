@@ -1,8 +1,8 @@
 {
   "name": "mateclaw-desktop",
   "version": "1.7.0-SNAPSHOT",
-  "description": "MateClaw Desktop - AI Assistant powered by Spring AI Alibaba",
-  "author": "MateClaw Team",
+  "description": "HHAIOS Desktop - AI Operating System",
+  "author": "HHAIOS Team",
   "license": "Apache-2.0",
   "main": "dist-electron/main/index.js",
   "scripts": {

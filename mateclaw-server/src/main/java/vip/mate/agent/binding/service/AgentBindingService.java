@@ -173,6 +173,7 @@ public class AgentBindingService implements AgentBindingResolver {
     }
 
     public AgentSkillBinding bindSkill(Long agentId, Long skillId) {
+        rejectAcpAgentBindings(agentId);
         requireSameWorkspace(agentId, skillId);
         // Adding any skill binding is a concrete commitment — the operator
         // wants this skill on the agent, which contradicts an opt-out flag.
@@ -214,6 +215,7 @@ public class AgentBindingService implements AgentBindingResolver {
      * touch the flag — the caller (UI toggle) owns that bit.
      */
     public void setSkillBindings(Long agentId, List<Long> skillIds) {
+        rejectAcpAgentBindings(agentId);
         // Validate every incoming skill BEFORE touching the binding rows;
         // a half-applied save (old bindings dropped, new set rejected
         // mid-loop) would leave the agent silently un-bound from skills it
@@ -798,6 +800,7 @@ public class AgentBindingService implements AgentBindingResolver {
     }
 
     public AgentToolBinding bindTool(Long agentId, String toolName) {
+        rejectAcpAgentBindings(agentId);
         // Mirror of bindSkill: writing any tool row clears the opt-out flag
         // so the binding state cannot contradict the agent-level toggle.
         clearToolsDisabledFlag(agentId);
@@ -845,6 +848,7 @@ public class AgentBindingService implements AgentBindingResolver {
      * </ul>
      */
     public void setToolBindings(Long agentId, List<String> toolNames) {
+        rejectAcpAgentBindings(agentId);
         validateNewToolBindings(agentId, toolNames);
 
         // Side effect parallel to setSkillBindings: a non-empty save is an
@@ -952,6 +956,7 @@ public class AgentBindingService implements AgentBindingResolver {
      * preferred-model chain. Empty / null list clears all preferences.
      */
     public void setProviderModelPreferences(Long agentId, List<ProviderModelRef> refs) {
+        rejectAcpAgentBindings(agentId);
         providerPreferenceMapper.delete(
                 new LambdaQueryWrapper<AgentProviderPreference>()
                         .eq(AgentProviderPreference::getAgentId, agentId));
@@ -1022,6 +1027,7 @@ public class AgentBindingService implements AgentBindingResolver {
      * from another tenancy is refused (403).
      */
     public void setKbBindings(Long agentId, List<Long> kbIds) {
+        rejectAcpAgentBindings(agentId);
         // De-dup defensively: the unique index is (agent_id, kb_id, deleted),
         // so two identical ids in the incoming list would collide on insert.
         Set<Long> distinct = new LinkedHashSet<>();
@@ -1099,6 +1105,15 @@ public class AgentBindingService implements AgentBindingResolver {
         if (agentId == null) return false;
         AgentEntity agent = agentMapper.selectById(agentId);
         return agent != null && Boolean.TRUE.equals(agent.getSkillsDisabled());
+    }
+
+    private void rejectAcpAgentBindings(Long agentId) {
+        if (agentId == null) return;
+        AgentEntity agent = agentMapper.selectById(agentId);
+        if (agent != null && "acp".equalsIgnoreCase(agent.getAgentType())) {
+            throw new MateClawException("err.agent.acp_bindings_disabled", 400,
+                    "ACP 员工第一版不允许绑定 HHAIOS 技能、工具、知识库或模型偏好");
+        }
     }
 
     /** Mirror of {@link #isSkillsDisabled} for the tools opt-out toggle. */

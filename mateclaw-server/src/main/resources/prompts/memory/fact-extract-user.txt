@@ -1,0 +1,8 @@
+Filename: {filename}
+
+Memory content:
+```
+{content}
+```
+
+Extract the durable facts from this file.

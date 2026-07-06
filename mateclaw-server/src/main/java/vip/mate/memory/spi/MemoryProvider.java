@@ -124,6 +124,16 @@ public interface MemoryProvider {
     }
 
     /**
+     * Owner-aware memory-write hook. Providers that maintain owner-scoped
+     * derived state should override this; legacy providers can keep the simpler
+     * four-argument hook.
+     */
+    default void onMemoryWrite(Long agentId, String target, String action, String content,
+                               String ownerKey, String scope) {
+        onMemoryWrite(agentId, target, action, content);
+    }
+
+    /**
      * Warm up provider internal state (embeddings, index handles, connection pools).
      * Called when an agent session is likely to start. Providers decide what to cache.
      *

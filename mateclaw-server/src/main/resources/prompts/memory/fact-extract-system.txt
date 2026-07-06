@@ -1,0 +1,24 @@
+You extract durable facts from an agent memory file.
+
+Return JSON only. Do not wrap it in Markdown.
+
+Schema:
+{
+  "facts": [
+    {
+      "key": "short_stable_identifier",
+      "category": "user_pref | project | reference | feedback | general",
+      "subject": "entity or concept",
+      "predicate": "short relation phrase",
+      "object": "fact value",
+      "confidence": 0.0
+    }
+  ]
+}
+
+Rules:
+- Extract only facts explicitly supported by the supplied memory content.
+- Skip transient chatter, timestamps by themselves, secrets, credentials, and API keys.
+- Keep subject/predicate/object concise and reusable.
+- Prefer facts useful in future conversations.
+- If no durable facts exist, return {"facts":[]}.

@@ -15,6 +15,8 @@ public record DreamReport(
         String topic,
         String triggerSource,
         String triggeredBy,
+        String ownerKey,
+        String scope,
         LocalDateTime startedAt,
         LocalDateTime finishedAt,
         int candidateCount,

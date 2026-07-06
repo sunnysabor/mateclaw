@@ -36,6 +36,12 @@
                 @click="setView('plans')"
               >{{ t('agents.views.plans') }}</button>
             </div>
+            <button class="btn-secondary" style="display:inline-flex;align-items:center;gap:6px;" @click="openCreateTeamModal">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="8" cy="8" r="3"/><circle cx="17" cy="8" r="3"/><circle cx="12" cy="17" r="3"/><path d="M10.5 9.5l1 5"/><path d="M15.5 9.5l-2 5"/>
+              </svg>
+              {{ t('agents.teams.create') }}
+            </button>
             <button class="btn-secondary" style="display:inline-flex;align-items:center;gap:6px;" @click="router.push('/agents/create')">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9z"/>
@@ -86,6 +92,44 @@
             </button>
           </div>
         </div>
+
+        <section class="team-panel mc-surface-card">
+          <div class="team-panel__head">
+            <div>
+              <div class="team-panel__kicker">{{ t('agents.teams.kicker') }}</div>
+              <h2>{{ t('agents.teams.title') }}</h2>
+              <p>{{ t('agents.teams.desc') }}</p>
+            </div>
+            <button class="btn-secondary" @click="openCreateTeamModal">{{ t('agents.teams.create') }}</button>
+          </div>
+          <div class="team-required-note">
+            <strong>{{ t('agents.teams.nativeCoordinatorRequiredTitle') }}</strong>
+            <span>{{ t('agents.teams.nativeCoordinatorRequiredDesc') }}</span>
+          </div>
+          <div v-if="teams.length" class="team-list">
+            <article v-for="team in teams" :key="team.id" class="team-card">
+              <div class="team-card__main">
+                <h3>{{ team.name }}</h3>
+                <p>{{ team.description || t('agents.teams.noDescription') }}</p>
+                <div class="team-card__meta">
+                  <span>{{ t('agents.teams.coordinator') }}: {{ team.coordinatorAgentName || team.coordinatorAgentId }}</span>
+                  <span>{{ t('agents.teams.membersCount', { count: team.members?.length || 0 }) }}</span>
+                </div>
+                <div class="team-card__members">
+                  <span v-for="member in team.members" :key="member.agentId" class="team-member-chip" :class="{ acp: member.agentType === 'acp' }">
+                    {{ member.agentName || member.agentId }}<template v-if="member.roleLabel"> · {{ member.roleLabel }}</template>
+                  </span>
+                </div>
+              </div>
+              <div class="team-card__actions">
+                <button class="btn-secondary" @click="goToChatById(team.coordinatorAgentId)">{{ t('agents.teams.chatWithCoordinator') }}</button>
+                <button class="action-btn" :title="t('agents.actions.edit')" @click="openEditTeamModal(team)">✎</button>
+                <button class="action-btn danger" :title="t('agents.actions.delete')" @click="deleteTeam(team)">×</button>
+              </div>
+            </article>
+          </div>
+          <div v-else class="team-empty">{{ t('agents.teams.empty') }}</div>
+        </section>
 
         <!-- Agent card grid -->
         <div class="agent-grid" v-if="filteredAgents.length > 0">
@@ -188,6 +232,28 @@
         </div>
         <div class="modal-body">
           <p class="template-desc">{{ t('agents.templates.desc') }}</p>
+          <div class="runtime-choice-head">
+            <h3>{{ t('agents.templates.runtimeTitle') }}</h3>
+            <p>{{ t('agents.templates.runtimeDesc') }}</p>
+          </div>
+          <div class="runtime-choice-grid">
+            <button
+              v-for="runtime in runtimeChoices"
+              :key="runtime.value"
+              type="button"
+              class="runtime-choice-card"
+              :class="{ 'runtime-choice-card--external': runtime.external }"
+              @click="openRuntimeCreateModal(runtime.value)"
+            >
+              <span class="runtime-choice-card__mark">{{ runtime.mark }}</span>
+              <span class="runtime-choice-card__body">
+                <span class="runtime-choice-card__title">{{ runtime.label }}</span>
+                <span class="runtime-choice-card__desc">{{ runtime.description }}</span>
+              </span>
+              <span class="runtime-choice-card__badge">{{ runtime.badge }}</span>
+            </button>
+          </div>
+          <div class="template-divider"><span>{{ t('agents.templates.templateDivider') }}</span></div>
           <div class="template-grid">
             <div
               v-for="tpl in templates"
@@ -220,6 +286,70 @@
       </div>
     </div>
 
+    <!-- Create/Edit Team Modal -->
+    <div v-if="showTeamModal" class="modal-overlay">
+      <div class="modal team-modal">
+        <div class="modal-header">
+          <h2>{{ editingTeam ? t('agents.teams.editTitle') : t('agents.teams.newTitle') }}</h2>
+          <button class="modal-close" @click="closeTeamModal">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="team-required-note team-required-note--modal">
+            <strong>{{ t('agents.teams.nativeCoordinatorRequiredTitle') }}</strong>
+            <span>{{ t('agents.teams.nativeCoordinatorRequiredDesc') }}</span>
+          </div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label">{{ t('agents.teams.name') }} *</label>
+              <input v-model="teamForm.name" class="form-input" :placeholder="t('agents.teams.namePlaceholder')" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">{{ t('agents.teams.coordinator') }} *</label>
+              <select v-model="teamForm.coordinatorAgentId" class="form-input">
+                <option value="">{{ t('agents.teams.selectCoordinator') }}</option>
+                <option v-for="agent in nativeCoordinatorCandidates" :key="agent.id" :value="String(agent.id)">
+                  {{ agent.name }} · {{ agent.agentType }}
+                </option>
+              </select>
+              <p class="form-hint">{{ t('agents.teams.coordinatorHint') }}</p>
+            </div>
+            <div class="form-group full-width">
+              <label class="form-label">{{ t('agents.teams.description') }}</label>
+              <textarea v-model="teamForm.description" class="form-textarea" rows="3" :placeholder="t('agents.teams.descriptionPlaceholder')"></textarea>
+            </div>
+          </div>
+
+          <div class="team-member-picker">
+            <div class="team-member-picker__head">
+              <div>
+                <h3>{{ t('agents.teams.members') }}</h3>
+                <p>{{ t('agents.teams.membersHint') }}</p>
+              </div>
+              <span>{{ t('agents.teams.selectedMembers', { count: selectedTeamMemberIds.length }) }}</span>
+            </div>
+            <div class="team-member-list">
+              <label v-for="agent in enabledAgents" :key="agent.id" class="team-member-row" :class="{ selected: isTeamMemberSelected(agent.id), coordinator: String(agent.id) === teamForm.coordinatorAgentId }">
+                <input type="checkbox" :checked="isTeamMemberSelected(agent.id)" :disabled="String(agent.id) === teamForm.coordinatorAgentId" @change="toggleTeamMember(agent.id, $event)" />
+                <span class="team-member-row__name">{{ agent.name }}</span>
+                <span class="team-member-row__type" :class="{ acp: agent.agentType === 'acp' }">{{ agent.agentType === 'acp' ? `ACP · ${agent.acpEndpointName || ''}` : agent.agentType }}</span>
+                <input class="team-member-row__role" :placeholder="defaultTeamRole(agent)" :value="teamMemberRole(agent.id)" @input="onTeamMemberRoleInput(agent.id, $event)" @click.stop />
+              </label>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" @click="closeTeamModal">{{ t('common.cancel') }}</button>
+          <button class="btn-primary" @click="saveTeam" :disabled="!teamForm.name || !teamForm.coordinatorAgentId">
+            {{ editingTeam ? t('agents.actions.update') : t('agents.teams.create') }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- Shared icon picker — opened from the Basic tab's [Pick icon] button. -->
     <SkillIconPicker
       v-model:visible="iconPickerVisible"
@@ -244,7 +374,7 @@
             <button class="modal-tab" :class="{ active: modalTab === 'basic' }" @click="modalTab = 'basic'">
               {{ t('agents.tabs.basic', 'Basic') }}
             </button>
-            <button v-if="editingAgent" class="modal-tab" :class="{ active: modalTab === 'skills' }" @click="modalTab = 'skills'">
+            <button v-if="editingAgent && !isAcpRuntime" class="modal-tab" :class="{ active: modalTab === 'skills' }" @click="modalTab = 'skills'">
               {{ t('agents.tabs.skills', 'Skills') }}
               <!-- Issue #184: when the disable flag is on, suppress the
                    stale-pick count badge and show an "off" state instead —
@@ -253,16 +383,16 @@
               <span v-if="form.skillsDisabled" class="tab-badge tab-badge--off">{{ t('agents.binding.disableAllSkillsBadge') }}</span>
               <span v-else-if="selectedSkillIds.length" class="tab-badge">{{ selectedSkillIds.length }}</span>
             </button>
-            <button v-if="editingAgent" class="modal-tab" :class="{ active: modalTab === 'tools' }" @click="modalTab = 'tools'">
+            <button v-if="editingAgent && !isAcpRuntime" class="modal-tab" :class="{ active: modalTab === 'tools' }" @click="modalTab = 'tools'">
               {{ t('agents.tabs.tools', 'Tools') }}
               <span v-if="form.toolsDisabled" class="tab-badge tab-badge--off">{{ t('agents.binding.disableAllToolsBadge') }}</span>
               <span v-else-if="selectedToolNames.length" class="tab-badge">{{ selectedToolNames.length }}</span>
             </button>
-            <button v-if="editingAgent" class="modal-tab" :class="{ active: modalTab === 'providers' }" @click="modalTab = 'providers'">
+            <button v-if="editingAgent && !isAcpRuntime" class="modal-tab" :class="{ active: modalTab === 'providers' }" @click="modalTab = 'providers'">
               {{ t('agents.tabs.providers', 'Providers') }}
               <span v-if="selectedProviderPrefs.length" class="tab-badge">{{ selectedProviderPrefs.length }}</span>
             </button>
-            <button v-if="editingAgent" class="modal-tab" :class="{ active: modalTab === 'wiki' }" @click="modalTab = 'wiki'">
+            <button v-if="editingAgent && !isAcpRuntime" class="modal-tab" :class="{ active: modalTab === 'wiki' }" @click="modalTab = 'wiki'">
               {{ t('agents.tabs.wiki', 'Wiki') }}
               <span v-if="form.wikiDisabled" class="tab-badge tab-badge--off">{{ t('agents.binding.disableAllWikiBadge') }}</span>
               <span v-else-if="selectedKbIds.length" class="tab-badge">{{ selectedKbIds.length }}</span>
@@ -290,15 +420,25 @@
               <select v-model="form.agentType" class="form-input">
                 <option value="react">{{ t('agents.types.react') }}</option>
                 <option value="plan_execute">{{ t('agents.types.planExecute') }}</option>
+                <option value="acp">{{ t('agents.types.acp') }}</option>
               </select>
             </div>
-            <div class="form-group">
+            <div v-if="isAcpRuntime" class="form-group">
+              <label class="form-label">{{ t('agents.fields.acpEndpoint') }}</label>
+              <select v-model="form.acpEndpointName" class="form-input">
+                <option v-for="endpoint in managedAcpEndpoints" :key="endpoint.value" :value="endpoint.value">
+                  {{ endpoint.label }}
+                </option>
+              </select>
+              <p class="form-hint">{{ t('agents.fields.acpEndpointHint') }}</p>
+            </div>
+            <div v-if="!isAcpRuntime" class="form-group">
               <label class="form-label">{{ t('agents.fields.maxIterations') }}</label>
               <input v-model.number="form.maxIterations" type="number" min="1" max="50" class="form-input" />
             </div>
             <!-- RFC-03 Lane G1: per-Agent model override. Empty value falls
                  back to the global default in ModelConfigService.resolveModel. -->
-            <div class="form-group">
+            <div v-if="!isAcpRuntime" class="form-group">
               <label class="form-label">{{ t('agents.fields.modelName') }}</label>
               <select v-model="form.modelName" class="form-input">
                 <option value="">{{ t('agents.fields.modelGlobalDefault') }}</option>
@@ -308,7 +448,7 @@
               </select>
               <p class="form-hint">{{ t('agents.fields.modelHint') }}</p>
             </div>
-            <div class="form-group">
+            <div v-if="!isAcpRuntime" class="form-group">
               <label class="form-label">{{ t('agents.fields.defaultThinkingLevel') }}</label>
               <select v-model="form.defaultThinkingLevel" class="form-input">
                 <option :value="null">{{ t('agents.thinkingLevels.auto') }}</option>
@@ -323,6 +463,9 @@
               <label class="form-label">{{ t('agents.fields.workspaceBasePath') }}</label>
               <input v-model="form.workspaceBasePath" class="form-input" :placeholder="t('agents.placeholders.workspaceBasePath')" />
               <p class="form-hint">{{ t('agents.fields.workspaceBasePathHint') }}</p>
+            </div>
+            <div v-if="isAcpRuntime" class="form-group full-width acp-runtime-note">
+              {{ t('agents.fields.acpRuntimeNote') }}
             </div>
             <!--
               Identity triad: role + goal + backstory map to H2 sections in
@@ -346,7 +489,7 @@
             </div>
             <div class="form-group full-width">
               <label class="form-label">{{ t('agents.fields.backstory') }}</label>
-              <textarea v-model="profileForm.backstory" class="form-textarea" rows="3" :placeholder="t('agents.placeholders.backstory')"></textarea>
+              <textarea v-model="profileForm.backstory" class="form-textarea" rows="8" :placeholder="t('agents.placeholders.backstory')"></textarea>
               <p class="form-hint">{{ t('agents.fields.backstoryHint') }}</p>
             </div>
             <div class="form-group full-width">
@@ -406,7 +549,7 @@
           </div>
 
           <!-- Skills Tab -->
-          <div v-if="modalTab === 'skills'" class="binding-tab">
+          <div v-if="modalTab === 'skills' && !isAcpRuntime" class="binding-tab">
             <div class="binding-intro">
               <span class="binding-intro__kicker">{{ t('agents.binding.skillsKicker') }}</span>
               <p class="binding-intro__tagline">{{ t('agents.binding.skillsTagline') }}</p>
@@ -475,7 +618,7 @@
                tools not packaged as skills (e.g. datetime, delegate_agent).
                Skill bindings already auto-expand allowed-tools (§14.2), so
                the picker is collapsed by default to reduce noise. -->
-          <div v-if="modalTab === 'tools'" class="binding-tab">
+          <div v-if="modalTab === 'tools' && !isAcpRuntime" class="binding-tab">
             <div class="binding-intro">
               <span class="binding-intro__kicker">{{ t('agents.binding.toolsKicker') }}</span>
               <p class="binding-intro__tagline">{{ t('agents.binding.toolsTagline') }}</p>
@@ -594,7 +737,7 @@
           </div>
 
           <!-- Providers Tab — preferred-model chain (provider + model) -->
-          <div v-if="modalTab === 'providers'" class="binding-tab">
+          <div v-if="modalTab === 'providers' && !isAcpRuntime" class="binding-tab">
             <p class="binding-hint">{{ t('agents.binding.providersHint') }}</p>
             <!-- Picked: ordered (provider, model) entries with up/down/remove -->
             <div v-if="selectedProviderPrefs.length" class="provider-pref-list">
@@ -631,7 +774,7 @@
           </div>
 
           <!-- Wiki / Knowledge Base Tab -->
-          <div v-if="modalTab === 'wiki'" class="binding-tab">
+          <div v-if="modalTab === 'wiki' && !isAcpRuntime" class="binding-tab">
             <div class="binding-intro">
               <span class="binding-intro__kicker">{{ t('agents.binding.wikiKicker') }}</span>
               <p class="binding-intro__tagline">{{ t('agents.binding.wikiTagline') }}</p>
@@ -715,8 +858,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
-import { agentApi, agentBindingApi, modelApi, skillApi, toolApi, templateApi, liveApi, wikiApi } from '@/api/index'
-import type { Agent } from '@/types/index'
+import { agentApi, agentTeamApi, agentBindingApi, modelApi, skillApi, toolApi, templateApi, liveApi, wikiApi } from '@/api/index'
+import type { Agent, AgentTeam } from '@/types/index'
 import SkillIcon from '@/components/common/SkillIcon.vue'
 import SkillIconPicker from '@/components/common/SkillIconPicker.vue'
 import LivePanel from '@/components/live/LivePanel.vue'
@@ -740,6 +883,7 @@ const route = useRoute()
 const { t } = useI18n()
 const { resolveSkillName } = useSkillName()
 const agents = ref<Agent[]>([])
+const teams = ref<AgentTeam[]>([])
 const searchText = ref('')
 const activeFilter = ref('all')
 // Tag filter (#146) — orthogonal to activeFilter; multi-select with AND
@@ -961,14 +1105,40 @@ const filterTabs = [
   { key: 'agents.tabs.all', value: 'all' },
   { key: 'agents.tabs.react', value: 'react' },
   { key: 'agents.tabs.planExecute', value: 'plan_execute' },
+  { key: 'agents.tabs.acp', value: 'acp' },
   { key: 'agents.tabs.enabled', value: 'enabled' },
   { key: 'agents.tabs.disabled', value: 'disabled' },
 ]
 
-const defaultForm = (): Partial<Agent> & { name: string; defaultThinkingLevel: string | null } => ({
+const managedAcpEndpoints = [
+  { value: 'hermes', label: 'Hermes' },
+  { value: 'codex', label: 'Codex' },
+  { value: 'openclaw', label: 'OpenClaw' },
+]
+const runtimeChoices = computed(() => [
+  {
+    value: 'local',
+    label: t('agents.runtime.localTitle'),
+    description: t('agents.runtime.localDesc'),
+    badge: t('agents.runtime.localBadge'),
+    mark: 'M',
+    external: false,
+  },
+  ...managedAcpEndpoints.map((endpoint) => ({
+    value: endpoint.value,
+    label: endpoint.label,
+    description: t('agents.runtime.externalDesc', { name: endpoint.label }),
+    badge: t('agents.runtime.externalBadge'),
+    mark: endpoint.label.slice(0, 1),
+    external: true,
+  })),
+])
+
+const defaultForm = (): Partial<Agent> & { name: string; defaultThinkingLevel: string | null; acpEndpointName?: string } => ({
   name: '',
   description: '',
   agentType: 'react',
+  acpEndpointName: 'codex',
   systemPrompt: '',
   modelName: '', // RFC-03 G1 — empty means "use global default"
   maxIterations: 10,
@@ -994,6 +1164,22 @@ const defaultForm = (): Partial<Agent> & { name: string; defaultThinkingLevel: s
 })
 
 const form = ref(defaultForm())
+
+const defaultTeamForm = () => ({
+  name: '',
+  description: '',
+  coordinatorAgentId: '',
+  enabled: true,
+  members: [] as Array<{ agentId: string; roleLabel: string }>,
+})
+const showTeamModal = ref(false)
+const editingTeam = ref<AgentTeam | null>(null)
+const teamForm = ref(defaultTeamForm())
+
+const isAcpRuntime = computed(() => form.value.agentType === 'acp')
+watch(isAcpRuntime, (value) => {
+  if (value && modalTab.value !== 'basic') modalTab.value = 'basic'
+})
 const iconPickerVisible = ref(false)
 
 // Chip-style tag editor (#145). `form.tags` stays the comma-separated string
@@ -1124,6 +1310,67 @@ function clearTagFilter() {
   activeTags.value = []
 }
 
+const enabledAgents = computed(() => agents.value.filter((agent) => agent.enabled))
+const nativeCoordinatorCandidates = computed(() =>
+  enabledAgents.value.filter((agent) => agent.agentType === 'react' || agent.agentType === 'plan_execute'),
+)
+const selectedTeamMemberIds = computed(() => teamForm.value.members.map((member) => member.agentId))
+
+watch(() => teamForm.value.coordinatorAgentId, (id, oldId) => {
+  if (!id) return
+  if (oldId && oldId !== id) {
+    teamForm.value.members = teamForm.value.members.filter((member) => member.agentId !== oldId)
+  }
+  if (!teamForm.value.members.some((member) => member.agentId === id)) {
+    const coordinator = agents.value.find((agent) => String(agent.id) === id)
+    teamForm.value.members.unshift({ agentId: id, roleLabel: defaultTeamRole(coordinator) || '团队协调官' })
+  }
+})
+
+function isTeamMemberSelected(agentId: string | number): boolean {
+  return teamForm.value.members.some((member) => member.agentId === String(agentId))
+}
+
+function toggleTeamMember(agentId: string | number, event: Event) {
+  const sid = String(agentId)
+  if (sid === teamForm.value.coordinatorAgentId) return
+  const target = event.target as HTMLInputElement
+  if (target.checked) {
+    if (!isTeamMemberSelected(sid)) {
+      const agent = agents.value.find((item) => String(item.id) === sid)
+      teamForm.value.members.push({ agentId: sid, roleLabel: defaultTeamRole(agent) })
+    }
+  } else {
+    teamForm.value.members = teamForm.value.members.filter((member) => member.agentId !== sid)
+  }
+}
+
+function teamMemberRole(agentId: string | number): string {
+  return teamForm.value.members.find((member) => member.agentId === String(agentId))?.roleLabel || ''
+}
+
+function setTeamMemberRole(agentId: string | number, role: string) {
+  const sid = String(agentId)
+  const item = teamForm.value.members.find((member) => member.agentId === sid)
+  if (item) item.roleLabel = role
+  else teamForm.value.members.push({ agentId: sid, roleLabel: role })
+}
+
+function onTeamMemberRoleInput(agentId: string | number, event: Event) {
+  setTeamMemberRole(agentId, (event.target as HTMLInputElement).value)
+}
+
+function defaultTeamRole(agent?: Agent): string {
+  if (!agent) return ''
+  const name = agent.name.toLowerCase()
+  const endpoint = (agent.acpEndpointName || '').toLowerCase()
+  if (name.includes('hermes') || endpoint === 'hermes') return 'CEO / 战略裁决'
+  if (name.includes('codex') || endpoint === 'codex') return '开发工程师'
+  if (name.includes('openclaw') || endpoint === 'openclaw') return '产品经理'
+  if (agent.agentType === 'plan_execute') return '团队协调官'
+  return ''
+}
+
 const filteredAgents = computed(() => {
   let list = agents.value
   if (searchText.value) {
@@ -1136,6 +1383,7 @@ const filteredAgents = computed(() => {
   }
   if (activeFilter.value === 'react') list = list.filter(a => a.agentType === 'react')
   else if (activeFilter.value === 'plan_execute') list = list.filter(a => a.agentType === 'plan_execute')
+  else if (activeFilter.value === 'acp') list = list.filter(a => a.agentType === 'acp')
   else if (activeFilter.value === 'enabled') list = list.filter(a => a.enabled)
   else if (activeFilter.value === 'disabled') list = list.filter(a => !a.enabled)
   // Tag filter: intersection — an agent must carry every selected tag.
@@ -1180,6 +1428,7 @@ async function refreshLiveCounts() {
 
 onMounted(() => {
   loadAgents()
+  loadTeams()
   // RFC-03 G1: load models once for the per-Agent override dropdown.
   // Failure is non-fatal — the dropdown just shows only "global default".
   loadAvailableModels()
@@ -1200,6 +1449,93 @@ async function loadAgents() {
   } catch {
     mcToast.error(t('agents.messages.loadFailed'))
   }
+}
+
+async function loadTeams() {
+  try {
+    const res: any = await agentTeamApi.list()
+    teams.value = res.data || []
+  } catch {
+    mcToast.error(t('agents.teams.loadFailed'))
+  }
+}
+
+function openCreateTeamModal() {
+  editingTeam.value = null
+  teamForm.value = defaultTeamForm()
+  showTeamModal.value = true
+}
+
+function openEditTeamModal(team: AgentTeam) {
+  editingTeam.value = team
+  teamForm.value = {
+    name: team.name || '',
+    description: team.description || '',
+    coordinatorAgentId: team.coordinatorAgentId != null ? String(team.coordinatorAgentId) : '',
+    enabled: team.enabled !== false,
+    members: (team.members || []).map((member) => ({
+      agentId: String(member.agentId),
+      roleLabel: member.roleLabel || '',
+    })),
+  }
+  showTeamModal.value = true
+}
+
+function closeTeamModal() {
+  showTeamModal.value = false
+  editingTeam.value = null
+  teamForm.value = defaultTeamForm()
+}
+
+async function saveTeam() {
+  if (!teamForm.value.coordinatorAgentId) {
+    mcToast.error(t('agents.teams.coordinatorRequired'))
+    return
+  }
+  const coordinator = agents.value.find((agent) => String(agent.id) === teamForm.value.coordinatorAgentId)
+  if (!coordinator || !['react', 'plan_execute'].includes(coordinator.agentType || '')) {
+    mcToast.error(t('agents.teams.coordinatorMustBeNative'))
+    return
+  }
+  const payload = {
+    name: teamForm.value.name,
+    description: teamForm.value.description,
+    coordinatorAgentId: teamForm.value.coordinatorAgentId,
+    enabled: teamForm.value.enabled,
+    members: teamForm.value.members.map((member) => ({
+      agentId: member.agentId,
+      roleLabel: member.roleLabel,
+    })),
+  }
+  try {
+    if (editingTeam.value) await agentTeamApi.update(editingTeam.value.id, payload)
+    else await agentTeamApi.create(payload)
+    mcToast.success(t('agents.teams.saveSuccess'))
+    closeTeamModal()
+    await Promise.all([loadTeams(), loadAgents()])
+  } catch (e: any) {
+    mcToast.error(e?.message || t('agents.teams.saveFailed'))
+  }
+}
+
+async function deleteTeam(team: AgentTeam) {
+  const ok = await mcConfirm({
+    title: t('agents.teams.deleteTitle'),
+    message: t('agents.teams.deleteConfirm', { name: team.name }),
+    tone: 'danger',
+  })
+  if (!ok) return
+  try {
+    await agentTeamApi.delete(team.id)
+    mcToast.success(t('agents.teams.deleteSuccess'))
+    await loadTeams()
+  } catch {
+    mcToast.error(t('agents.teams.deleteFailed'))
+  }
+}
+
+function goToChatById(agentId: string | number) {
+  router.push({ path: '/chat', query: { agentId: String(agentId) } })
 }
 
 async function loadAvailableModels() {
@@ -1239,6 +1575,24 @@ function openBlankCreateModal() {
   selectedKBId.value = null
   selectedKbIds.value = []
   showModal.value = true
+}
+
+function openRuntimeCreateModal(runtime: string) {
+  openBlankCreateModal()
+  if (runtime === 'local') return
+  const endpoint = managedAcpEndpoints.find((item) => item.value === runtime)
+  const label = endpoint?.label || runtime
+  form.value = {
+    ...form.value,
+    name: label,
+    description: t('agents.runtime.externalDefaultDescription', { name: label }),
+    agentType: 'acp',
+    acpEndpointName: runtime,
+    maxIterations: 1,
+    skillsDisabled: true,
+    toolsDisabled: true,
+    wikiDisabled: true,
+  }
 }
 
 // Preferred-model chain helpers
@@ -1298,6 +1652,7 @@ async function openEditModal(agent: Agent) {
     name: agent.name,
     description: agent.description || '',
     agentType: agent.agentType,
+    acpEndpointName: (agent as any).acpEndpointName || 'codex',
     systemPrompt: agent.systemPrompt || '',
     modelName: agent.modelName || '',
     maxIterations: agent.maxIterations,
@@ -1397,8 +1752,23 @@ async function saveAgent() {
     // Flatten the structured profile back to a single systemPrompt before
     // sending to the backend — the schema is unchanged, only the editor
     // exposes the H2 sections to the user.
+    // ACP employees still need this persisted identity card: the runtime
+    // injects it as an instruction note on each ACP turn. Do not blank it
+    // here, otherwise saving an ACP employee makes the Background field
+    // appear empty when reopened.
     const serialized = serializePrompt(profileForm.value)
-    const payload = { ...form.value, systemPrompt: serialized, primaryKbId: selectedKBId.value }
+    const payload: any = { ...form.value, systemPrompt: serialized, primaryKbId: selectedKBId.value }
+    if (payload.agentType === 'acp') {
+      payload.modelName = ''
+      payload.defaultThinkingLevel = null
+      payload.maxIterations = payload.maxIterations || 1
+      payload.primaryKbId = null
+      payload.skillsDisabled = true
+      payload.toolsDisabled = true
+      payload.wikiDisabled = true
+    } else {
+      payload.acpEndpointName = null
+    }
 
     let agentId: string | number
     if (editingAgent.value) {
@@ -1428,7 +1798,7 @@ async function saveAgent() {
     const skillIdsToSave = form.value.skillsDisabled ? [] : selectedSkillIds.value
     const toolNamesToSave = form.value.toolsDisabled ? [] : selectedToolNames.value
 
-    if (agentId && editingAgent.value) {
+    if (agentId && editingAgent.value && payload.agentType !== 'acp') {
       try {
         await agentBindingApi.setSkills(agentId, skillIdsToSave)
         await agentBindingApi.setTools(agentId, toolNamesToSave)
@@ -1457,7 +1827,7 @@ async function saveAgent() {
 
     mcToast.success(t('agents.messages.saveSuccess'))
     closeModal()
-    await loadAgents()
+    await Promise.all([loadAgents(), loadTeams()])
   } catch (e: any) {
     mcToast.error(e?.message || t('agents.messages.saveFailed'))
   }
@@ -1473,7 +1843,7 @@ async function deleteAgent(agent: Agent) {
   try {
     await agentApi.delete(agent.id)
     mcToast.success(t('agents.messages.deleteSuccess'))
-    await loadAgents()
+    await Promise.all([loadAgents(), loadTeams()])
   } catch {
     mcToast.error(t('agents.messages.deleteFailed'))
   }
@@ -1492,7 +1862,7 @@ async function toggleAgent(agent: Agent) {
   try {
     await agentApi.update(agent.id, { ...agent, enabled: !agent.enabled })
     mcToast.success(t('agents.messages.toggleSuccess'))
-    await loadAgents()
+    await Promise.all([loadAgents(), loadTeams()])
   } catch {
     mcToast.error(t('agents.messages.toggleFailed'))
   }
@@ -1501,6 +1871,107 @@ async function toggleAgent(agent: Agent) {
 
 <style scoped>
 .agents-page { gap: 18px; }
+
+.team-panel {
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+}
+.team-panel__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+.team-panel__head h2 {
+  margin: 2px 0 4px;
+  font-size: 18px;
+}
+.team-panel__head p,
+.team-card__main p,
+.team-member-picker__head p {
+  margin: 0;
+  color: var(--mc-text-secondary);
+  font-size: 13px;
+}
+.team-panel__kicker {
+  color: var(--mc-text-secondary);
+  font-size: 12px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.team-required-note {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid rgba(245, 158, 11, .35);
+  border-radius: 12px;
+  background: rgba(245, 158, 11, .10);
+  color: var(--mc-text-primary);
+  font-size: 13px;
+}
+.team-required-note span { color: var(--mc-text-secondary); }
+.team-required-note--modal { margin-bottom: 16px; align-items: flex-start; }
+.team-list { display: grid; gap: 10px; }
+.team-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid var(--mc-border-soft);
+  border-radius: 14px;
+  background: rgba(255,255,255,.03);
+}
+.team-card__main { min-width: 0; display: grid; gap: 8px; }
+.team-card__main h3 { margin: 0; font-size: 16px; }
+.team-card__meta { display: flex; flex-wrap: wrap; gap: 8px; color: var(--mc-text-secondary); font-size: 12px; }
+.team-card__members { display: flex; flex-wrap: wrap; gap: 6px; }
+.team-member-chip {
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--mc-border-soft);
+  font-size: 12px;
+  color: var(--mc-text-secondary);
+}
+.team-member-chip.acp { border-color: rgba(96, 165, 250, .4); color: #93c5fd; }
+.team-card__actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.team-empty { color: var(--mc-text-secondary); font-size: 13px; }
+.team-modal { max-width: 860px; }
+.team-member-picker { margin-top: 16px; display: grid; gap: 10px; }
+.team-member-picker__head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.team-member-picker__head h3 { margin: 0 0 4px; font-size: 16px; }
+.team-member-list { display: grid; gap: 8px; max-height: 360px; overflow: auto; padding-right: 4px; }
+.team-member-row {
+  display: grid;
+  grid-template-columns: auto minmax(130px, 1fr) auto minmax(160px, 240px);
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid var(--mc-border-soft);
+  border-radius: 12px;
+  background: rgba(255,255,255,.025);
+}
+.team-member-row.selected { border-color: rgba(59,130,246,.45); background: rgba(59,130,246,.08); }
+.team-member-row.coordinator { border-color: rgba(245,158,11,.45); }
+.team-member-row__name { font-weight: 600; }
+.team-member-row__type { color: var(--mc-text-secondary); font-size: 12px; }
+.team-member-row__type.acp { color: #93c5fd; }
+.team-member-row__role {
+  width: 100%;
+  border: 1px solid var(--mc-border-soft);
+  background: var(--mc-bg-elevated);
+  color: var(--mc-text-primary);
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+@media (max-width: 760px) {
+  .team-card, .team-panel__head { flex-direction: column; }
+  .team-card__actions { align-items: stretch; }
+  .team-member-row { grid-template-columns: auto 1fr; }
+  .team-member-row__role { grid-column: 1 / -1; }
+}
+
 
 .header-right {
   display: flex;
@@ -1994,6 +2465,15 @@ html.dark .seg-count.warn {
 .form-hint__label {
   color: var(--mc-text-tertiary);
 }
+.acp-runtime-note {
+  padding: 12px 14px;
+  border: 1px solid var(--mc-border-light);
+  border-radius: 10px;
+  background: var(--mc-bg-muted);
+  color: var(--mc-text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
 .form-hint__value {
   color: var(--mc-text-secondary);
   font-weight: 600;
@@ -2058,11 +2538,119 @@ html.dark .seg-count.warn {
   .search-box {
     max-width: none;
   }
+
+  .runtime-choice-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* Template Selector */
 .template-modal { max-width: 640px; }
 .template-desc { font-size: 14px; color: var(--mc-text-secondary); margin: 0 0 18px; }
+
+.runtime-choice-head {
+  margin: 0 0 10px;
+}
+.runtime-choice-head h3 {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--mc-text-primary);
+}
+.runtime-choice-head p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--mc-text-tertiary);
+}
+.runtime-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.runtime-choice-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--mc-border);
+  border-radius: 12px;
+  background: var(--mc-bg);
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.15s;
+}
+.runtime-choice-card:hover {
+  border-color: var(--mc-primary);
+  background: var(--mc-primary-bg);
+  transform: translateY(-1px);
+}
+.runtime-choice-card--external {
+  background: var(--mc-bg-elevated);
+}
+.runtime-choice-card__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 9px;
+  background: var(--mc-bg-muted);
+  color: var(--mc-primary);
+  font-weight: 800;
+  font-size: 14px;
+}
+.runtime-choice-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+.runtime-choice-card__title {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--mc-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.runtime-choice-card__desc {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--mc-text-secondary);
+}
+.runtime-choice-card__badge {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--mc-bg-sunken);
+  color: var(--mc-text-tertiary);
+  font-size: 10.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.template-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2px 0 14px;
+  color: var(--mc-text-tertiary);
+  font-size: 12px;
+  font-weight: 600;
+}
+.template-divider::before,
+.template-divider::after {
+  content: '';
+  height: 1px;
+  flex: 1;
+  background: var(--mc-border-light);
+}
 
 .template-grid { display: flex; flex-direction: column; gap: 10px; }
 

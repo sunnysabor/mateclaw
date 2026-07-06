@@ -12,6 +12,18 @@ export default defineConfig({
   test: {
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
     environment: 'happy-dom',
+    // Vite/Vitest default to resolving "localhost" during startup. Some
+    // dev machines and CI sandboxes have a broken /etc/hosts and DNS lookup
+    // for localhost fails with ENOTFOUND, even though 127.0.0.1 works. Pin the
+    // internal API server + DOM URL to loopback so tests do not depend on host
+    // file hygiene.
+    api: { host: '127.0.0.1' },
+    environmentOptions: {
+      happyDOM: { url: 'http://127.0.0.1:3000' },
+    },
+  },
+  server: {
+    host: '127.0.0.1',
   },
   resolve: {
     alias: {

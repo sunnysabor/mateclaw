@@ -78,6 +78,13 @@ public class FactMemoryProvider implements MemoryProvider {
     }
 
     @Override
+    public void onMemoryWrite(Long agentId, String target, String action, String content,
+                              String ownerKey, String scope) {
+        if (!properties.getFact().isProjectionEnabled()) return;
+        projectionBuilder.rebuildOne(agentId, target, content, ownerKey, scope);
+    }
+
+    @Override
     public List<Object> getToolBeans() {
         if (!properties.getFact().isProjectionEnabled()) return Collections.emptyList();
         return List.of(factQueryTool);

@@ -12,6 +12,9 @@ import vip.mate.memory.service.*;
 import vip.mate.memory.scheduler.DreamingScheduler;
 import vip.mate.workspace.document.WorkspaceFileService;
 import vip.mate.workspace.document.model.WorkspaceFileEntity;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.security.core.Authentication;
+import org.springframework.web.servlet.HandlerMapping;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -39,6 +42,49 @@ public class MemoryController {
     private final WorkspaceFileService workspaceFileService;
     private final StructuredMemoryConsolidationService structuredConsolidationService;
 
+    @Operation(summary = "列出当前用户可见的记忆文件（共享 + 当前 owner 的个人记忆，不含内容）")
+    @GetMapping("/{agentId}/files")
+    @RequireWorkspaceRole("viewer")
+    public R<List<WorkspaceFileEntity>> listVisibleMemoryFiles(@PathVariable Long agentId,
+                                                               Authentication auth) {
+        return R.ok(dedupeByFilenamePreferPersonal(workspaceFileService
+                .listVisibleFiles(agentId, currentWebOwnerKey(auth)).stream()
+                .filter(this::isMemoryBrowserFile)
+                .toList()));
+    }
+
+    @Operation(summary = "读取当前用户可见的记忆文件内容")
+    @GetMapping("/{agentId}/files/**")
+    @RequireWorkspaceRole("viewer")
+    public R<WorkspaceFileEntity> getVisibleMemoryFile(@PathVariable Long agentId,
+                                                       HttpServletRequest request,
+                                                       Authentication auth) {
+        String filename = extractMemoryFilename(request);
+        if (!isMemoryFile(filename)) {
+            return R.fail("Unsupported memory file: " + filename);
+        }
+        WorkspaceFileEntity file = workspaceFileService.getVisibleFile(agentId, filename, currentWebOwnerKey(auth));
+        if (file == null) {
+            return R.fail("文件不存在: " + filename);
+        }
+        return R.ok(file);
+    }
+
+    @Operation(summary = "保存当前用户可见的记忆文件内容")
+    @PutMapping("/{agentId}/files/**")
+    @RequireWorkspaceRole("member")
+    public R<WorkspaceFileEntity> saveVisibleMemoryFile(@PathVariable Long agentId,
+                                                        HttpServletRequest request,
+                                                        @RequestBody Map<String, String> body,
+                                                        Authentication auth) {
+        String filename = extractMemoryFilename(request);
+        if (!isMemoryFile(filename)) {
+            return R.fail("Unsupported memory file: " + filename);
+        }
+        String content = body != null ? body.getOrDefault("content", "") : "";
+        return R.ok(workspaceFileService.saveVisibleFile(agentId, filename, content, currentWebOwnerKey(auth)));
+    }
+
     @Operation(summary = "手动触发 always-on 结构化记忆整合（user/feedback，合并去重过时条目）")
     @PostMapping("/{agentId}/structured-consolidation")
     @RequireWorkspaceRole("member")
@@ -65,9 +111,11 @@ public class MemoryController {
     @Operation(summary = "手动触发记忆整合（daily notes → MEMORY.md，NIGHTLY 模式）")
     @PostMapping("/{agentId}/emergence")
     @RequireWorkspaceRole("member")
-    public R<DreamReport> triggerEmergence(@PathVariable Long agentId) {
+    public R<DreamReport> triggerEmergence(@PathVariable Long agentId,
+                                           Authentication auth) {
         try {
-            DreamReport report = emergenceService.consolidate(agentId, DreamMode.NIGHTLY, null);
+            DreamReport report = emergenceService.consolidate(agentId, DreamMode.NIGHTLY, null,
+                    currentWebOwnerKey(auth));
             return R.ok(report);
         } catch (Exception e) {
             log.error("[Memory] Manual emergence failed for agent={}: {}", agentId, e.getMessage(), e);
@@ -79,7 +127,8 @@ public class MemoryController {
     @PostMapping("/{agentId}/dreaming/focused")
     @RequireWorkspaceRole("member")
     public R<DreamReport> triggerFocusedDream(@PathVariable Long agentId,
-                                              @RequestBody Map<String, String> body) {
+                                              @RequestBody Map<String, String> body,
+                                              Authentication auth) {
         if (!memoryProperties.getDream().isFocusedEnabled()) {
             return R.fail(410, "Focused dream is disabled");
         }
@@ -88,7 +137,8 @@ public class MemoryController {
             return R.fail("topic is required");
         }
         try {
-            DreamReport report = emergenceService.consolidate(agentId, DreamMode.FOCUSED, topic);
+            DreamReport report = emergenceService.consolidate(agentId, DreamMode.FOCUSED, topic,
+                    currentWebOwnerKey(auth));
             return R.ok(report);
         } catch (Exception e) {
             log.error("[Memory] Focused dream failed for agent={}: {}", agentId, e.getMessage(), e);
@@ -117,8 +167,9 @@ public class MemoryController {
     @Operation(summary = "查询 Dreaming 状态（配置、统计、上次运行时间）")
     @GetMapping("/{agentId}/dreaming/status")
     @RequireWorkspaceRole("member")
-    public R<Map<String, Object>> getDreamingStatus(@PathVariable Long agentId) {
-        Map<String, Object> status = recallService.getDreamingStatus(agentId);
+    public R<Map<String, Object>> getDreamingStatus(@PathVariable Long agentId,
+                                                    Authentication auth) {
+        Map<String, Object> status = recallService.getDreamingStatus(agentId, currentWebOwnerKey(auth));
         status.put("lastRunTime", dreamingScheduler.getLastRunTime());
         return R.ok(status);
     }
@@ -126,15 +177,18 @@ public class MemoryController {
     @Operation(summary = "查询召回候选列表（含评分详情）")
     @GetMapping("/{agentId}/dreaming/candidates")
     @RequireWorkspaceRole("member")
-    public R<List<Map<String, Object>>> getDreamingCandidates(@PathVariable Long agentId) {
-        return R.ok(recallService.listCandidatesWithDetails(agentId));
+    public R<List<Map<String, Object>>> getDreamingCandidates(@PathVariable Long agentId,
+                                                              Authentication auth) {
+        return R.ok(recallService.listCandidatesWithDetails(agentId, currentWebOwnerKey(auth)));
     }
 
     @Operation(summary = "查询 DREAMS.md 整合日记")
     @GetMapping("/{agentId}/dreaming/dreams")
     @RequireWorkspaceRole("member")
-    public R<Map<String, Object>> getDreams(@PathVariable Long agentId) {
-        WorkspaceFileEntity file = workspaceFileService.getFile(agentId, "DREAMS.md");
+    public R<Map<String, Object>> getDreams(@PathVariable Long agentId,
+                                            Authentication auth) {
+        WorkspaceFileEntity file = workspaceFileService.getVisibleFile(agentId, "DREAMS.md",
+                currentWebOwnerKey(auth));
         Map<String, Object> result = new LinkedHashMap<>();
         if (file != null && file.getContent() != null) {
             result.put("content", file.getContent());
@@ -145,4 +199,71 @@ public class MemoryController {
         }
         return R.ok(result);
     }
+
+    private boolean isMemoryBrowserFile(WorkspaceFileEntity file) {
+        return file != null && isMemoryFile(file.getFilename());
+    }
+
+    /**
+     * listVisibleFiles returns shared rows plus matching PERSONAL rows. For the
+     * Memory UI those rows represent a single logical filename, with PERSONAL
+     * taking precedence exactly like getVisibleFile().
+     */
+    private List<WorkspaceFileEntity> dedupeByFilenamePreferPersonal(List<WorkspaceFileEntity> files) {
+        Map<String, WorkspaceFileEntity> byName = new LinkedHashMap<>();
+        for (WorkspaceFileEntity file : files) {
+            if (file == null || file.getFilename() == null) {
+                continue;
+            }
+            WorkspaceFileEntity existing = byName.get(file.getFilename());
+            if (existing == null || isPersonal(file)) {
+                byName.put(file.getFilename(), file);
+            }
+        }
+        return List.copyOf(byName.values());
+    }
+
+    private boolean isPersonal(WorkspaceFileEntity file) {
+        return file != null && "PERSONAL".equalsIgnoreCase(file.getScope());
+    }
+
+    /**
+     * Whitelist files exposed by the Memory page. This endpoint is owner-aware,
+     * but still intentionally narrow: it is not a general workspace file API.
+     */
+    private boolean isMemoryFile(String filename) {
+        if (filename == null || filename.isBlank() || filename.contains("..")) {
+            return false;
+        }
+        return "MEMORY.md".equals(filename)
+                || "PROFILE.md".equals(filename)
+                || "SOUL.md".equals(filename)
+                || (filename.startsWith("structured/") && filename.endsWith(".md"));
+    }
+
+    private String extractMemoryFilename(HttpServletRequest request) {
+        String fullPath = (String) request.getAttribute(HandlerMapping.PATH_WITHIN_HANDLER_MAPPING_ATTRIBUTE);
+        int filesIdx = fullPath.indexOf("/files/");
+        if (filesIdx < 0) {
+            return "";
+        }
+        return fullPath.substring(filesIdx + "/files/".length());
+    }
+
+    /**
+     * Match web-console chat ownership: ChatOrigin.web(..., username, ...)
+     * resolves to {@code user:<username>}. Unknown/system auth falls back to
+     * shared-only visibility.
+     */
+    private String currentWebOwnerKey(Authentication auth) {
+        if (!memoryProperties.isLifecycleMediatorEnabled() || auth == null) {
+            return vip.mate.memory.identity.MemoryOwnerResolver.SYSTEM_OWNER;
+        }
+        String username = auth.getName();
+        if (username == null || username.isBlank()) {
+            return vip.mate.memory.identity.MemoryOwnerResolver.SYSTEM_OWNER;
+        }
+        return "user:" + username;
+    }
+
 }

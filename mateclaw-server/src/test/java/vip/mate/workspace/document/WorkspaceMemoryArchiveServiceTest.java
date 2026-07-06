@@ -132,6 +132,70 @@ class WorkspaceMemoryArchiveServiceTest {
         assertThat(manifest).containsKey("exportedAt");
     }
 
+    @Test
+    @DisplayName("Export includes structured memory, DREAMS.md, and monthly dream archives")
+    void exportIncludesStructuredAndDreamFiles() throws Exception {
+        wireAgent(1L, 10L);
+        when(workspaceFileService.listFiles(1L)).thenReturn(List.of(
+                stubMeta("MEMORY.md"),
+                stubMeta("DREAMS.md"),
+                stubMeta("structured/user.md"),
+                stubMeta("structured/project.md"),
+                stubMeta("memory/dreams/2026-05.md"),
+                stubMeta("structured/../secret.md"),      // traversal-like, must be excluded
+                stubMeta("memory/dreams/2026-13.md")));   // impossible month, excluded
+        when(workspaceFileService.getFile(eq(1L), eq("MEMORY.md")))
+                .thenReturn(stubFile("MEMORY.md", "memory"));
+        when(workspaceFileService.getFile(eq(1L), eq("DREAMS.md")))
+                .thenReturn(stubFile("DREAMS.md", "dream diary"));
+        when(workspaceFileService.getFile(eq(1L), eq("structured/user.md")))
+                .thenReturn(stubFile("structured/user.md", "## preference\n中文"));
+        when(workspaceFileService.getFile(eq(1L), eq("structured/project.md")))
+                .thenReturn(stubFile("structured/project.md", "## stack\nSpring"));
+        when(workspaceFileService.getFile(eq(1L), eq("memory/dreams/2026-05.md")))
+                .thenReturn(stubFile("memory/dreams/2026-05.md", "archive"));
+
+        byte[] bundle = service.export(1L, 10L);
+
+        Map<String, byte[]> entries = readZip(bundle);
+        assertThat(entries).containsKeys(
+                "MEMORY.md",
+                "DREAMS.md",
+                "structured/user.md",
+                "structured/project.md",
+                "memory/dreams/2026-05.md");
+        assertThat(entries).doesNotContainKeys("structured/../secret.md", "memory/dreams/2026-13.md");
+    }
+
+    @Test
+    @DisplayName("Owner export prefers PERSONAL rows and refetches through visible owner lookup")
+    void ownerExportPrefersPersonalRows() throws Exception {
+        wireAgent(1L, 10L);
+        WorkspaceFileEntity sharedMemory = stubMeta("MEMORY.md");
+        sharedMemory.setScope(vip.mate.memory.identity.MemoryScope.TEAM);
+        WorkspaceFileEntity personalMemory = stubMeta("MEMORY.md");
+        personalMemory.setScope(vip.mate.memory.identity.MemoryScope.PERSONAL);
+        personalMemory.setOwnerKey("user:jerry");
+        WorkspaceFileEntity personalStructured = stubMeta("structured/user.md");
+        personalStructured.setScope(vip.mate.memory.identity.MemoryScope.PERSONAL);
+        personalStructured.setOwnerKey("user:jerry");
+        when(workspaceFileService.listVisibleFiles(1L, "user:jerry"))
+                .thenReturn(List.of(sharedMemory, personalMemory, personalStructured));
+        when(workspaceFileService.getVisibleFile(1L, "MEMORY.md", "user:jerry"))
+                .thenReturn(stubFile("MEMORY.md", "personal memory"));
+        when(workspaceFileService.getVisibleFile(1L, "structured/user.md", "user:jerry"))
+                .thenReturn(stubFile("structured/user.md", "## language\n中文"));
+
+        byte[] bundle = service.export(1L, 10L, "user:jerry");
+
+        Map<String, byte[]> entries = readZip(bundle);
+        assertThat(new String(entries.get("MEMORY.md"), StandardCharsets.UTF_8))
+                .isEqualTo("personal memory");
+        assertThat(entries).containsKey("structured/user.md");
+        verify(workspaceFileService).listVisibleFiles(1L, "user:jerry");
+        verify(workspaceFileService).getVisibleFile(1L, "MEMORY.md", "user:jerry");
+    }
+
     // ---------- preview ----------
 
     @Test
@@ -197,6 +261,57 @@ class WorkspaceMemoryArchiveServiceTest {
                         org.assertj.core.groups.Tuple.tuple("memory/2026-02-30.md", "not in whitelist"));
 
         verify(workspaceFileService, never()).saveFile(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
+    @DisplayName("Preview accepts structured memory and DREAMS.md but rejects invalid dream archives")
+    void previewAcceptsStructuredAndDreamFiles() throws Exception {
+        wireAgent(1L, 10L);
+        when(workspaceFileService.getFile(1L, "structured/user.md")).thenReturn(null);
+        when(workspaceFileService.getFile(1L, "DREAMS.md")).thenReturn(null);
+        when(workspaceFileService.getFile(1L, "memory/dreams/2026-05.md")).thenReturn(null);
+
+        byte[] zip = makeZip(Map.of(
+                "structured/user.md", "## preference\n中文",
+                "DREAMS.md", "# Dreaming 整合日记",
+                "memory/dreams/2026-05.md", "archive",
+                "memory/dreams/2026-13.md", "bad month"));
+
+        WorkspaceMemoryArchiveService.ImportPreview preview =
+                service.previewImport(1L, 10L, zip);
+
+        assertThat(preview.willCreate()).containsExactlyInAnyOrder(
+                "structured/user.md", "DREAMS.md", "memory/dreams/2026-05.md");
+        assertThat(preview.willSkip())
+                .extracting(WorkspaceMemoryArchiveService.SkipEntry::filename,
+                        WorkspaceMemoryArchiveService.SkipEntry::reason)
+                .contains(org.assertj.core.groups.Tuple.tuple(
+                        "memory/dreams/2026-13.md", "not in whitelist"));
+    }
+
+    @Test
+    @DisplayName("Owner import writes through saveMemoryFile so restored memories stay PERSONAL")
+    void ownerImportWritesPersonalRows() throws Exception {
+        wireAgent(1L, 10L);
+        when(workspaceFileService.getVisibleFile(1L, "MEMORY.md", "user:jerry"))
+                .thenReturn(null);
+        when(workspaceFileService.getVisibleFile(1L, "structured/user.md", "user:jerry"))
+                .thenReturn(null);
+
+        byte[] zip = makeZip(Map.of(
+                "MEMORY.md", "restored personal memory",
+                "structured/user.md", "## preference\n中文"));
+
+        WorkspaceMemoryArchiveService.ImportResult result =
+                service.apply(1L, 10L, zip, "user:jerry");
+
+        assertThat(result.applied()).isEqualTo(2);
+        ArgumentCaptor<String> nameCap = ArgumentCaptor.forClass(String.class);
+        verify(workspaceFileService, times(2)).saveMemoryFile(eq(1L), nameCap.capture(),
+                org.mockito.ArgumentMatchers.anyString(), eq("user:jerry"));
+        assertThat(nameCap.getAllValues()).containsExactlyInAnyOrder("MEMORY.md", "structured/user.md");
+        verify(workspaceFileService, never()).saveFile(eq(1L),
                 org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString());
     }
 

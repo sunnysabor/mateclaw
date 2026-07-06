@@ -131,7 +131,7 @@ public class SkillController {
         }
         try {
             long virtualAcp = countUnshadowedVirtualSkills(
-                    acpSkillBridge.listAcpDerivedSkillEntities(), realNames);
+                    acpSkillBridge.listAcpDerivedSkillEntities(workspaceId), realNames);
             if (virtualAcp > 0) {
                 result.merge("acp", virtualAcp, Long::sum);
                 result.merge("all", virtualAcp, Long::sum);
@@ -238,7 +238,7 @@ public class SkillController {
         }
         if (includeAcpVirtuals) {
             try {
-                result.addAll(filterVirtualSkills(acpSkillBridge.listAcpDerivedSkillEntities(),
+                result.addAll(filterVirtualSkills(acpSkillBridge.listAcpDerivedSkillEntities(workspaceId),
                         realNames, keyword, enabled, scanStatus, runtime));
             } catch (Exception ignored) {
                 // Bridge failure must not break the Skills page.
@@ -400,7 +400,7 @@ public class SkillController {
         }
         try {
             result.addAll(enabledOnly(filterShadowedVirtualSkills(
-                    acpSkillBridge.listAcpDerivedSkillEntities(), realNames)));
+                    acpSkillBridge.listAcpDerivedSkillEntities(workspaceId), realNames)));
         } catch (Exception e) {
             // Bridge failure must not 500 the picker — same defensive stance as /counts.
         }

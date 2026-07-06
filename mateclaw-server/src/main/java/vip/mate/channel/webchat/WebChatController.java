@@ -267,8 +267,10 @@ public class WebChatController {
                                             conversationId, "assistant", reply, List.of(),
                                             "completed", usage[0], usage[1], modelInfo[0], modelInfo[1]);
                                 }
-                                completionPublisher.publish(
-                                        resolvedAgentId, conversationId, message, reply, "webchat", webchatOwnerKey);
+                                if (!agentService.isAcpAgent(resolvedAgentId)) {
+                                    completionPublisher.publish(
+                                            resolvedAgentId, conversationId, message, reply, "webchat", webchatOwnerKey);
+                                }
                             } catch (Exception persistErr) {
                                 log.warn("[WebChat] Failed to persist assistant reply / publish event: {}",
                                         persistErr.getMessage());

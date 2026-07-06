@@ -26,7 +26,7 @@ import java.util.Map;
  *       v1 — stateless tool calls keep failure surface small;
  *       multi-turn caching can be a follow-up RFC).</li>
  *   <li>Runs {@code initialize → session/new → session/prompt}.</li>
- *   <li>Accumulates {@code agent_message_chunk} text from
+ *   <li>Accumulates ACP message text from
  *       {@code session/update} notifications into the response.</li>
  *   <li>Auto-allows or cancels {@code session/request_permission}
  *       based on the endpoint's {@code trusted} flag — untrusted
@@ -99,6 +99,7 @@ public class AcpDelegationService {
         try {
             client = AcpStdioClient.spawn(objectMapper, endpoint.getCommand(),
                     args, env, resolvedCwd);
+            client.setStdoutBufferLimitBytes(resolveBufferLimit(endpoint));
         } catch (IOException e) {
             throw new MateClawException("err.acp.spawn_failed",
                     "Failed to spawn ACP agent '" + endpointName + "': " + e.getMessage());
@@ -144,22 +145,23 @@ public class AcpDelegationService {
         return accumulator.toString().trim();
     }
 
+    private long resolveBufferLimit(AcpEndpointEntity endpoint) {
+        Long configured = endpoint != null ? endpoint.getStdioBufferLimitBytes() : null;
+        return configured != null && configured > 0 ? configured : 50L * 1024L * 1024L;
+    }
+
     private void wireHandlers(AcpStdioClient client, StringBuilder buf,
                                boolean trusted, String endpointName) {
-        // Notifications carry session/update messages; agent_message_chunk
-        // is what we accumulate. Other update kinds (tool_call_*, plan,
-        // current_mode) are observed but not relayed in v1.
+        // Notifications carry session/update messages. The exact message
+        // type names vary across ACP adapters, so use the same tolerant
+        // translator as the first-class ACP Agent runtime.
         client.setNotificationHandler(msg -> {
             String method = msg.path("method").asText("");
             if (!"session/update".equals(method)) return;
             JsonNode update = msg.path("params").path("update");
             if (update.isMissingNode() || update.isNull()) return;
-            String type = update.path("sessionUpdate").asText(
-                    update.path("type").asText(""));
-            if ("agent_message_chunk".equals(type) || "agent-message-chunk".equals(type)) {
-                String text = extractText(update.path("content"));
-                if (!text.isEmpty()) buf.append(text);
-            }
+            String text = AcpStreamEventTranslator.messageText(update);
+            if (!text.isEmpty()) buf.append(text);
         });
 
         // Permission requests: trusted endpoints auto-allow the FIRST
@@ -197,29 +199,6 @@ public class AcpDelegationService {
         block.put("text", text);
         arr.add(block);
         return arr;
-    }
-
-    /**
-     * Extract plain text from an ACP {@code content} field. The shape
-     * varies between agents — Zed uses {@code [{type:"text",text:"..."}]},
-     * some emit a single object, others nest in {@code resource.text}.
-     * Tolerant extractor that handles all known shapes.
-     */
-    private String extractText(JsonNode content) {
-        if (content == null || content.isNull()) return "";
-        if (content.isArray()) {
-            StringBuilder sb = new StringBuilder();
-            for (JsonNode item : content) sb.append(extractText(item));
-            return sb.toString();
-        }
-        JsonNode text = content.get("text");
-        if (text != null && text.isTextual()) return text.asText("");
-        JsonNode resource = content.get("resource");
-        if (resource != null) {
-            JsonNode rt = resource.get("text");
-            if (rt != null && rt.isTextual()) return rt.asText("");
-        }
-        return "";
     }
 
     private ObjectNode selectedOutcome(String optionId) {

@@ -60,7 +60,7 @@ class SkillControllerListEnabledTest {
         when(skillService.listSkills(null)).thenReturn(List.of());
         when(skillService.listEnabledSkills(null)).thenReturn(List.of());
         when(mcpSkillBridge.listMcpDerivedSkillEntities()).thenReturn(List.of());
-        when(acpSkillBridge.listAcpDerivedSkillEntities()).thenReturn(List.of());
+        when(acpSkillBridge.listAcpDerivedSkillEntities(null)).thenReturn(List.of());
     }
 
     @Test
@@ -80,7 +80,7 @@ class SkillControllerListEnabledTest {
     @DisplayName("listEnabled merges ACP virtual skills into the response")
     void includesAcpVirtualSkills() {
         SkillEntity acp = skill("claude-code", "acp");
-        when(acpSkillBridge.listAcpDerivedSkillEntities()).thenReturn(List.of(acp));
+        when(acpSkillBridge.listAcpDerivedSkillEntities(null)).thenReturn(List.of(acp));
 
         R<List<SkillEntity>> response = controller.listEnabled(null);
 
@@ -128,7 +128,7 @@ class SkillControllerListEnabledTest {
     @Test
     @DisplayName("ACP bridge failure does not 500 the response and MCP results still merge")
     void acpBridgeFailureSwallowedMcpStillMerged() {
-        when(acpSkillBridge.listAcpDerivedSkillEntities())
+        when(acpSkillBridge.listAcpDerivedSkillEntities(null))
                 .thenThrow(new RuntimeException("ACP discovery failed"));
         SkillEntity mcp = skill("github", "mcp");
         when(mcpSkillBridge.listMcpDerivedSkillEntities()).thenReturn(List.of(mcp));

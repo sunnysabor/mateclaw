@@ -1108,15 +1108,32 @@ public class ConversationService {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCommit() {
-                    cleanAttachmentFiles(conversationId);
-                    purgeToolResultSpill(conversationId);
-                    eventPublisher.publishEvent(new ConversationDeletedEvent(conversationId));
+                    runPostCommitDeleteCleanup(conversationId);
                 }
             });
         } else {
+            runPostCommitDeleteCleanup(conversationId);
+        }
+    }
+
+    /**
+     * Best-effort post-delete side effects. The database cascade is the source
+     * of truth; cache eviction, attachment cleanup, spill cleanup, and in-memory
+     * listener fan-out must not make a committed delete look failed to the UI.
+     */
+    private void runPostCommitDeleteCleanup(String conversationId) {
+        try {
             cleanAttachmentFiles(conversationId);
-            purgeToolResultSpill(conversationId);
+        } catch (Exception e) {
+            log.warn("[Conversation] attachment cleanup failed for {}: {}",
+                    conversationId, e.getMessage());
+        }
+        purgeToolResultSpill(conversationId);
+        try {
             eventPublisher.publishEvent(new ConversationDeletedEvent(conversationId));
+        } catch (Exception e) {
+            log.warn("[Conversation] delete event fan-out failed for {}: {}",
+                    conversationId, e.getMessage());
         }
     }
 

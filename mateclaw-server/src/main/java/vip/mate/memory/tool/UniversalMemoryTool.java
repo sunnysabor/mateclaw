@@ -7,11 +7,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 import vip.mate.agent.context.ChatOrigin;
 import vip.mate.memory.MemoryProperties;
-import vip.mate.memory.event.MemoryWriteEvent;
 import vip.mate.memory.identity.MemoryOwnerResolver;
 import vip.mate.workspace.document.model.WorkspaceFileEntity;
 import vip.mate.workspace.document.WorkspaceFileService;
@@ -30,8 +28,9 @@ import java.time.format.DateTimeFormatter;
  *
  * <p>Storage path: appends to {@code MEMORY.md} under a
  * {@code ## Recent Lessons} section so the next dream pass can
- * consolidate it. {@link MemoryWriteEvent} is published on success so
- * the existing SOUL summarizer K-counter advances.
+ * consolidate it. Canonical write notifications are emitted by
+ * {@link WorkspaceFileService}, so every writer path shares the same
+ * event/projection behavior.
  */
 @Slf4j
 @Component
@@ -44,7 +43,6 @@ public class UniversalMemoryTool {
             .ofPattern("yyyy-MM-dd HH:mm");
 
     private final WorkspaceFileService workspaceFileService;
-    private final ApplicationEventPublisher eventPublisher;
     private final MemoryOwnerResolver memoryOwnerResolver;
     private final MemoryProperties memoryProperties;
 
@@ -75,13 +73,6 @@ public class UniversalMemoryTool {
                     ? existing.getContent() : "";
             String updated = appendLesson(existingContent, content, source);
             workspaceFileService.saveVisibleFile(agentId, MEMORY_FILENAME, updated, ownerKey);
-
-            // RFC-090 §14.3 — universal remember() targets MEMORY.md (the
-            // canonical file), so this IS a MemoryWriteEvent. Skill-local
-            // lessons go through SkillLessonWrittenEvent instead and do
-            // NOT touch this path.
-            eventPublisher.publishEvent(new MemoryWriteEvent(agentId, MEMORY_FILENAME,
-                    "remember", content));
 
             JSONObject result = new JSONObject();
             result.set("success", true);
@@ -148,4 +139,5 @@ public class UniversalMemoryTool {
         e.set("error", msg);
         return JSONUtil.toJsonPrettyStr(e);
     }
+
 }

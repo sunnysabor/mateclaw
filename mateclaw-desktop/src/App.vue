@@ -324,12 +324,12 @@ function createParticles() {
       <div class="logo-section fade-enter">
         <div class="logo-wrap">
           <div class="logo-glow"></div>
-          <img class="logo-img" src="/logo/mateclaw_logo_s.png" alt="MateClaw" />
+          <img class="logo-img" src="/logo/mateclaw_logo_s.png" alt="HHAIOS" />
         </div>
         <div class="brand-name">
-          <span class="mate">Mate</span><span class="claw">Claw</span>
+          <span class="mate">HHA</span><span class="claw">IOS</span>
         </div>
-        <div class="brand-tagline">AI Personal Assistant</div>
+        <div class="brand-tagline">AI Operating System</div>
       </div>
 
       <!-- Connection Selection Card -->
@@ -550,7 +550,7 @@ function createParticles() {
     <div class="bottom-bar">
       <div class="version-tag">
         <span class="version-dot"></span>
-        MateClaw Desktop v{{ appVersion }}
+        HHAIOS Desktop v{{ appVersion }}
       </div>
 
       <!-- Update banner -->

@@ -7,12 +7,21 @@ package vip.mate.memory.event;
  * @param agentId the agent ID
  * @param target  which file was written (e.g. "MEMORY.md", "structured/user.md")
  * @param action  what happened ("remember", "consolidate", "update")
- * @param content the written content (may be truncated for large writes)
+ * @param content full current content of the written canonical file. Providers
+ *                rebuild derived projections from this value, so callers must
+ *                not pass only a section body or delta.
  * @author MateClaw Team
  */
 public record MemoryWriteEvent(
         Long agentId,
         String target,
         String action,
-        String content
-) {}
+        String content,
+        String ownerKey,
+        String scope
+) {
+    public MemoryWriteEvent(Long agentId, String target, String action, String content) {
+        this(agentId, target, action, content, null,
+                vip.mate.memory.identity.MemoryScope.TEAM);
+    }
+}

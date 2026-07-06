@@ -155,7 +155,7 @@ public class ChatGPTOAuthImageProvider implements ImageGenerationProvider {
                     .header("Authorization", "Bearer " + token)
                     .header("Content-Type", "application/json")
                     .header("Accept", "text/event-stream")
-                    .header("User-Agent", "codex_cli_rs/0.0.0 (MateClaw)")
+                    .header("User-Agent", "codex_cli_rs/0.0.0 (HHAIOS)")
                     .header("originator", "codex_cli_rs")
                     .body(body)
                     .timeout(timeoutMs);

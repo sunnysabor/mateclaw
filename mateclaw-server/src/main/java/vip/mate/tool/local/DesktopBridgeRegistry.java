@@ -144,7 +144,7 @@ public class DesktopBridgeRegistry {
         if (capability != null && !desktop.supports(capability)) {
             throw new DesktopBridgeException(DesktopBridgeException.Code.UNSUPPORTED,
                     "The connected desktop does not support '" + capability
-                            + "' (upgrade the MateClaw desktop app)");
+                            + "' (upgrade the HHAIOS desktop app)");
         }
 
         String requestId = UUID.randomUUID().toString();

@@ -12,7 +12,7 @@ If tools are hands, skills are recipes.
 
 | Type | Where it comes from | Who maintains it |
 |------|--------------------|------------------|
-| **`builtin`** | Ships with MateClaw under `skills/` in the classpath | The core team |
+| **`builtin`** | Ships with HHAIOS under `skills/` in the classpath | The core team |
 | **`custom`** | Created by you through the UI, API, or dropping a file into the workspace | You |
 | **`dynamic`** | Auto-synthesized by agents during work | The agent + your approval |
 | **`mcp`** | Backed by a tool exposed from an MCP server (a same-name `custom` skill shadows it) | The MCP server author |
@@ -252,7 +252,7 @@ mateclaw:
 
 The **Skill Market** page (`/skills`) is where you browse, install, edit, and manage skills. Three sources:
 
-- **Built-in** — skills that ship with MateClaw
+- **Built-in** — skills that ship with HHAIOS
 - **Your custom skills** — the ones you created
 - **ClawHub** — a community skill repository. Browse thousands of community skills, preview them, install with one click. Installed skills land as `custom` type.
 
@@ -392,7 +392,7 @@ Bind it to an agent and "write me a skill that…" produces a valid bundle on th
 
 ## Pre-flight check before installation
 
-A skill that's installed isn't necessarily a skill that runs — it might need an API key, a CLI tool, a MateClaw feature flag toggled on.
+A skill that's installed isn't necessarily a skill that runs — it might need an API key, a CLI tool, a HHAIOS feature flag toggled on.
 
 Used to be: install, run, fail, debug. Now:
 
@@ -584,7 +584,7 @@ The Skills page picks up the lifecycle:
 
 ## ACP bridge: plug in external coding agents
 
-ACP (Agent Client Protocol) is a protocol that lets external agent clients (Claude Code, Codex, other compatible clients) plug into MateClaw as skills.
+ACP (Agent Client Protocol) is a protocol that lets external agent clients (Claude Code, Codex, other compatible clients) plug into HHAIOS as skills.
 
 Once installed:
 

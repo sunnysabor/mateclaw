@@ -50,6 +50,10 @@ public class AgentService {
     private final MemoryLifecycleMediator lifecycleMediator;
     private final MemoryProperties memoryProperties;
     private final vip.mate.memory.identity.MemoryOwnerResolver memoryOwnerResolver;
+    private final vip.mate.acp.service.AcpAgentRuntimeService acpAgentRuntimeService;
+    private final vip.mate.agent.binding.repository.AgentSkillBindingMapper agentSkillBindingMapper;
+    private final vip.mate.agent.binding.repository.AgentToolBindingMapper agentToolBindingMapper;
+    private final vip.mate.agent.binding.repository.AgentWikiKbBindingMapper agentWikiKbBindingMapper;
     /** Read-only lookup of a conversation's pinned model. Mapper (not service)
      *  to keep this a leaf dependency with no risk of a bean cycle. */
     private final ConversationMapper conversationMapper;
@@ -113,8 +117,12 @@ public class AgentService {
         if (agent.getAgentType() == null) {
             agent.setAgentType("react");
         }
+        normalizeRuntime(agent);
         requireUniqueName(agent, null);
         agentMapper.insert(agent);
+        if (acpAgentRuntimeService.isAcpAgent(agent)) {
+            clearAcpCapabilityBindings(agent.getId());
+        }
         publishLifecycle(agent, "spawned");
         return agent;
     }
@@ -137,8 +145,13 @@ public class AgentService {
             }
             requireUniqueName(agent, agent.getId());
         }
+        normalizeRuntime(agent);
         agentMapper.updateById(agent);
         agentInstances.remove(agent.getId());
+        acpAgentRuntimeService.closeAgentSessions(agent.getId());
+        if (acpAgentRuntimeService.isAcpAgent(agent)) {
+            clearAcpCapabilityBindings(agent.getId());
+        }
         if (prior != null && prior.getEnabled() != null
                 && !prior.getEnabled().equals(agent.getEnabled())) {
             publishLifecycle(agent,
@@ -185,7 +198,30 @@ public class AgentService {
         AgentEntity prior = agentMapper.selectById(id);
         agentMapper.deleteById(id);
         agentInstances.remove(id);
+        acpAgentRuntimeService.closeAgentSessions(id);
         if (prior != null) publishLifecycle(prior, "terminated");
+    }
+
+    private void normalizeRuntime(AgentEntity agent) {
+        if (agent == null) return;
+        if ("acp".equalsIgnoreCase(agent.getAgentType())) {
+            acpAgentRuntimeService.validateAcpAgent(agent);
+            return;
+        }
+        if (agent.getAgentType() == null || agent.getAgentType().isBlank()) {
+            agent.setAgentType("react");
+        }
+        agent.setAcpEndpointName(null);
+    }
+
+    private void clearAcpCapabilityBindings(Long agentId) {
+        if (agentId == null) return;
+        agentSkillBindingMapper.delete(new LambdaQueryWrapper<vip.mate.agent.binding.model.AgentSkillBinding>()
+                .eq(vip.mate.agent.binding.model.AgentSkillBinding::getAgentId, agentId));
+        agentToolBindingMapper.delete(new LambdaQueryWrapper<vip.mate.agent.binding.model.AgentToolBinding>()
+                .eq(vip.mate.agent.binding.model.AgentToolBinding::getAgentId, agentId));
+        agentWikiKbBindingMapper.delete(new LambdaQueryWrapper<vip.mate.agent.binding.model.AgentWikiKbBinding>()
+                .eq(vip.mate.agent.binding.model.AgentWikiKbBinding::getAgentId, agentId));
     }
 
     /**
@@ -214,6 +250,12 @@ public class AgentService {
      */
     public void invalidateAgentCache(Long agentId) {
         agentInstances.remove(agentId);
+        acpAgentRuntimeService.closeAgentSessions(agentId);
+    }
+
+    public boolean isAcpAgent(Long agentId) {
+        if (agentId == null) return false;
+        return acpAgentRuntimeService.isAcpAgent(getAgent(agentId));
     }
 
     /**
@@ -242,9 +284,14 @@ public class AgentService {
      * down to {@code @Tool} methods via Spring AI {@link org.springframework.ai.chat.model.ToolContext}.
      */
     public String chat(Long agentId, String message, String conversationId, ChatOrigin origin) {
-        memoryRecallTracker.trackRecalls(agentId, message);
+        AgentEntity entity = getAgent(agentId);
+        if (acpAgentRuntimeService.isAcpAgent(entity)) {
+            return acpAgentRuntimeService.chat(entity, message, conversationId);
+        }
+        ChatOrigin captured = origin != null ? origin : ChatOrigin.EMPTY;
+        memoryRecallTracker.trackRecalls(agentId, message, memoryOwnerResolver.resolve(captured));
         BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
-        ChatOriginHolder.set(origin != null ? origin : ChatOrigin.EMPTY);
+        ChatOriginHolder.set(captured);
         try {
             return withLifecycleSync(agentId, message, conversationId,
                     (msg, convId) -> agent.chat(msg, convId));
@@ -270,6 +317,10 @@ public class AgentService {
     }
 
     public ChatResult chatWithUsage(Long agentId, String message, String conversationId, ChatOrigin origin) {
+        AgentEntity entity = getAgent(agentId);
+        if (acpAgentRuntimeService.isAcpAgent(entity)) {
+            return acpAgentRuntimeService.chatWithUsage(entity, message, conversationId);
+        }
         return collectChatResult(chatStructuredStream(agentId, message, conversationId, "", null, origin));
     }
 
@@ -278,11 +329,18 @@ public class AgentService {
     }
 
     public Flux<String> chatStream(Long agentId, String message, String conversationId, ChatOrigin origin) {
-        memoryRecallTracker.trackRecalls(agentId, message);
+        AgentEntity entity = getAgent(agentId);
+        if (acpAgentRuntimeService.isAcpAgent(entity)) {
+            return acpAgentRuntimeService.chatStructuredStream(entity, message, conversationId)
+                    .map(StreamDelta::content)
+                    .filter(java.util.Objects::nonNull)
+                    .filter(StringUtils::hasText);
+        }
+        ChatOrigin captured = origin != null ? origin : ChatOrigin.EMPTY;
+        memoryRecallTracker.trackRecalls(agentId, message, memoryOwnerResolver.resolve(captured));
         BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
         // Capture the origin into a request-scoped holder; cleared on Flux
         // termination so the next reactive subscriber doesn't inherit stale state.
-        ChatOrigin captured = origin != null ? origin : ChatOrigin.EMPTY;
         return Flux.defer(() -> {
             ChatOriginHolder.set(captured);
             return withLifecycleFlux(agentId, message, conversationId,
@@ -314,7 +372,12 @@ public class AgentService {
     public Flux<StreamDelta> chatStructuredStream(Long agentId, String message, String conversationId,
                                                    String requesterId, String thinkingLevel,
                                                    ChatOrigin origin) {
-        memoryRecallTracker.trackRecalls(agentId, message);
+        AgentEntity entity = getAgent(agentId);
+        if (acpAgentRuntimeService.isAcpAgent(entity)) {
+            return acpAgentRuntimeService.chatStructuredStream(entity, message, conversationId);
+        }
+        ChatOrigin captured = origin != null ? origin : ChatOrigin.EMPTY;
+        memoryRecallTracker.trackRecalls(agentId, message, memoryOwnerResolver.resolve(captured));
         BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
 
         // 设置请求级思考深度（通过 ThreadLocal 传递到 StateGraph 执行）
@@ -322,7 +385,6 @@ public class AgentService {
             ThinkingLevelHolder.set(thinkingLevel);
         } else {
             // 尝试从 Agent 默认配置读取
-            AgentEntity entity = getAgent(agentId);
             if (entity != null && entity.getDefaultThinkingLevel() != null) {
                 ThinkingLevelHolder.set(entity.getDefaultThinkingLevel());
             } else {
@@ -330,7 +392,6 @@ public class AgentService {
             }
         }
 
-        ChatOrigin captured = origin != null ? origin : ChatOrigin.EMPTY;
         if (agent instanceof StructuredStreamCapable capable) {
             return Flux.defer(() -> {
                         ChatOriginHolder.set(captured);
@@ -360,9 +421,14 @@ public class AgentService {
     }
 
     public String execute(Long agentId, String goal, String conversationId, ChatOrigin origin) {
-        memoryRecallTracker.trackRecalls(agentId, goal);
+        AgentEntity entity = getAgent(agentId);
+        if (acpAgentRuntimeService.isAcpAgent(entity)) {
+            return acpAgentRuntimeService.chat(entity, goal, conversationId);
+        }
+        ChatOrigin captured = origin != null ? origin : ChatOrigin.EMPTY;
+        memoryRecallTracker.trackRecalls(agentId, goal, memoryOwnerResolver.resolve(captured));
         BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
-        ChatOriginHolder.set(origin != null ? origin : ChatOrigin.EMPTY);
+        ChatOriginHolder.set(captured);
         try {
             return withLifecycleSync(agentId, goal, conversationId,
                     (msg, convId) -> agent.execute(msg, convId));
@@ -387,9 +453,10 @@ public class AgentService {
 
     public String chatWithReplay(Long agentId, String userMessage, String conversationId,
                                   String toolCallPayload, ChatOrigin origin) {
-        memoryRecallTracker.trackRecalls(agentId, userMessage);
+        ChatOrigin captured = origin != null ? origin : ChatOrigin.EMPTY;
+        memoryRecallTracker.trackRecalls(agentId, userMessage, memoryOwnerResolver.resolve(captured));
         BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
-        ChatOriginHolder.set(origin != null ? origin : ChatOrigin.EMPTY);
+        ChatOriginHolder.set(captured);
         try {
             return withLifecycleSync(agentId, userMessage, conversationId,
                     (msg, convId) -> agent.chatWithReplay(msg, convId, toolCallPayload));
@@ -451,9 +518,9 @@ public class AgentService {
     public Flux<StreamDelta> chatWithReplayStream(Long agentId, String userMessage, String conversationId,
                                                    String toolCallPayload, String requesterId,
                                                    ChatOrigin origin) {
-        memoryRecallTracker.trackRecalls(agentId, userMessage);
-        BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
         ChatOrigin captured = origin != null ? origin : ChatOrigin.EMPTY;
+        memoryRecallTracker.trackRecalls(agentId, userMessage, memoryOwnerResolver.resolve(captured));
+        BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
         return Flux.defer(() -> {
                     ChatOriginHolder.set(captured);
                     return withLifecycleFlux(agentId, userMessage, conversationId,

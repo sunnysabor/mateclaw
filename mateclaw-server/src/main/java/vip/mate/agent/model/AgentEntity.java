@@ -23,8 +23,16 @@ public class AgentEntity {
     /** Agent 描述 */
     private String description;
 
-    /** Agent 类型：react / plan_execute */
+    /** Agent 类型：react / plan_execute / acp */
     private String agentType;
+
+    /**
+     * For {@code agent_type='acp'}, the managed ACP endpoint slug this Agent
+     * runs against. First-class ACP Agents are limited to the built-in endpoint
+     * set in the service layer.
+     */
+    @TableField(value = "acp_endpoint_name", updateStrategy = FieldStrategy.ALWAYS)
+    private String acpEndpointName;
 
     /** 系统提示词 */
     @TableField(value = "system_prompt", updateStrategy = FieldStrategy.ALWAYS)

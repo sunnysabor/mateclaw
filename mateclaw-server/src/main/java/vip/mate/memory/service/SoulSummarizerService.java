@@ -68,7 +68,7 @@ public class SoulSummarizerService {
         log.info("[SOUL] Triggering SOUL.md update for agent={} (after {} writes)", agentId, interval);
 
         try {
-            updateSoul(agentId);
+            updateSoul(agentId, event.ownerKey());
         } catch (Exception e) {
             log.warn("[SOUL] Failed to update SOUL.md for agent={}: {}", agentId, e.getMessage());
         }
@@ -78,10 +78,14 @@ public class SoulSummarizerService {
      * Regenerate SOUL.md from current agent memory state.
      */
     void updateSoul(Long agentId) {
+        updateSoul(agentId, null);
+    }
+
+    void updateSoul(Long agentId, String ownerKey) {
         // Read current files
-        String memoryContent = readSafe(agentId, "MEMORY.md");
-        String profileContent = readSafe(agentId, "PROFILE.md");
-        String currentSoul = readSafe(agentId, "SOUL.md");
+        String memoryContent = readSafe(agentId, "MEMORY.md", ownerKey);
+        String profileContent = readSafe(agentId, "PROFILE.md", ownerKey);
+        String currentSoul = readSafe(agentId, "SOUL.md", ownerKey);
 
         String systemPrompt = PromptLoader.loadPrompt("memory/soul-summarize");
         String userPrompt = String.format("""
@@ -113,7 +117,11 @@ public class SoulSummarizerService {
         String newSoul = response.getResult().getOutput().getText();
 
         if (newSoul != null && !newSoul.isBlank() && newSoul.length() > 50) {
-            workspaceFileService.saveFile(agentId, "SOUL.md", newSoul.trim());
+            if (isPersonal(ownerKey)) {
+                workspaceFileService.saveMemoryFile(agentId, "SOUL.md", newSoul.trim(), ownerKey);
+            } else {
+                workspaceFileService.saveFile(agentId, "SOUL.md", newSoul.trim());
+            }
             log.info("[SOUL] Updated SOUL.md for agent={} ({} chars)", agentId, newSoul.length());
         } else {
             log.debug("[SOUL] LLM returned empty/short response, skipping SOUL update");
@@ -126,11 +134,22 @@ public class SoulSummarizerService {
     }
 
     private String readSafe(Long agentId, String filename) {
+        return readSafe(agentId, filename, null);
+    }
+
+    private String readSafe(Long agentId, String filename, String ownerKey) {
         try {
-            WorkspaceFileEntity file = workspaceFileService.getFile(agentId, filename);
+            WorkspaceFileEntity file = isPersonal(ownerKey)
+                    ? workspaceFileService.getVisibleFile(agentId, filename, ownerKey)
+                    : workspaceFileService.getFile(agentId, filename);
             return file != null && file.getContent() != null ? file.getContent() : "";
         } catch (Exception e) {
             return "";
         }
+    }
+
+    private boolean isPersonal(String ownerKey) {
+        return ownerKey != null && !ownerKey.isBlank()
+                && !vip.mate.memory.identity.MemoryOwnerResolver.SYSTEM_OWNER.equals(ownerKey);
     }
 }

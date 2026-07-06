@@ -2,9 +2,7 @@ package vip.mate.memory.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
-import vip.mate.memory.event.MemoryWriteEvent;
 import vip.mate.workspace.document.WorkspaceFileService;
 import vip.mate.workspace.document.model.WorkspaceFileEntity;
 
@@ -29,9 +27,10 @@ public class MemoryHilService {
     /** Matches a whole-line user-edited marker so repeated edits do not accumulate markers. */
     private static final Pattern USER_EDITED_MARKER =
             Pattern.compile("(?m)^[ \\t]*<!-- user-edited:.*-->[ \\t]*\\r?\\n?");
+    /** Matches any level-2 Markdown section heading. */
+    private static final Pattern SECTION_HEADER = Pattern.compile("(?m)^##\\s+.+\\s*$");
 
     private final WorkspaceFileService workspaceFileService;
-    private final ApplicationEventPublisher eventPublisher;
 
     /**
      * Edit a section identified by key (section heading) inside {@code filename}.
@@ -44,38 +43,45 @@ public class MemoryHilService {
      */
     public void editMemoryEntry(Long agentId, String filename, String key, String newContent) {
         WorkspaceFileEntity file = workspaceFileService.getFile(agentId, filename);
-        String fileContent = (file != null && file.getContent() != null) ? file.getContent() : "";
+        String updated = rewriteSection(file, key, newContent);
+        workspaceFileService.saveFile(agentId, filename, updated);
+        log.info("[HiL] User edited {} section '{}' for agent={}", filename, key, agentId);
+    }
 
+    /**
+     * Owner-scoped variant used by the Memory UI: when lifecycle-mediated
+     * personal memory is enabled, users must edit the same PERSONAL file bucket
+     * that the runtime injects for their turns. A null/system owner preserves
+     * the legacy shared-file behavior.
+     */
+    public void editMemoryEntry(Long agentId, String filename, String key, String newContent, String ownerKey) {
+        WorkspaceFileEntity file = workspaceFileService.getVisibleFile(agentId, filename, ownerKey);
+        String updated = rewriteSection(file, key, newContent);
+        workspaceFileService.saveVisibleFile(agentId, filename, updated, ownerKey);
+        log.info("[HiL] User edited {} section '{}' for agent={}", filename, key, agentId);
+    }
+
+    private String rewriteSection(WorkspaceFileEntity file, String key, String newContent) {
+        String fileContent = (file != null && file.getContent() != null) ? file.getContent() : "";
         // Strip any pre-existing user-edited markers from the incoming body so a
         // section edited multiple times does not pick up a stack of markers.
         String cleanContent = USER_EDITED_MARKER.matcher(newContent).replaceAll("").trim();
         String metadata = "<!-- user-edited: " + LocalDate.now() + " -->";
         String sectionHeader = "## " + key;
-        int headerIdx = fileContent.indexOf(sectionHeader);
+        SectionBounds section = findSection(fileContent, key);
 
         String updated;
-        if (headerIdx < 0) {
+        if (section == null) {
             // Section not found — append as a new section.
             String newSection = sectionHeader + "\n" + cleanContent + "\n" + metadata;
             updated = fileContent.isBlank() ? newSection : fileContent.trim() + "\n\n" + newSection;
         } else {
             // Replace the existing section body, keeping the heading in place.
-            int contentStart = fileContent.indexOf('\n', headerIdx) + 1;
-            int nextSection = fileContent.indexOf("\n## ", contentStart);
-            int sectionEnd = nextSection > 0 ? nextSection : fileContent.length();
             String replacement = cleanContent + "\n" + metadata + "\n";
-            updated = fileContent.substring(0, contentStart) + replacement
-                    + fileContent.substring(sectionEnd);
+            updated = fileContent.substring(0, section.contentStart()) + replacement
+                    + fileContent.substring(section.sectionEnd());
         }
-
-        workspaceFileService.saveFile(agentId, filename, updated);
-        // SOUL.md auto-evolution counts canonical memory writes. A manual SOUL.md
-        // edit must not bump that counter, or a later auto-regeneration would
-        // discard the user's edit; PROFILE.md likewise is not a write trigger.
-        if ("MEMORY.md".equals(filename)) {
-            eventPublisher.publishEvent(new MemoryWriteEvent(agentId, filename, "user-edit", cleanContent));
-        }
-        log.info("[HiL] User edited {} section '{}' for agent={}", filename, key, agentId);
+        return updated;
     }
 
     /**
@@ -85,6 +91,48 @@ public class MemoryHilService {
     public boolean sectionExists(Long agentId, String filename, String key) {
         WorkspaceFileEntity file = workspaceFileService.getFile(agentId, filename);
         if (file == null || file.getContent() == null) return false;
-        return file.getContent().contains("## " + key);
+        return findSection(file.getContent(), key) != null;
     }
+
+    /** Owner-scoped section lookup matching {@link #editMemoryEntry(Long, String, String, String, String)}. */
+    public boolean sectionExists(Long agentId, String filename, String key, String ownerKey) {
+        WorkspaceFileEntity file = workspaceFileService.getVisibleFile(agentId, filename, ownerKey);
+        if (file == null || file.getContent() == null) return false;
+        return findSection(file.getContent(), key) != null;
+    }
+
+    /**
+     * Locate an exact level-2 heading. The old substring search let key
+     * {@code "Fact"} match {@code "## Facts"} and could overwrite the wrong
+     * user-edited section. Matching whole heading lines keeps HiL edits scoped
+     * to the section the user actually opened.
+     */
+    private SectionBounds findSection(String content, String key) {
+        if (content == null || content.isBlank() || key == null || key.isBlank()) {
+            return null;
+        }
+        Pattern target = Pattern.compile("(?m)^##\\s+" + Pattern.quote(key.trim()) + "\\s*$");
+        java.util.regex.Matcher m = target.matcher(content);
+        if (!m.find()) {
+            return null;
+        }
+        int contentStart = m.end();
+        while (contentStart < content.length()) {
+            char ch = content.charAt(contentStart);
+            if (ch == '\n' || ch == '\r') {
+                contentStart++;
+            } else {
+                break;
+            }
+        }
+
+        java.util.regex.Matcher next = SECTION_HEADER.matcher(content);
+        int sectionEnd = content.length();
+        if (next.find(contentStart)) {
+            sectionEnd = next.start();
+        }
+        return new SectionBounds(contentStart, sectionEnd);
+    }
+
+    private record SectionBounds(int contentStart, int sectionEnd) {}
 }

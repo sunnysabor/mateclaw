@@ -125,6 +125,14 @@ export const ssoApi = {
 }
 
 // ==================== Agent ====================
+export const agentTeamApi = {
+  list: () => http.get('/agent-teams'),
+  get: (id: string | number) => http.get(`/agent-teams/${id}`),
+  create: (data: any) => http.post('/agent-teams', data),
+  update: (id: string | number, data: any) => http.put(`/agent-teams/${id}`, data),
+  delete: (id: string | number) => http.delete(`/agent-teams/${id}`),
+}
+
 export const agentApi = {
   /**
    * @param params.enabled when `true`, restricts the result to enabled agents
@@ -410,6 +418,7 @@ export const acpApi = {
   toggle: (id: number | string, enabled: boolean) =>
     http.put(`/acp/endpoints/${id}/toggle?enabled=${enabled}`),
   test: (id: number | string) => http.post(`/acp/endpoints/${id}/test`),
+  diagnostics: () => http.get('/acp/endpoints/agents/diagnostics'),
 }
 
 // ==================== Skill Templates (RFC-091) ====================
@@ -637,7 +646,7 @@ export const oauthApi = {
   revoke: () => http.delete('/oauth/openai/revoke'),
   callbackPaste: (callbackUrl: string) =>
     http.post('/oauth/openai/callback-paste', { callbackUrl }),
-  // Device Authorization Grant — used when MateClaw runs on a remote host so the
+  // Device Authorization Grant — used when HHAIOS runs on a remote host so the
   // browser cannot reach localhost:1455 for the PKCE callback.
   deviceStart: () => http.post('/oauth/openai/device/start'),
   devicePoll: (deviceAuthId: string) =>
@@ -1333,6 +1342,73 @@ export interface WorkflowDraftTemplate {
   matchHints: string[]
   draftJson: string
   triggerDraftsJson: string
+}
+
+// ==================== Dify Workflow ====================
+
+export interface DifyWorkflowConfigVO {
+  id?: string | number | null
+  name: string
+  description?: string | null
+  baseUrl: string
+  enabled: boolean
+  apiKeyConfigured: boolean
+  inputSchemaJson?: string | null
+  defaultInputsJson?: string | null
+  lastTestStatus?: string | null
+  lastTestError?: string | null
+  lastTestAt?: string | null
+  updateTime?: string | null
+}
+
+export interface SaveDifyWorkflowConfigRequest {
+  name: string
+  description?: string
+  apiKey?: string
+  enabled: boolean
+  inputSchemaJson?: string
+  defaultInputsJson?: string
+}
+
+export interface RunDifyWorkflowRequest {
+  inputs: Record<string, unknown>
+}
+
+export interface DifyWorkflowRunVO {
+  id: string | number
+  workspaceId: string | number
+  state: string
+  requestInputs?: Record<string, unknown> | null
+  responseOutputs?: Record<string, unknown> | null
+  responseRaw?: unknown
+  externalTaskId?: string | null
+  externalRunId?: string | null
+  externalWorkflowId?: string | null
+  errorCode?: string | null
+  errorMessage?: string | null
+  totalTokens?: number | null
+  totalSteps?: number | null
+  elapsedTimeSeconds?: number | string | null
+  triggeredBy?: string | null
+  createdBy?: string | number | null
+  createTime?: string | null
+  completedAt?: string | null
+}
+
+const DIFY_BLOCKING_TIMEOUT_MS = 110000
+
+export const difyWorkflowApi = {
+  getConfig: () => http.get<DifyWorkflowConfigVO>('/dify/workflow/config'),
+  saveConfig: (data: SaveDifyWorkflowConfigRequest) =>
+    http.put<DifyWorkflowConfigVO>('/dify/workflow/config', data),
+  test: (data: RunDifyWorkflowRequest) =>
+    http.post<DifyWorkflowRunVO>('/dify/workflow/test', data, { timeout: DIFY_BLOCKING_TIMEOUT_MS }),
+  run: (data: RunDifyWorkflowRequest) =>
+    http.post<DifyWorkflowRunVO>('/dify/workflow/run', data, { timeout: DIFY_BLOCKING_TIMEOUT_MS }),
+  runs: (limit = 50) =>
+    http.get<DifyWorkflowRunVO[]>('/dify/workflow/runs', { params: { limit } }),
+  getRun: (runId: string | number) =>
+    http.get<DifyWorkflowRunVO>(`/dify/runs/${runId}`),
 }
 
 // ==================== Trigger ====================

@@ -9,6 +9,8 @@ import org.springframework.transaction.annotation.Transactional;
 import vip.mate.trigger.model.TriggerEntity;
 import vip.mate.trigger.repository.TriggerMapper;
 import vip.mate.trigger.scheduler.TriggerScheduler;
+import vip.mate.dify.model.DifyWorkflowConfigEntity;
+import vip.mate.dify.repository.DifyWorkflowConfigMapper;
 import vip.mate.workflow.model.WorkflowEntity;
 import vip.mate.workflow.repository.WorkflowMapper;
 
@@ -38,14 +40,16 @@ public class TriggerService {
             "cron", "channel_message", "webhook", "agent_lifecycle",
             "content_match", "workflow_completion");
 
-    /** v0 only dispatches workflow targets; agent target requires a v1 dispatcher. */
-    private static final Set<String> SUPPORTED_TARGETS = Set.of("workflow");
+    /** Dispatch targets accepted by the current registry. */
+    private static final Set<String> SUPPORTED_TARGETS = Set.of("workflow", "dify_workflow");
 
     private final TriggerMapper triggerMapper;
     private final TriggerScheduler scheduler;
     /** Optional — only present in production. Tests can null it out via constructor. */
     @Autowired(required = false)
     private WorkflowMapper workflowMapper;
+    @Autowired(required = false)
+    private DifyWorkflowConfigMapper difyConfigMapper;
 
     public List<TriggerEntity> listByWorkspace(long workspaceId) {
         return triggerMapper.selectList(new LambdaQueryWrapper<TriggerEntity>()
@@ -104,6 +108,7 @@ public class TriggerService {
             throw new IllegalArgumentException("workspaceId required");
         }
         validatePatternAndTargetShape(trigger);
+        validateDifyTarget(trigger);
         ensureDefaults(trigger);
         trigger.setPatternVersion(1L);
         trigger.setFireCount(0L);
@@ -136,6 +141,8 @@ public class TriggerService {
         if (existing == null) {
             throw new IllegalArgumentException("trigger not found: " + updated.getId());
         }
+        validatePatternAndTargetShape(updated);
+        validateDifyTarget(updated);
         return updateInternal(existing, updated);
     }
 
@@ -164,9 +171,11 @@ public class TriggerService {
         } else {
             updated.setPatternVersion(existing.getPatternVersion());
         }
-        // Preserve fireCount / lastFiredAt / lastError — those are scheduler / ingest owned.
+        // Preserve runtime-owned fields so editing metadata does not wipe dispatch history.
         updated.setFireCount(existing.getFireCount());
         updated.setLastFiredAt(existing.getLastFiredAt());
+        updated.setLastDispatchedAt(existing.getLastDispatchedAt());
+        updated.setLastError(existing.getLastError());
 
         triggerMapper.updateById(updated);
 
@@ -211,7 +220,10 @@ public class TriggerService {
         String tt = t.getTargetType();
         if (tt == null || !SUPPORTED_TARGETS.contains(tt)) {
             throw new IllegalArgumentException("unsupported targetType: " + tt
-                    + " (v0 only supports 'workflow')");
+                    + " (expected one of " + SUPPORTED_TARGETS + ")");
+        }
+        if (t.getTargetId() == null) {
+            throw new IllegalArgumentException("targetId required");
         }
     }
 
@@ -232,6 +244,22 @@ public class TriggerService {
                 throw new IllegalArgumentException(
                         "target workflow not found in workspace: " + t.getTargetId());
             }
+        }
+        if ("dify_workflow".equals(t.getTargetType()) && t.getTargetId() != null
+                && difyConfigMapper != null) {
+            validateDifyTarget(t);
+        }
+    }
+
+    private void validateDifyTarget(TriggerEntity t) {
+        if (!"dify_workflow".equals(t.getTargetType()) || t.getTargetId() == null
+                || difyConfigMapper == null) {
+            return;
+        }
+        DifyWorkflowConfigEntity config = difyConfigMapper.selectById(t.getTargetId());
+        if (config == null || !"global".equals(config.getConfigKey())) {
+            throw new IllegalArgumentException(
+                    "target Dify workflow config not found: " + t.getTargetId());
         }
     }
 

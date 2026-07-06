@@ -15,5 +15,20 @@ public record ExtractedFact(
         String objectValue,
         double confidence,
         double trust,
-        String extractedBy
-) {}
+        String extractedBy,
+        String ownerKey,
+        String scope
+) {
+    public ExtractedFact(String sourceRef,
+                         String category,
+                         String subject,
+                         String predicate,
+                         String objectValue,
+                         double confidence,
+                         double trust,
+                         String extractedBy) {
+        this(sourceRef, category, subject, predicate, objectValue,
+                confidence, trust, extractedBy, null,
+                vip.mate.memory.identity.MemoryScope.TEAM);
+    }
+}

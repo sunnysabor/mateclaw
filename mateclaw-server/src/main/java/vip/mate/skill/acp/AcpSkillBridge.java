@@ -200,6 +200,10 @@ public class AcpSkillBridge {
         return safeListEnabled().stream().map(this::endpointToEntity).toList();
     }
 
+    public List<SkillEntity> listAcpDerivedSkillEntities(Long workspaceId) {
+        return safeListEnabled(workspaceId).stream().map(this::endpointToEntity).toList();
+    }
+
     /**
      * Snapshot every enabled endpoint as a virtual {@link ResolvedSkill}
      * with synthesized manifest. Status reflects the last connection
@@ -207,6 +211,10 @@ public class AcpSkillBridge {
      */
     public List<ResolvedSkill> listAcpDerivedResolvedSkills() {
         return safeListEnabled().stream().map(this::endpointToResolved).toList();
+    }
+
+    public List<ResolvedSkill> listAcpDerivedResolvedSkills(Long workspaceId) {
+        return safeListEnabled(workspaceId).stream().map(this::endpointToResolved).toList();
     }
 
     /**
@@ -375,6 +383,7 @@ public class AcpSkillBridge {
                 .enabled(Boolean.TRUE.equals(ep.getEnabled()))
                 .icon(iconFor(ep))
                 .builtin(Boolean.TRUE.equals(ep.getBuiltin()))
+                .workspaceId(ep.getWorkspaceId())
                 .securityBlocked(false)
                 .securitySummary("ACP-derived skill (external CLI; not subject to SKILL.md scanning)")
                 .dependencyReady(ready)
@@ -516,6 +525,16 @@ public class AcpSkillBridge {
             return endpointService.listEnabled();
         } catch (Exception e) {
             log.warn("AcpSkillBridge could not list enabled endpoints: {}", e.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
+    private List<AcpEndpointEntity> safeListEnabled(Long workspaceId) {
+        try {
+            return endpointService.listEnabled(workspaceId);
+        } catch (Exception e) {
+            log.warn("AcpSkillBridge could not list enabled endpoints for workspace {}: {}",
+                    workspaceId, e.getMessage());
             return Collections.emptyList();
         }
     }

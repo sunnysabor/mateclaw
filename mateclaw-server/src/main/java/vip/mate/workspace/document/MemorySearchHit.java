@@ -13,5 +13,10 @@ package vip.mate.workspace.document;
  *                   weighted by per-file importance (see
  *                   {@code WorkspaceFileService#fileWeight}).
  */
-public record MemorySearchHit(String filename, int lineNumber, String snippet, double score) {
+public record MemorySearchHit(String filename, int lineNumber, String snippet,
+                              double score, String ownerKey, String scope) {
+    public MemorySearchHit(String filename, int lineNumber, String snippet, double score) {
+        this(filename, lineNumber, snippet, score, null,
+                vip.mate.memory.identity.MemoryScope.TEAM);
+    }
 }

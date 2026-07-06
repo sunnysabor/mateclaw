@@ -1,9 +1,9 @@
 {
-  "name": "MateClaw",
-  "tagline": "AI Personal Assistant",
-  "team": "MateClaw Team",
-  "copyright": "Copyright © 2026 MateClaw Team",
-  "appId": "vip.mate.mateclaw",
-  "githubUrl": "https://github.com/matevip/mateclaw",
+  "name": "HHAIOS",
+  "tagline": "AI Operating System",
+  "team": "HHAIOS Team",
+  "copyright": "Copyright © 2026 HHAIOS Team",
+  "appId": "com.hhaios.desktop",
+  "githubUrl": "",
   "logoFile": "mateclaw_logo_s.png"
 }

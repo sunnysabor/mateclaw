@@ -2,7 +2,10 @@ package vip.mate.memory.fact;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import vip.mate.memory.MemoryProperties;
+import vip.mate.memory.fact.extraction.CompositeEntityExtractor;
 import vip.mate.memory.fact.extraction.ExtractedFact;
+import vip.mate.memory.fact.extraction.LlmEntityExtractor;
 import vip.mate.memory.fact.extraction.PatternEntityExtractor;
 
 import java.util.List;
@@ -91,6 +94,50 @@ class FactProjectionInvariantTest {
             assertTrue(f.confidence() >= 0 && f.confidence() <= 1,
                     "Confidence must be in [0,1]: " + f.confidence());
         }
+    }
+
+    @Test
+    @DisplayName("LLM extractor parses fenced JSON and clamps/filters facts")
+    void llmExtractor_parseFacts() {
+        LlmEntityExtractor llm = new LlmEntityExtractor(
+                new MemoryProperties(), null, null, new com.fasterxml.jackson.databind.ObjectMapper());
+
+        List<ExtractedFact> facts = llm.parseFacts("MEMORY.md", """
+                ```json
+                {"facts":[
+                  {"key":"project_stack","category":"project","subject":"项目","predicate":"uses","object":"Spring Boot + Vue","confidence":0.82},
+                  {"key":"low_conf","subject":"x","predicate":"is","object":"y","confidence":0.2},
+                  {"key":"missing","subject":"","predicate":"is","object":"ignored","confidence":0.9}
+                ]}
+                ```
+                """);
+
+        assertEquals(1, facts.size());
+        ExtractedFact f = facts.get(0);
+        assertEquals("MEMORY.md#llm_project_stack", f.sourceRef());
+        assertEquals("llm", f.extractedBy());
+        assertEquals("project", f.category());
+        assertEquals("项目", f.subject());
+        assertEquals("uses", f.predicate());
+        assertEquals("Spring Boot + Vue", f.objectValue());
+    }
+
+    @Test
+    @DisplayName("Composite extractor dedupes LLM facts already covered by pattern triples")
+    void compositeExtractor_dedupesByTriple() {
+        LlmEntityExtractor llm = org.mockito.Mockito.mock(LlmEntityExtractor.class);
+        org.mockito.Mockito.when(llm.extract(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(List.of(new ExtractedFact(
+                        "structured/user.md#llm_preferred_language",
+                        "user_pref", "preferred_language", "is", "Chinese",
+                        0.9, 0.5, "llm")));
+        CompositeEntityExtractor composite = new CompositeEntityExtractor(new PatternEntityExtractor(), llm);
+
+        List<ExtractedFact> facts = composite.extract(1L, "structured/user.md",
+                "- **preferred_language**: Chinese\n");
+
+        assertEquals(1, facts.size(), "same semantic triple should not show twice");
+        assertEquals("pattern", facts.get(0).extractedBy(), "deterministic pattern fact wins");
     }
 
     @Test

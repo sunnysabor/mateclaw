@@ -1,19 +1,19 @@
 ---
-title: ACP Integration — Plug External Coding Agents Into MateClaw
-description: MateClaw acts as an ACP host. Delegate prompts to Claude Code, Codex, OpenCode, Qwen Code or any Agent Client Protocol agent over stdio. Built-in endpoints, visual env editor, auto-bridged skill cards, trust model, error translation.
+title: ACP Integration — Plug External Coding Agents Into HHAIOS
+description: HHAIOS acts as an ACP host. Delegate prompts to Hermes, Codex, OpenClaw or any Agent Client Protocol agent over stdio. Built-in endpoints, visual env editor, auto-bridged skill cards, trust model, error translation.
 head:
   - - meta
     - name: keywords
-      content: ACP,Agent Client Protocol,Claude Code,Codex,OpenCode,Qwen Code,external agent,stdio JSON-RPC,coding agent integration
+      content: ACP,Agent Client Protocol,Hermes,Codex,OpenClaw,external agent,stdio JSON-RPC,coding agent integration
 ---
 
 # ACP — Agent Client Protocol
 
-**ACP is how MateClaw hands a prompt to an agent someone else built.**
+**ACP is how HHAIOS hands a prompt to an agent someone else built.**
 
-Agent Client Protocol is an open spec for agent clients to talk to agent servers over JSON-RPC. MateClaw acts as the **host**: it spawns an external CLI (Claude Code, Codex, OpenCode, Qwen Code, …), runs the `initialize` → `session/new` → `session/prompt` handshake on stdio, streams the response back into the conversation, and closes the process.
+Agent Client Protocol is an open spec for agent clients to talk to agent servers over JSON-RPC. HHAIOS acts as the **host**: it spawns an external CLI (Hermes, Codex, OpenClaw, …), runs the `initialize` → `session/new` → `session/prompt` handshake on stdio, and streams the response back into the conversation.
 
-If MCP is "plug in a tool", ACP is **"plug in a whole agent"**. From inside a MateClaw turn, calling Claude Code looks the same as calling any built-in tool — your agent just asks for `acp_claude-code_prompt` and reads the answer.
+If MCP is "plug in a tool", ACP is **"plug in a whole agent"**. HHAIOS now supports two ACP usage modes: create Hermes / Codex / OpenClaw as first-class employees and chat with them directly, or bridge enabled endpoints into `acp_<slug>_prompt` virtual skills so existing HHAIOS agents can delegate work to an external agent.
 
 ---
 
@@ -22,28 +22,27 @@ If MCP is "plug in a tool", ACP is **"plug in a whole agent"**. From inside a Ma
 | | **MCP** | **ACP** |
 |---|---|---|
 | What you connect | A tool server | An agent |
-| Granularity | Per-tool (`tools/list`) | Per-prompt (one shot) |
-| Transport in MateClaw | stdio / streamable_http / sse | stdio |
-| Session model | Long-lived, multi-call | Stateless: spawn → prompt → close |
-| Typical use | Filesystem, search, custom data API | Delegate a coding task to Claude Code / Codex |
-| Surface in MateClaw | Tool catalog | Skill catalog (auto-bridged) + tool wrapper |
+| Granularity | Per-tool (`tools/list`) | Per-agent session or per-prompt delegation |
+| Transport in HHAIOS | stdio / streamable_http / sse | stdio |
+| Session model | Long-lived, multi-call | First-class employee: conversation-scoped; virtual skill: one shot |
+| Typical use | Filesystem, search, custom data API | Delegate a coding task to Hermes / Codex / OpenClaw |
+| Surface in HHAIOS | Tool catalog | Employee runtime + skill catalog (auto-bridged) + tool wrapper |
 
-You can mix both in the same agent.
+Built-in HHAIOS agents can mix MCP with ACP virtual skills. First-class ACP employees are external runtimes in v1 and do not bind HHAIOS skills, tools, or knowledge bases.
 
 ---
 
 ## Built-in endpoints
 
-The Flyway migration that ships with MateClaw seeds four endpoints, all **disabled by default** — turn them on after you install the matching CLI.
+The Flyway migration that ships with HHAIOS seeds three first-class endpoints, all **disabled by default** — turn them on after you install the matching CLI.
 
 | Slug | Display name | Command | Notes |
 |---|---|---|---|
-| `claude-code` | Claude Code | `npx -y @zed-industries/claude-agent-acp` | Anthropic's Claude Code; reads `ANTHROPIC_API_KEY` |
-| `codex` | OpenAI Codex CLI | `npx -y @zed-industries/codex-acp` | OpenAI's coding agent; reads `OPENAI_API_KEY` |
-| `opencode` | OpenCode | `opencode acp` | Multi-model agent; binary must be on `PATH` |
-| `qwen-code` | Qwen Code | `qwen --acp` | Alibaba's coding agent; reads `DASHSCOPE_API_KEY` |
+| `hermes` | Hermes Agent | `hermes acp --accept-hooks` | Hermes native ACP server |
+| `codex` | OpenAI Codex CLI | `npx -y @agentclientprotocol/codex-acp` | Codex through the ACP adapter |
+| `openclaw` | OpenClaw | `openclaw acp` | OpenClaw Gateway-backed ACP bridge |
 
-Built-in rows are write-protected — you can edit `args_json` / `env_json` / `description` / `trusted` / `enabled`, but you can't change the slug, replace the command, or delete the row. To run an unrelated agent, **add a custom endpoint** instead.
+Managed built-in rows are protected — you can't change the slug or delete the row. Hermes / Codex / OpenClaw do allow `command` to be changed to an absolute path, and you can adjust `args_json` / `env_json` / `description` / `trusted` / `enabled` as needed. First-class ACP employees are limited to these three managed endpoints in v1. To call an unrelated agent as a virtual skill, add a custom endpoint.
 
 ---
 
@@ -53,14 +52,14 @@ Built-in rows are write-protected — you can edit `args_json` / `env_json` / `d
 
 ### Add or edit an endpoint
 
-- **Slug** — lowercase identifier (e.g. `claude-code`). Immutable after create. Skills reference endpoints by this slug.
+- **Slug** — lowercase identifier (e.g. `hermes`). Immutable after create. Skills reference endpoints by this slug.
 - **Display name** — human label shown on the Skills page.
 - **Description** — operator notes.
-- **Command** — the executable (`npx`, `opencode`, …). Locked on built-in rows.
-- **Args (JSON array)** — CLI arguments, e.g. `["-y","@zed-industries/claude-agent-acp"]`.
+- **Command** — the executable (`hermes`, `npx`, `openclaw`, …). Managed built-ins can be changed to an absolute path when the desktop service process has a smaller `PATH`.
+- **Args (JSON array)** — CLI arguments, e.g. `["acp","--accept-hooks"]` or `["-y","@agentclientprotocol/codex-acp"]`.
 - **Env (JSON object)** — extra env vars merged into the child process. The visual editor masks values whose key matches `*API_KEY*`, `*TOKEN*`, `*SECRET*`, or `*PASS*`.
 - **Tool parse mode** — `call_title` / `call_detail` / `update_detail`. Controls how upstream tool-call events render into the streamed transcript.
-- **Trusted** — when ON, MateClaw auto-allows any `session/request_permission` the upstream agent asks for. When OFF, every permission request is denied (use this for non-interactive contexts).
+- **Trusted** — when ON, HHAIOS auto-allows any `session/request_permission` the upstream agent asks for. When OFF, every permission request is denied (use this for non-interactive contexts).
 - **Enabled** — gate flag. Disabled endpoints don't bridge into the skill catalog.
 
 ### Test the connection
@@ -85,7 +84,7 @@ Base path: `/api/v1/acp/endpoints`. JWT required.
 | `GET`    | `/`              | List all endpoints |
 | `GET`    | `/{id}`          | Fetch one |
 | `POST`   | `/`              | Create custom endpoint |
-| `PUT`    | `/{id}`          | Patch fields (built-in `command` is locked) |
+| `PUT`    | `/{id}`          | Patch fields (managed built-ins may update `command` paths) |
 | `DELETE` | `/{id}`          | Delete custom endpoint (built-ins refuse) |
 | `PUT`    | `/{id}/toggle?enabled=true\|false` | Enable / disable |
 | `POST`   | `/{id}/test`     | Run connection test |
@@ -112,7 +111,7 @@ curl -X POST http://localhost:18088/api/v1/acp/endpoints \
 ### Test an endpoint
 
 ```bash
-curl -X POST http://localhost:18088/api/v1/acp/endpoints/9100002/test \
+curl -X POST http://localhost:18088/api/v1/acp/endpoints/9100005/test \
   -H "Authorization: Bearer <token>"
 ```
 
@@ -120,9 +119,9 @@ Response shape:
 
 ```json
 {
-  "name": "claude-code",
-  "command": "npx",
-  "args": ["-y", "@zed-industries/claude-agent-acp"],
+  "name": "hermes",
+  "command": "hermes",
+  "args": ["acp", "--accept-hooks"],
   "agentCapabilities": { "loadSession": false, "promptCapabilities": { "image": true } },
   "status": "OK",
   "elapsedMs": 1842
@@ -135,19 +134,41 @@ On failure `status` is `ERROR` and `error` carries the translated hint.
 
 ## How endpoints reach your agents
 
-There are two paths:
+There are three paths:
 
-### 1. Auto-bridged virtual skill (zero config)
+### 1. First-class ACP employee (direct chat)
 
-For every enabled endpoint, MateClaw registers a virtual skill card and a wrapper tool named `acp_<slug>_prompt`. The tool takes a single `prompt` string and returns the upstream agent's accumulated text reply. Any agent can call it the same way it calls a built-in tool — no skill manifest required.
+Use this when the employee itself should be Hermes, Codex, or OpenClaw.
+
+Operator flow:
+
+1. Open `Settings → ACP Endpoints`, enable the endpoint, and make sure **Test** passes.
+2. Open `Employees → New Employee`, or edit an existing employee.
+3. Choose `External ACP Agent` in the type dropdown.
+4. Choose `Hermes`, `Codex`, or `OpenClaw` in the external-agent dropdown.
+5. Save, then select that employee on the chat page and send messages normally.
+
+Runtime behavior:
+
+- HHAIOS keeps one ACP process and session per `agentId + conversationId`.
+- Consecutive turns in the same conversation can use the external agent's native context.
+- Idle sessions are closed after 30 minutes; the next turn opens a fresh session automatically.
+- When rebuilding a session, HHAIOS injects recovery context from the last 20 persisted messages and emits a warning in the chat stream.
+- The persisted HHAIOS conversation remains intact; the external process's in-memory context cannot be restored perfectly.
+- V1 does not allow first-class ACP employees to bind HHAIOS skills, tools, or knowledge bases. Saves force these capabilities off, and binding APIs reject writes.
+- ACP employees do not use HHAIOS model configuration. The chat page hides the model selector and the backend bypasses the local agent graph.
+
+### 2. Auto-bridged virtual skill (zero config)
+
+For every enabled endpoint, HHAIOS registers a virtual skill card and a wrapper tool named `acp_<slug>_prompt`. The tool takes a single `prompt` string and returns the upstream agent's accumulated text reply. Any agent can call it the same way it calls a built-in tool — no skill manifest required.
 
 ```
 Settings → ACP Endpoints (toggle on)
    ↓
 AcpEndpointChangedEvent
    ↓
-Skill catalog gains card "Claude Code"
-Tool registry gains "acp_claude-code_prompt"
+Skill catalog gains card "Hermes Agent"
+Tool registry gains "acp_hermes_prompt"
    ↓
 Agent calls the tool → AcpDelegationService.prompt()
    ↓
@@ -158,7 +179,9 @@ accumulate agent-message-chunk notifications
 return text to the agent's turn
 ```
 
-### 2. Hand-authored skills (full control)
+Virtual skills are one-shot delegations: every tool call spawns a new process, creates a new session, sends the prompt, and closes the process. They are useful when a HHAIOS agent wants to hand a subtask to an external coding agent, not when the external agent should be the whole employee.
+
+### 3. Hand-authored skills (full control)
 
 A skill manifest can declare `type: acp` and pin to an endpoint. The skill gets its own wrapper tool (`acp_<endpoint>_<skill>_prompt`), can inject a `systemPrefix` ahead of every prompt, and can override `cwd` per session.
 
@@ -166,13 +189,13 @@ A skill manifest can declare `type: acp` and pin to an endpoint. The skill gets 
 # SKILL.md frontmatter
 type: acp
 acp:
-  endpoint: claude-code
+  endpoint: hermes
   systemPrefix: |
-    You are working inside the MateClaw repo. Always run `mvn test` before reporting done.
+    You are working inside the HHAIOS repo. Always run `mvn test` before reporting done.
   cwd: /workspaces/mateclaw
 ```
 
-This is how the `claude-code-helper` and `codex-helper` skill templates ship.
+This is how templates such as `codex-helper` are wired.
 
 ---
 
@@ -180,7 +203,7 @@ This is how the `claude-code-helper` and `codex-helper` skill templates ship.
 
 ### Trust flag
 
-ACP servers can pause and ask the host for permission (`session/request_permission`) before doing something sensitive — writing files, running shell commands, etc. MateClaw does **not** prompt the user mid-stream; instead, the per-endpoint `trusted` flag decides:
+ACP servers can pause and ask the host for permission (`session/request_permission`) before doing something sensitive — writing files, running shell commands, etc. HHAIOS does **not** prompt the user mid-stream; instead, the per-endpoint `trusted` flag decides:
 
 - `trusted: true` — auto-allow the first option the agent offered. Best for installed CLIs you control.
 - `trusted: false` — cancel every permission request. Use for sandboxed or untrusted endpoints; the upstream agent will gracefully back off.
@@ -198,7 +221,9 @@ Hints surface in the test panel and in the streamed error message your agent rec
 
 - `initialize` handshake: 15s
 - `session/new`: 10s
-- Whole `session/prompt` round-trip: 5 min
+- First-class ACP employee `session/prompt`: 10 min
+- First-class ACP employee idle session: reclaimed after 30 min
+- Virtual skill `session/prompt`: 5 min
 - Stdio buffer cap: 50 MiB per call (configurable on the row via `stdio_buffer_limit_bytes`)
 
 ---
@@ -207,7 +232,7 @@ Hints surface in the test panel and in the streamed error message your agent rec
 
 | Column | Type | Default | Purpose |
 |---|---|---|---|
-| `id` | BIGINT | — | Primary key. Built-ins use `9100001`–`9100004` |
+| `id` | BIGINT | — | Primary key. Managed built-ins use `9100001`, `9100005`, and `9100006` |
 | `name` | VARCHAR(64) | — | Unique slug. Skills reference this |
 | `display_name` | VARCHAR(128) | NULL | Label |
 | `description` | TEXT | NULL | Operator notes |
@@ -228,13 +253,24 @@ Hints surface in the test panel and in the streamed error message your agent rec
 
 Schema lives at `db/migration/{h2,mysql}/V68__add_acp_endpoints.sql`.
 
+## Database — `mate_agent.acp_endpoint_name`
+
+First-class ACP employees use `mate_agent.agent_type='acp'` and store their endpoint in `mate_agent.acp_endpoint_name`. The column is added by `db/migration/{h2,mysql,kingbase}/V167__agent_acp_runtime.sql`.
+
+When saving an ACP employee, the backend normalizes the row:
+
+- `agent_type` is fixed to `acp`.
+- `acp_endpoint_name` must be one of `hermes`, `codex`, or `openclaw`.
+- `skills_disabled=true`, `tools_disabled=true`, and `wiki_disabled=true`.
+- Non-ACP employees clear `acp_endpoint_name`.
+
 ---
 
 ## Troubleshooting
 
 ### "Command not found"
 
-The `command` must be on the `PATH` of the user running MateClaw. Verify with `which npx` (or `which opencode`, `which qwen`). On Docker, install the CLI in the image. As a last resort, set `command` to the full absolute path.
+The `command` must be on the `PATH` of the user running HHAIOS. Verify with `which hermes`, `which npx`, or `which openclaw`. On Docker, install the CLI in the image. Desktop services often have a smaller `PATH` than your shell; in that case, set `command` to the full absolute path.
 
 ### "Request not allowed" / 403 from Claude Code
 
@@ -242,7 +278,7 @@ You probably have an OAuth token cached in `~/.claude/` that's overriding the `A
 
 ### Hangs on `session/new`
 
-Usually means the upstream CLI is downloading dependencies on first run (`npx -y` does this). Either pre-warm by running the CLI once outside MateClaw, or just retry — subsequent calls are fast.
+Usually means the upstream CLI is downloading dependencies on first run (`npx -y` does this). Either pre-warm by running the CLI once outside HHAIOS, or just retry — subsequent calls are fast.
 
 ### "Subprocess output exceeded buffer"
 

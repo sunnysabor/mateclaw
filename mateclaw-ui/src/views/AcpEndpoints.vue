@@ -14,6 +14,61 @@
         </div>
       </div>
 
+      <section class="agent-grid" :aria-label="t('acp.agents.title')">
+        <article v-for="agent in diagnostics" :key="agent.name" class="agent-card">
+          <div class="agent-card-head">
+            <div>
+              <div class="agent-name">{{ agent.displayName }}</div>
+              <div class="agent-mode">{{ integrationModeLabel(agent.integrationMode) }}</div>
+            </div>
+            <span class="agent-status" :class="agentOverallClass(agent)">
+              {{ agentOverallLabel(agent) }}
+            </span>
+          </div>
+          <div class="agent-checks">
+            <span class="check-pill" :class="{ ok: agent.installed }">
+              {{ t('acp.agents.installed') }}
+            </span>
+            <span class="check-pill" :class="{ ok: agent.acpAvailable }">
+              {{ t('acp.agents.acpReady') }}
+            </span>
+            <span class="check-pill" :class="{ ok: agent.endpointConfigured }">
+              {{ t('acp.agents.endpoint') }}
+            </span>
+          </div>
+          <div class="agent-meta">
+            <span v-if="agent.version" class="agent-version">{{ agent.version }}</span>
+            <code v-if="agent.detectedCommand">{{ agent.detectedCommand }}</code>
+            <code v-else>{{ agent.recommendedCommand }} {{ agent.recommendedArgs.join(' ') }}</code>
+          </div>
+          <p class="agent-message">{{ agent.message || agent.acpMessage }}</p>
+          <div v-if="agentActionLabels(agent).length" class="agent-actions">
+            <span v-for="action in agentActionLabels(agent)" :key="action">{{ action }}</span>
+          </div>
+          <div class="agent-card-actions">
+            <button
+              v-if="canApplyDetectedCommand(agent)"
+              class="btn-link"
+              :disabled="savingDiagnostic === agent.name"
+              @click="applyDetectedCommand(agent)"
+            >
+              {{ savingDiagnostic === agent.name ? t('common.saving') : t('acp.agents.useDetectedCommand') }}
+            </button>
+            <button
+              v-if="agent.endpointId"
+              class="btn-link"
+              :disabled="testingId === agent.endpointId"
+              @click="testEndpointById(agent.endpointId)"
+            >
+              {{ testingId === agent.endpointId ? t('acp.testing') : t('acp.test') }}
+            </button>
+          </div>
+        </article>
+        <div v-if="diagnostics.length === 0" class="agent-loading">
+          {{ diagnosticsLoading ? t('acp.agents.loading') : t('acp.agents.empty') }}
+        </div>
+      </section>
+
       <!-- Table -->
       <div class="table-wrap">
         <table class="data-table">
@@ -128,7 +183,7 @@
             </div>
             <div class="form-group full-width">
               <label class="form-label">{{ t('acp.fields.args') }}</label>
-              <input v-model="form.argsJson" class="form-input mono" placeholder='["-y","@zed-industries/codex-acp"]' />
+              <input v-model="form.argsJson" class="form-input mono" placeholder='["-y","@agentclientprotocol/codex-acp"]' />
             </div>
             <div class="form-group full-width">
               <div class="env-header">
@@ -204,7 +259,7 @@
                 placeholder='{"OPENAI_API_KEY":"..."}'
               ></textarea>
 
-              <!-- Endpoint-specific hint (e.g. claude-code OAuth caveat). -->
+              <!-- Endpoint-specific hint for adapter/auth caveats. -->
               <div v-if="envHint" class="env-hint">💡 {{ envHint }}</div>
             </div>
             <div class="form-group full-width">
@@ -249,11 +304,38 @@ interface AcpEndpoint {
   stdioBufferLimitBytes?: number
 }
 
+interface AgentDiagnostic {
+  name: string
+  displayName: string
+  endpointName: string
+  integrationMode: 'native_acp' | 'adapter_acp' | string
+  recommendedCommand: string
+  recommendedArgs: string[]
+  installed: boolean
+  version?: string
+  detectedCommand?: string
+  acpAvailable: boolean
+  acpStatus?: string
+  acpMessage?: string
+  endpointConfigured: boolean
+  endpointId?: number
+  endpointEnabled: boolean
+  endpointCommand?: string
+  endpointArgs?: string[]
+  endpointLastStatus?: string
+  endpointLastError?: string
+  message?: string
+  actions?: string[]
+}
+
 const { t } = useI18n()
 const endpoints = ref<AcpEndpoint[]>([])
+const diagnostics = ref<AgentDiagnostic[]>([])
+const diagnosticsLoading = ref(false)
 const showModal = ref(false)
 const editing = ref<AcpEndpoint | null>(null)
 const testingId = ref<number | null>(null)
+const savingDiagnostic = ref<string | null>(null)
 const lastTestResult = ref<any>(null)
 
 const defaultForm = (): any => ({
@@ -420,7 +502,10 @@ watch(envJsonMode, (isJson, wasJson) => {
   }
 })
 
-onMounted(loadEndpoints)
+onMounted(async () => {
+  await loadEndpoints()
+  await loadDiagnostics()
+})
 
 async function loadEndpoints() {
   try {
@@ -429,6 +514,19 @@ async function loadEndpoints() {
   } catch (e: any) {
     endpoints.value = []
     mcToast.error(typeof e === 'string' ? e : e?.message || t('acp.loadFailed'))
+  }
+}
+
+async function loadDiagnostics() {
+  diagnosticsLoading.value = true
+  try {
+    const res: any = await acpApi.diagnostics()
+    diagnostics.value = res?.data || []
+  } catch (e: any) {
+    diagnostics.value = []
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('acp.agents.loadFailed'))
+  } finally {
+    diagnosticsLoading.value = false
   }
 }
 
@@ -497,6 +595,7 @@ async function saveEndpoint() {
     }
     closeModal()
     await loadEndpoints()
+    await loadDiagnostics()
   } catch (e: any) {
     mcToast.error(typeof e === 'string' ? e : e?.message || t('acp.saveFailed'))
   }
@@ -512,6 +611,7 @@ async function removeEndpoint(ep: AcpEndpoint) {
   try {
     await acpApi.delete(ep.id)
     await loadEndpoints()
+    await loadDiagnostics()
   } catch (e: any) {
     mcToast.error(typeof e === 'string' ? e : e?.message || t('acp.deleteFailed'))
   }
@@ -521,6 +621,7 @@ async function toggle(ep: AcpEndpoint) {
   try {
     await acpApi.toggle(ep.id, !ep.enabled)
     await loadEndpoints()
+    await loadDiagnostics()
   } catch (e: any) {
     mcToast.error(typeof e === 'string' ? e : e?.message || t('acp.toggleFailed'))
   }
@@ -533,6 +634,7 @@ async function testEndpoint(ep: AcpEndpoint) {
     const res: any = await acpApi.test(ep.id)
     lastTestResult.value = res?.data || null
     await loadEndpoints()
+    await loadDiagnostics()
   } catch (e: any) {
     lastTestResult.value = {
       name: ep.name,
@@ -541,6 +643,64 @@ async function testEndpoint(ep: AcpEndpoint) {
     }
   } finally {
     testingId.value = null
+  }
+}
+
+async function testEndpointById(id: number) {
+  const ep = endpoints.value.find((item) => item.id === id)
+  if (ep) await testEndpoint(ep)
+}
+
+function integrationModeLabel(mode: string): string {
+  if (mode === 'native_acp') return t('acp.agents.nativeAcp')
+  if (mode === 'adapter_acp') return t('acp.agents.adapterAcp')
+  return mode
+}
+
+function agentOverallClass(agent: AgentDiagnostic): string {
+  if (agent.installed && agent.acpAvailable && agent.endpointEnabled) return 'ok'
+  if (agent.installed && agent.acpAvailable && agent.endpointConfigured) return 'warn'
+  return 'error'
+}
+
+function agentOverallLabel(agent: AgentDiagnostic): string {
+  if (agent.installed && agent.acpAvailable && agent.endpointEnabled) return t('acp.agents.ready')
+  if (agent.installed && agent.acpAvailable && agent.endpointConfigured) return t('acp.agents.configured')
+  return t('acp.agents.needsSetup')
+}
+
+function agentActionLabels(agent: AgentDiagnostic): string[] {
+  const labels: string[] = []
+  if (!agent.installed) labels.push(t('acp.agents.actions.installCli'))
+  if (canApplyDetectedCommand(agent)) labels.push(t('acp.agents.actions.useDetectedCommand'))
+  if (agent.installed && !agent.acpAvailable) labels.push(t('acp.agents.actions.fixAcp'))
+  if (agent.endpointConfigured && agent.installed && agent.acpAvailable && !agent.endpointEnabled) {
+    labels.push(t('acp.agents.actions.enableEndpoint'))
+  }
+  return labels
+}
+
+function canApplyDetectedCommand(agent: AgentDiagnostic): boolean {
+  if (!agent.endpointId || !agent.detectedCommand) return false
+  if (agent.integrationMode !== 'native_acp') return false
+  return !!agent.endpointCommand && agent.detectedCommand !== agent.endpointCommand
+}
+
+async function applyDetectedCommand(agent: AgentDiagnostic) {
+  const ep = endpoints.value.find((item) => item.id === agent.endpointId)
+  if (!ep || !agent.detectedCommand) return
+  savingDiagnostic.value = agent.name
+  try {
+    await acpApi.update(ep.id, {
+      command: agent.detectedCommand,
+      argsJson: JSON.stringify(agent.endpointArgs?.length ? agent.endpointArgs : agent.recommendedArgs),
+    })
+    await loadEndpoints()
+    await loadDiagnostics()
+  } catch (e: any) {
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('acp.saveFailed'))
+  } finally {
+    savingDiagnostic.value = null
   }
 }
 </script>
@@ -562,6 +722,26 @@ async function testEndpoint(ep: AcpEndpoint) {
 .btn-link:hover { color: var(--mc-primary-hover); }
 .btn-link.danger { color: var(--mc-danger); }
 .btn-link:disabled { color: var(--mc-text-tertiary); cursor: not-allowed; }
+
+.agent-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.agent-card { background: var(--mc-bg-elevated); border: 1px solid var(--mc-border-light); border-radius: 8px; padding: 12px; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.agent-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.agent-name { font-weight: 700; color: var(--mc-text-primary); font-size: 14px; }
+.agent-mode { color: var(--mc-text-tertiary); font-size: 11px; margin-top: 2px; }
+.agent-status { padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; white-space: nowrap; }
+.agent-status.ok { background: rgba(34, 197, 94, 0.12); color: #16a34a; }
+.agent-status.warn { background: var(--mc-primary-bg); color: var(--mc-primary); }
+.agent-status.error { background: var(--mc-danger-bg); color: var(--mc-danger); }
+.agent-checks { display: flex; flex-wrap: wrap; gap: 5px; }
+.check-pill { padding: 2px 7px; border: 1px solid var(--mc-border); border-radius: 999px; color: var(--mc-text-tertiary); font-size: 11px; line-height: 1.5; }
+.check-pill.ok { border-color: rgba(34, 197, 94, 0.32); background: rgba(34, 197, 94, 0.1); color: #16a34a; }
+.agent-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
+.agent-version { color: var(--mc-text-secondary); font-size: 11px; }
+.agent-meta code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--mc-text-primary); background: var(--mc-bg-sunken); border-radius: 4px; padding: 2px 5px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-message { color: var(--mc-text-secondary); font-size: 12px; line-height: 1.45; margin: 0; min-height: 34px; }
+.agent-actions { display: flex; flex-direction: column; gap: 3px; color: var(--mc-text-tertiary); font-size: 11px; line-height: 1.4; }
+.agent-card-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: auto; }
+.agent-loading { grid-column: 1 / -1; color: var(--mc-text-tertiary); font-size: 13px; padding: 18px; text-align: center; background: var(--mc-bg-elevated); border: 1px solid var(--mc-border-light); border-radius: 8px; }
 
 .table-wrap { background: var(--mc-bg-elevated); border: 1px solid var(--mc-border-light); border-radius: 14px; overflow: hidden; }
 .data-table { width: 100%; border-collapse: collapse; }
@@ -673,5 +853,9 @@ td .status-error { background: none; color: var(--mc-text-tertiary); font-size: 
   margin-top: 8px; padding: 7px 10px;
   background: var(--mc-primary-bg); border-radius: 6px;
   font-size: 11px; color: var(--mc-text-secondary); line-height: 1.55;
+}
+
+@media (max-width: 980px) {
+  .agent-grid { grid-template-columns: 1fr; }
 }
 </style>

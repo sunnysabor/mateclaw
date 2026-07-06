@@ -95,6 +95,7 @@ deploy/nginx/ssl/*.key
 deploy/nginx/ssl/*.pem
 
 # Deploy env
+.env
 deploy/.env
 
 # Claude Code local settings

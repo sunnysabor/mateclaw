@@ -73,6 +73,7 @@
                so unhealthy rows render as dimmed entries with status chips and a Fix
                button instead of disappearing entirely. -->
           <ModelSelector
+            v-if="!isCurrentAgentAcp"
             :providers="providers"
             :active-value="activeModelValue"
             :active-label="activeModelLabel"
@@ -724,12 +725,14 @@ const connectionStatusLabel = computed(() => {
 
 // ============ 计算属性 ============
 const currentAgent = computed(() => agents.value.find(a => String(a.id) === String(selectedAgentId.value)))
+const isCurrentAgentAcp = computed(() => currentAgent.value?.agentType === 'acp')
 
 /** Human label for the agent's runtime mode — surfaces in the badge tooltip
  *  only, never in the visible header. */
 const currentAgentRuntimeMode = computed(() => {
   const a = currentAgent.value
   if (!a) return ''
+  if (a.agentType === 'acp') return t('agents.types.acp')
   return a.agentType === 'react' ? t('agents.types.react') : t('agents.types.planExecute')
 })
 
@@ -749,6 +752,10 @@ function markConversationViewed(conversationId: string | undefined, lastActiveTi
 }
 
 const currentRuntimeModel = computed(() => {
+  if (isCurrentAgentAcp.value) {
+    const endpoint = String(currentAgent.value?.acpEndpointName || '').trim()
+    return endpoint ? `ACP / ${endpoint}` : 'ACP'
+  }
   // Bind to the per-conversation active model — the same source the model
   // selector reads — so the indicator updates the instant the user switches.
   // Reading the global defaultModel here left the indicator frozen on the
@@ -799,12 +806,14 @@ const currentModelSupportsThinking = computed<boolean>(() => {
 const userInitial = computed(() => (localStorage.getItem('username') || 'U').charAt(0).toUpperCase())
 
 const activeModelValue = computed(() => {
+  if (isCurrentAgentAcp.value) return ''
   const providerId = activeModels.value?.activeLlm?.providerId
   const model = activeModels.value?.activeLlm?.model
   return providerId && model ? `${providerId}::${model}` : ''
 })
 
 const activeModelLabel = computed(() => {
+  if (isCurrentAgentAcp.value) return t('agents.types.acp')
   if (!activeModelValue.value) return ''
   const match = eligibleModels.value.find(m => m.value === activeModelValue.value)
   if (match?.label) return match.label
@@ -832,6 +841,7 @@ const activeProvider = computed(() => {
 type ModelPromptKind = 'no-active' | 'unconfigured' | 'removed' | 'cooldown' | 'unprobed' | 'no-models'
 
 const modelPromptKind = computed<ModelPromptKind>(() => {
+  if (isCurrentAgentAcp.value) return 'no-models'
   if (!activeModels.value?.activeLlm?.providerId) return 'no-active'
   const p = activeProvider.value
   if (!p) return 'no-active'
@@ -932,6 +942,7 @@ const availableProviders = computed(() =>
 )
 
 const eligibleModels = computed(() => {
+  if (isCurrentAgentAcp.value) return []
   return availableProviders.value.flatMap((provider) => {
     const allModels = [...(provider.models || []), ...(provider.extraModels || [])]
     return allModels.map((model) => ({
@@ -1394,6 +1405,12 @@ async function loadModelState() {
  * LIVE we should NOT block — we just hint with a banner.
  */
 function recomputePromptFlags() {
+  if (isCurrentAgentAcp.value) {
+    blockingPrompt.value = false
+    recoverablePrompt.value = false
+    recoverableDismissed.value = false
+    return
+  }
   const active = activeModels.value?.activeLlm
   if (!active?.providerId || !active?.model) {
     blockingPrompt.value = true
@@ -1432,7 +1449,7 @@ function recomputePromptFlags() {
 // Issue #81 v2 R2: keep blocking/recoverable in sync with the providers list
 // and the active model selection without forcing every mutation site to call
 // recomputePromptFlags() manually.
-watch([providers, activeModels], recomputePromptFlags, { deep: true })
+watch([providers, activeModels, isCurrentAgentAcp], recomputePromptFlags, { deep: true })
 
 async function loadConversations() {
   try {
@@ -1803,7 +1820,8 @@ async function handleSendMessage(content: string) {
   // If the active provider is unhealthy but another is LIVE, let the request
   // through — NodeStreamingChatHelper's fallback walker will pick it up and
   // emit a "warning" SSE delta which the input handler surfaces as a toast.
-  if (!activeModels.value?.activeLlm?.providerId || !activeModels.value?.activeLlm?.model) {
+  if (!isCurrentAgentAcp.value
+      && (!activeModels.value?.activeLlm?.providerId || !activeModels.value?.activeLlm?.model)) {
     blockingPrompt.value = true
     return
   }
@@ -1829,8 +1847,8 @@ async function handleSendMessage(content: string) {
       agentId: selectedAgentId.value,
       contentParts,
       thinkingLevel: thinkingLevel.value,
-      modelProvider: activeModels.value?.activeLlm?.providerId,
-      modelName: activeModels.value?.activeLlm?.model,
+      modelProvider: isCurrentAgentAcp.value ? undefined : activeModels.value?.activeLlm?.providerId,
+      modelName: isCurrentAgentAcp.value ? undefined : activeModels.value?.activeLlm?.model,
       attachments: outgoingAttachments.map(a => ({
         type: 'file' as const,
         fileUrl: a.url,

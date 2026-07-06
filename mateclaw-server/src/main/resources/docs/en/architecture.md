@@ -1,8 +1,8 @@
 # Architecture
 
-**How MateClaw is put together, in one page.**
+**How HHAIOS is put together, in one page.**
 
-If you're using MateClaw, read [Introduction](./intro). If you're building on MateClaw — adding tools, new channels, custom memory providers, new agent graph nodes — read this page.
+If you're using HHAIOS, read [Introduction](./intro). If you're building on HHAIOS — adding tools, new channels, custom memory providers, new agent graph nodes — read this page.
 
 ---
 
@@ -10,7 +10,7 @@ If you're using MateClaw, read [Introduction](./intro). If you're building on Ma
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         MateClaw                                 │
+│                         HHAIOS                                 │
 │                                                                  │
 │  ┌──────────────┐  ┌──────────────┐  ┌─────────────────────┐   │
 │  │  Web Console  │  │  Desktop App  │  │   IM Channels       │   │
@@ -78,7 +78,7 @@ One JAR. One process. The whole widget.
 mateclaw/
 ├── mateclaw-server/          # Spring Boot backend (the heart)
 │   └── src/main/java/vip/mate/
-│       ├── MateClawApplication.java
+│       ├── HHAIOSApplication.java
 │       ├── agent/            # StateGraph runtime, nodes, edges, state
 │       ├── planning/         # Plan & SubPlan persistence
 │       ├── workflow/         # Workflow engine (1.3.0+): DSL compiler, linear runtime, payload spill
@@ -113,7 +113,7 @@ mateclaw/
 ├── mateclaw-ui/              # Vue 3 admin console
 ├── mateclaw-desktop/         # Electron desktop shell
 ├── mateclaw-webchat/         # Embeddable chat widget
-├── matevip-sites/            # Marketing and docs sites (pnpm workspace)
+├── hhaios-sites/            # Marketing and docs sites (pnpm workspace)
 ├── docs/                     # This documentation (VitePress)
 ├── deploy/                   # Production deployment configs
 ├── docker-compose.yml
@@ -128,7 +128,7 @@ The backend is a **single modular monolith**. Other projects are independent pac
 
 This is the most important thing to know if you're contributing to the backend.
 
-**MateClaw's agent runtime is not a class hierarchy.** There's no `BaseAgent` → `ReActAgent` → `MyCustomAgent` inheritance chain. The runtime is a **StateGraph** (from `spring-ai-alibaba-graph`) composed of nodes and conditional edges, assembled at runtime by `AgentGraphBuilder`.
+**HHAIOS's agent runtime is not a class hierarchy.** There's no `BaseAgent` → `ReActAgent` → `MyCustomAgent` inheritance chain. The runtime is a **StateGraph** (from `spring-ai-alibaba-graph`) composed of nodes and conditional edges, assembled at runtime by `AgentGraphBuilder`.
 
 ### Key pieces
 
@@ -138,14 +138,14 @@ This is the most important thing to know if you're contributing to the backend.
 - `agent/graph/plan/node/` — `PlanGenerationNode`, `StepExecutionNode`, `PlanSummaryNode`, `DirectAnswerNode`
 - `agent/graph/edge/` + `plan/edge/` — dispatcher functions that decide the next node based on state
 - `agent/graph/state/MateClawStateKeys.java` — the keys for the shared state object
-- `agent/graph/state/MateClawStateAccessor.java` — typed accessor for the state map (don't touch the map directly)
+- `agent/graph/state/HHAIOSStateAccessor.java` — typed accessor for the state map (don't touch the map directly)
 - `agent/graph/lifecycle/ReActLifecycleListener.java` — node-level instrumentation hooks
 - `agent/AgentGraphBuilder.java` — the builder that wires nodes and edges per agent config
 - `agent/GraphEventPublisher.java` + `agent/graph/NodeStreamingChatHelper.java` — how streaming events escape the graph into the SSE stream
 
 ### How to extend
 
-**Adding agent behavior** — create a new node in `agent/graph/node/` or a new edge dispatcher in `agent/graph/edge/`. Wire it into `AgentGraphBuilder`. Read and write state through `MateClawStateAccessor`.
+**Adding agent behavior** — create a new node in `agent/graph/node/` or a new edge dispatcher in `agent/graph/edge/`. Wire it into `AgentGraphBuilder`. Read and write state through `HHAIOSStateAccessor`.
 
 **Don't** create a new `XxxAgent` class. You'll be reimplementing what the graph already does.
 
@@ -254,13 +254,13 @@ Bundle instructions + tools + optional scripts in a `SKILL.md`. Upload via the U
 
 ### Agent graph nodes and edges
 
-For deeper customization, add a new node in `agent/graph/node/` or a new dispatcher in `agent/graph/edge/`. Wire it into `AgentGraphBuilder` behind a config flag. State access goes through `MateClawStateAccessor`.
+For deeper customization, add a new node in `agent/graph/node/` or a new dispatcher in `agent/graph/edge/`. Wire it into `AgentGraphBuilder` behind a config flag. State access goes through `HHAIOSStateAccessor`.
 
 ---
 
 ## Persistence — one schema, two databases
 
-MateClaw uses **MyBatis Plus** (not JPA) for database access. Conventions:
+HHAIOS uses **MyBatis Plus** (not JPA) for database access. Conventions:
 
 - All tables prefixed `mate_`
 - `snake_case` columns, `camelCase` Java fields, auto-mapped
@@ -291,7 +291,7 @@ MateClaw uses **MyBatis Plus** (not JPA) for database access. Conventions:
 
 ## Streaming — why SSE, not WebFlux
 
-MateClaw uses **Spring MVC**, not Spring WebFlux. WebFlux is explicitly excluded from the dependency graph.
+HHAIOS uses **Spring MVC**, not Spring WebFlux. WebFlux is explicitly excluded from the dependency graph.
 
 Why: Spring MVC + SSE is sufficient for streaming LLM responses to the frontend. It's simpler to reason about, easier to debug, and doesn't force the whole stack to become reactive.
 

@@ -235,7 +235,9 @@ async function deleteSession(conversationId: string) {
   try {
     await conversationApi.delete(conversationId)
     await loadSessions()
-  } catch (e: any) { mcToast.error(t('sessions.deleteFailed')) }
+  } catch (e: any) {
+    mcToast.error(e?.message || t('sessions.deleteFailed'))
+  }
 }
 
 // ==================== Model selection (#183) ====================

@@ -36,7 +36,8 @@ export interface Agent {
   id: string | number
   name: string
   description?: string
-  agentType: 'react' | 'plan_execute'
+  agentType: 'react' | 'plan_execute' | 'acp'
+  acpEndpointName?: 'hermes' | 'codex' | 'openclaw' | string | null
   systemPrompt?: string
   modelName?: string
   maxIterations: number
@@ -73,6 +74,30 @@ export interface Agent {
 // 兼容旧代码
 export type AgentEntity = Agent
 export type AgentState = 'IDLE' | 'RUNNING' | 'PAUSED' | 'ERROR' | 'COMPLETED'
+
+export interface AgentTeamMember {
+  agentId: string | number
+  agentName?: string | null
+  agentType?: 'react' | 'plan_execute' | 'acp' | string | null
+  acpEndpointName?: string | null
+  roleLabel?: string | null
+  enabled?: boolean
+  sortOrder?: number
+}
+
+export interface AgentTeam {
+  id: string | number
+  workspaceId?: string | number
+  name: string
+  description?: string | null
+  coordinatorAgentId: string | number
+  coordinatorAgentName?: string | null
+  coordinatorAgentType?: string | null
+  enabled?: boolean
+  members: AgentTeamMember[]
+  createTime?: string
+  updateTime?: string
+}
 
 // ==================== 会话与消息 ====================
 export interface Conversation {
@@ -606,7 +631,7 @@ export const CHANNEL_FIELD_DEFS: Record<string, ChannelFieldDef[]> = {
     { key: 'enable_reaction', label: '消息反应', placeholder: '', type: 'switch', defaultValue: true, tooltip: '收到消息后自动添加 👍 表情反应，让用户知道消息已收到' },
     { key: 'enable_nickname_cache', label: '昵称获取', placeholder: '', type: 'switch', defaultValue: true, tooltip: '通过联系人 API 获取用户真实昵称（需要 contact:user.base:readonly 权限）' },
     { key: 'enable_quoted_context', label: '引用消息上下文', placeholder: '', type: 'switch', defaultValue: true, tooltip: '用户引用某条消息回复时，自动拉取被引用消息内容注入到 prompt，agent 才能理解"解释一下"这种缺主语的引用' },
-    { key: 'media_download_enabled', label: '媒体下载', placeholder: '', type: 'switch', defaultValue: false, tooltip: '下载消息中的图片和文件到本地（保存至 ~/.mateclaw/media/feishu/）' },
+    { key: 'media_download_enabled', label: '媒体下载', placeholder: '', type: 'switch', defaultValue: false, tooltip: '下载消息中的图片和文件到本地媒体目录，便于视觉模型读取。' },
   ],
   telegram: [
     { key: 'bot_token', label: 'Bot Token', placeholder: '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11', required: true, sensitive: true, type: 'password', tooltip: '从 @BotFather 获取的 Bot Token' },
@@ -648,7 +673,7 @@ export const CHANNEL_FIELD_DEFS: Record<string, ChannelFieldDef[]> = {
   ],
   webchat: [
     { key: 'api_key', label: 'API Key', placeholder: '保存后由平台自动生成', required: true, sensitive: true, readOnly: true, type: 'password', tooltip: '由平台自动生成的嵌入式 WebChat 渠道密钥，创建后可复制使用' },
-    { key: 'title', label: '标题', placeholder: 'MateClaw', type: 'text', defaultValue: 'MateClaw', tooltip: '聊天面板顶部显示的标题' },
+    { key: 'title', label: '标题', placeholder: 'HHAIOS', type: 'text', defaultValue: 'HHAIOS', tooltip: '聊天面板顶部显示的标题' },
     { key: 'placeholder', label: '输入框占位文案', placeholder: 'Type a message...', type: 'text', defaultValue: 'Type a message...', tooltip: '输入框默认提示文案' },
     { key: 'primary_color', label: '主题色', placeholder: '#409eff', type: 'text', defaultValue: '#409eff', tooltip: '聊天气泡与头部使用的主色，建议使用十六进制颜色值' },
     { key: 'welcome_message', label: '欢迎语', placeholder: '你好，我可以帮你处理什么？', type: 'text', tooltip: '前端 SDK 初始化后可读取并展示的欢迎语（当前主要供配置接口返回）' },

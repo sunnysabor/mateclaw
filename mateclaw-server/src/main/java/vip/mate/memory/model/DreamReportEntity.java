@@ -31,6 +31,12 @@ public class DreamReportEntity {
     /** userId or "system" */
     private String triggeredBy;
 
+    /** Memory subject this report belongs to (e.g. "user:jerry"); null/blank for shared reports. */
+    private String ownerKey;
+
+    /** Visibility scope: PERSONAL / TEAM / GLOBAL. Defaults to TEAM for legacy reports. */
+    private String scope;
+
     private LocalDateTime startedAt;
 
     private LocalDateTime finishedAt;

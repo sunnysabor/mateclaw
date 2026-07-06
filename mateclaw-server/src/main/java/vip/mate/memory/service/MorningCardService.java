@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import vip.mate.memory.identity.MemoryOwnerResolver;
+import vip.mate.memory.identity.MemoryScope;
 import vip.mate.memory.model.DreamReportEntity;
 import vip.mate.memory.model.MorningCardSeenEntity;
 import vip.mate.memory.repository.DreamReportMapper;
@@ -31,14 +33,23 @@ public class MorningCardService {
      * Get the morning card for a user+agent. Returns null if no unseen dream exists.
      */
     public Map<String, Object> getCardFor(Long userId, Long agentId) {
+        return getCardFor(userId, agentId, null);
+    }
+
+    /**
+     * Get the latest unseen dream visible to the current owner. The card shows
+     * memory diffs, so it must not surface another owner's PERSONAL dream.
+     */
+    public Map<String, Object> getCardFor(Long userId, Long agentId, String ownerKey) {
         if (userId == null || agentId == null) return null;
         // Find the latest successful dream report for this agent
+        LambdaQueryWrapper<DreamReportEntity> query = new LambdaQueryWrapper<DreamReportEntity>()
+                .eq(DreamReportEntity::getAgentId, agentId)
+                .eq(DreamReportEntity::getStatus, "SUCCESS")
+                .eq(DreamReportEntity::getDeleted, 0);
+        applyVisibility(query, ownerKey);
         DreamReportEntity latestReport = dreamReportMapper.selectOne(
-                new LambdaQueryWrapper<DreamReportEntity>()
-                        .eq(DreamReportEntity::getAgentId, agentId)
-                        .eq(DreamReportEntity::getStatus, "SUCCESS")
-                        .eq(DreamReportEntity::getDeleted, 0)
-                        .orderByDesc(DreamReportEntity::getStartedAt)
+                query.orderByDesc(DreamReportEntity::getStartedAt)
                         .last("LIMIT 1"));
 
         if (latestReport == null) {
@@ -67,6 +78,17 @@ public class MorningCardService {
         card.put("llmReason", latestReport.getLlmReason());
         card.put("memoryDiff", latestReport.getMemoryDiff());
         return card;
+    }
+
+    private void applyVisibility(LambdaQueryWrapper<DreamReportEntity> query, String ownerKey) {
+        if (ownerKey == null || ownerKey.isBlank()
+                || MemoryOwnerResolver.SYSTEM_OWNER.equals(ownerKey)) {
+            query.in(DreamReportEntity::getScope, MemoryScope.TEAM, MemoryScope.GLOBAL);
+            return;
+        }
+        query.and(s -> s.in(DreamReportEntity::getScope, MemoryScope.TEAM, MemoryScope.GLOBAL)
+                .or(p -> p.eq(DreamReportEntity::getScope, MemoryScope.PERSONAL)
+                        .eq(DreamReportEntity::getOwnerKey, ownerKey)));
     }
 
     /**

@@ -82,6 +82,7 @@ public class AgentGraphBuilder {
     private final AgentBindingService agentBindingService;
     private final SkillService skillService;
     private final vip.mate.skill.runtime.SkillRuntimeService skillRuntimeService;
+    private final vip.mate.acp.service.AcpEndpointService acpEndpointService;
     private final vip.mate.tool.disclosure.ToolDisclosureService toolDisclosureService;
     private final vip.mate.agent.progress.ProgressLedgerService progressLedgerService;
 
@@ -269,6 +270,14 @@ public class AgentGraphBuilder {
         // continue to flow through.
         toolSet = toolSet.withDeniedToolsFiltered(
                 agentBindingService.getSkillDiscoveryDeniedTools(entity.getId()));
+
+        // ACP wrapper callbacks live in the global ToolRegistry, but custom
+        // ACP endpoints are workspace-owned. Remove wrappers for endpoints
+        // that the current agent's workspace cannot see, otherwise an agent
+        // with the legacy "inherit global tools" setting could call another
+        // workspace's acp_<slug>_prompt tool directly.
+        toolSet = toolSet.withDeniedToolsFiltered(
+                acpEndpointService.wrapperToolNamesNotVisibleInWorkspace(entity.getWorkspaceId()));
 
         // Escape hatch: drop the load_skill meta tool entirely when disabled, so
         // it isn't advertised regardless of binding (the catalog guidance falls
@@ -1435,11 +1444,11 @@ public class AgentGraphBuilder {
     static final String ABOUT_YOU_BLOCK = """
 
             ## About You
-            You are powered by MateClaw — a multi-user AI Agent platform built on
+            You are powered by HHAIOS — a multi-user AI Agent platform built on
             Spring Boot 3.5 and Spring AI Alibaba Graph. You are reachable through
             WebChat and 8+ IM channels (DingTalk, Feishu, WeCom, WeChat, Telegram,
             Discord, QQ, Slack). If asked who you are or what you are based on,
-            answer with MateClaw and the technology stack above.
+            answer with HHAIOS and the technology stack above.
             """;
 
     private String buildEnhancedPrompt(AgentEntity entity, boolean builtinSearchEnabled) {
@@ -1475,6 +1484,14 @@ public class AgentGraphBuilder {
 
                 ## Runtime Context
                 - Current Agent ID: %s
+
+                ## Multi-Agent Team Coordination
+                If your identity card or system prompt says you are a team coordinator, you must use the HHAIOS delegation tools instead of role-playing teammates yourself:
+                - `listAvailableAgents()` to confirm exact employee names when needed
+                - `delegateToAgent(agentName, task, inheritParentContext)` for one specialist
+                - `delegateParallel(tasksJson)` for independent product/engineering/strategy branches
+                - `delegateAsync(agentName, task, label)` + `taskOutput(task_id)` for long-running specialist work
+                ACP employees can be delegated to as specialists, but they cannot coordinate the team because ACP runtimes do not expose HHAIOS coordination tools. A native HHAIOS employee must act as the team coordinator and own task decomposition, delegation, conflict resolution, and the final response.
 
                 ## Workspace Memory Guidelines
                 Your durable memory is stored in database-backed workspace markdown files for this agent:

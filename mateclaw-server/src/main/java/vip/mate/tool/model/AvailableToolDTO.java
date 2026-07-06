@@ -84,7 +84,7 @@ public class AvailableToolDTO {
                 .providerId(null)
                 .providerName(null)
                 .name(t.getName())
-                .rawName(t.getName())
+                .rawName(displayNameOrName(t))
                 .description(t.getDescription() != null ? t.getDescription() : "")
                 .group("builtin")
                 .groupId("builtin")
@@ -113,7 +113,7 @@ public class AvailableToolDTO {
                 .providerId(t.getChannelId())
                 .providerName(channelName)
                 .name(t.getName())
-                .rawName(t.getName())
+                .rawName(channelToolDisplayName(t))
                 .description(t.getDescription() != null ? t.getDescription() : "")
                 .group(groupLabel)
                 .groupId(groupKey)
@@ -121,6 +121,30 @@ public class AvailableToolDTO {
                 .available(true)
                 .unavailableReason(null)
                 .build();
+    }
+
+    private static String displayNameOrName(ToolEntity t) {
+        if (t == null) return "";
+        String display = t.getDisplayName();
+        if (display != null && !display.isBlank()) {
+            return display;
+        }
+        return t.getName() != null ? t.getName() : "";
+    }
+
+    private static String channelToolDisplayName(ToolEntity t) {
+        String display = displayNameOrName(t);
+        String channelName = extractChannelName(display);
+        if (!channelName.isEmpty()) {
+            int open = display.lastIndexOf('(');
+            if (open > 0) {
+                String base = display.substring(0, open).trim();
+                if (!base.isEmpty()) {
+                    return base;
+                }
+            }
+        }
+        return display;
     }
 
     private static String extractChannelName(String displayName) {

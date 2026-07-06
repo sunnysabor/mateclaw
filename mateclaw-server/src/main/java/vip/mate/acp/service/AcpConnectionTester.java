@@ -57,6 +57,7 @@ public class AcpConnectionTester {
         try {
             client = AcpStdioClient.spawn(objectMapper, endpoint.getCommand(),
                     args, env, resolvedCwd);
+            client.setStdoutBufferLimitBytes(resolveBufferLimit(endpoint));
         } catch (Exception e) {
             return persistAndReturn(endpoint, result, "ERROR",
                     "Spawn failed: " + e.getMessage(), started);
@@ -96,13 +97,9 @@ public class AcpConnectionTester {
                     result.put("sessionId", sessionResp.path("sessionId").asText(""));
                 }
             } catch (Exception e) {
-                // session/new may fail for legitimate reasons (e.g. agent
-                // requires auth flow first). Still report OK on initialize
-                // but flag in the message — translated when it smells
-                // like an auth error so the test page UI shows actionable
-                // text instead of raw JSON-RPC.
                 String authHint = runtimeSupport.translateAuthError(endpoint, e.getMessage());
-                result.put("sessionWarning", authHint != null ? authHint : e.getMessage());
+                return persistAndReturn(endpoint, result, "ERROR",
+                        "Session/new failed: " + (authHint != null ? authHint : e.getMessage()), started);
             }
         } catch (Exception e) {
             return persistAndReturn(endpoint, result, "ERROR",
@@ -112,6 +109,11 @@ public class AcpConnectionTester {
         long elapsed = System.currentTimeMillis() - started;
         result.put("elapsedMs", elapsed);
         return persistAndReturn(endpoint, result, "OK", null, started);
+    }
+
+    private long resolveBufferLimit(AcpEndpointEntity endpoint) {
+        Long configured = endpoint != null ? endpoint.getStdioBufferLimitBytes() : null;
+        return configured != null && configured > 0 ? configured : 50L * 1024L * 1024L;
     }
 
     private Map<String, Object> persistAndReturn(AcpEndpointEntity endpoint,

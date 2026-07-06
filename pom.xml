@@ -9,8 +9,8 @@
     <version>${revision}</version>
     <packaging>pom</packaging>
 
-    <name>MateClaw</name>
-    <description>MateClaw monorepo reactor and Maven parent</description>
+    <name>HHAIOS</name>
+    <description>HHAIOS monorepo reactor and Maven parent</description>
 
     <!-- Reactor modules. Keep plugin-api before consumers for predictable local builds. -->
     <modules>
@@ -20,7 +20,7 @@
     </modules>
 
     <properties>
-        <!-- MateClaw release version shared by all Maven modules. -->
+        <!-- HHAIOS release version shared by all Maven modules. -->
         <revision>1.7.0-SNAPSHOT</revision>
 
         <!-- Java -->
@@ -101,7 +101,7 @@
                 <scope>import</scope>
             </dependency>
 
-            <!-- ==================== MateClaw Modules ==================== -->
+            <!-- ==================== HHAIOS Modules ==================== -->
             <!-- Internal module dependencies share the same revision-controlled version. -->
             <dependency>
                 <groupId>vip.mate</groupId>
@@ -363,6 +363,9 @@
                     <!-- Emit method parameter names so Spring MVC can bind
                          @PathVariable/@RequestParam without explicit names. -->
                     <parameters>true</parameters>
+                    <!-- JDK 23+ no longer runs classpath annotation processors implicitly.
+                         Lombok is required by the existing codebase for log/getter/setter generation. -->
+                    <proc>full</proc>
                 </configuration>
             </plugin>
             <!-- Resolve the ${revision} CI-friendly version into installed and

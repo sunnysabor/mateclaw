@@ -1,11 +1,12 @@
 package vip.mate.workspace.document;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import vip.mate.memory.event.MemoryWritePublisher;
 import vip.mate.memory.identity.MemoryScope;
 import vip.mate.workspace.document.event.WorkspaceFileChangedEvent;
 import vip.mate.workspace.document.model.WorkspaceFileEntity;
@@ -30,11 +31,39 @@ import java.util.stream.Collectors;
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class WorkspaceFileService {
 
     private final WorkspaceFileMapper fileMapper;
     private final ApplicationEventPublisher eventPublisher;
+    private final MemoryWritePublisher memoryWritePublisher;
+
+    @Autowired
+    public WorkspaceFileService(WorkspaceFileMapper fileMapper,
+                                ApplicationEventPublisher eventPublisher,
+                                MemoryWritePublisher memoryWritePublisher) {
+        this.fileMapper = fileMapper;
+        this.eventPublisher = eventPublisher;
+        this.memoryWritePublisher = memoryWritePublisher;
+    }
+
+    /**
+     * Backwards-compatible constructor for focused unit tests that only verify
+     * workspace-file behaviour and do not need canonical memory-write events.
+     */
+    WorkspaceFileService(WorkspaceFileMapper fileMapper, ApplicationEventPublisher eventPublisher) {
+        this.fileMapper = fileMapper;
+        this.eventPublisher = eventPublisher;
+        this.memoryWritePublisher = null;
+    }
+
+    /**
+     * PERSONAL files that are safe to inject on every turn through the builtin
+     * memory provider. Daily notes (memory/*.md) and structured/*.md can grow
+     * without bound and have their own recall paths, so they must not be dumped
+     * into every prompt just because saveMemoryFile() marks personal rows enabled.
+     */
+    private static final Set<String> OWNER_ALWAYS_ON_FILES = Set.of(
+            "MEMORY.md", "PROFILE.md", "SOUL.md");
 
     /**
      * 列出 Agent 的所有工作区文件（按排序 + 文件名排列）
@@ -43,9 +72,25 @@ public class WorkspaceFileService {
         List<WorkspaceFileEntity> files = fileMapper.selectList(
                 new LambdaQueryWrapper<WorkspaceFileEntity>()
                         .eq(WorkspaceFileEntity::getAgentId, agentId)
+                        .in(WorkspaceFileEntity::getScope, MemoryScope.TEAM, MemoryScope.GLOBAL)
                         .orderByAsc(WorkspaceFileEntity::getSortOrder)
                         .orderByAsc(WorkspaceFileEntity::getFilename));
         // 返回列表时不包含 content（减少传输）
+        files.forEach(f -> f.setContent(null));
+        return files;
+    }
+
+    /**
+     * List all rows for maintenance/projection code that must explicitly handle
+     * shared and PERSONAL buckets. UI/config surfaces should keep using
+     * {@link #listFiles(Long)} or {@link #listVisibleFiles(Long, String)}.
+     */
+    public List<WorkspaceFileEntity> listAllFilesForMaintenance(Long agentId) {
+        List<WorkspaceFileEntity> files = fileMapper.selectList(
+                new LambdaQueryWrapper<WorkspaceFileEntity>()
+                        .eq(WorkspaceFileEntity::getAgentId, agentId)
+                        .orderByAsc(WorkspaceFileEntity::getSortOrder)
+                        .orderByAsc(WorkspaceFileEntity::getFilename));
         files.forEach(f -> f.setContent(null));
         return files;
     }
@@ -93,6 +138,7 @@ public class WorkspaceFileService {
             existing.setFileSize(size);
             fileMapper.updateById(existing);
             eventPublisher.publishEvent(new WorkspaceFileChangedEvent(agentId, filename));
+            publishCanonicalWrite(agentId, filename, "update", content, null);
             return existing;
         }
         WorkspaceFileEntity entity = new WorkspaceFileEntity();
@@ -111,6 +157,7 @@ public class WorkspaceFileService {
         WorkspaceFileEntity saved = insertOrUpdateOnConflict(
                 entity, () -> getFile(agentId, filename), content, size);
         eventPublisher.publishEvent(new WorkspaceFileChangedEvent(agentId, filename));
+        publishCanonicalWrite(agentId, filename, "create", content, null);
         return saved;
     }
 
@@ -238,6 +285,7 @@ public class WorkspaceFileService {
             existing.setFileSize(size);
             fileMapper.updateById(existing);
             eventPublisher.publishEvent(new WorkspaceFileChangedEvent(agentId, filename));
+            publishCanonicalWrite(agentId, filename, "update", content, ownerKey);
             return existing;
         }
         WorkspaceFileEntity entity = new WorkspaceFileEntity();
@@ -252,6 +300,7 @@ public class WorkspaceFileService {
         WorkspaceFileEntity saved = insertOrUpdateOnConflict(
                 entity, () -> getMemoryFile(agentId, filename, ownerKey), content, size);
         eventPublisher.publishEvent(new WorkspaceFileChangedEvent(agentId, filename));
+        publishCanonicalWrite(agentId, filename, "create", content, ownerKey);
         return saved;
     }
 
@@ -271,6 +320,7 @@ public class WorkspaceFileService {
                         .eq(WorkspaceFileEntity::getFilename, filename)
                         .in(WorkspaceFileEntity::getScope, MemoryScope.TEAM, MemoryScope.GLOBAL));
         eventPublisher.publishEvent(new WorkspaceFileChangedEvent(agentId, filename));
+        publishCanonicalWrite(agentId, filename, "delete", "", null);
     }
 
     /**
@@ -289,6 +339,7 @@ public class WorkspaceFileService {
                         .eq(WorkspaceFileEntity::getScope, MemoryScope.PERSONAL)
                         .eq(WorkspaceFileEntity::getOwnerKey, ownerKey));
         eventPublisher.publishEvent(new WorkspaceFileChangedEvent(agentId, filename));
+        publishCanonicalWrite(agentId, filename, "delete", "", ownerKey);
     }
 
     /**
@@ -568,7 +619,7 @@ public class WorkspaceFileService {
             if (termsHit == 0) continue;
             double score = termsHit * weight;
             hits.add(new MemorySearchHit(file.getFilename(), i + 1,
-                    buildSnippet(line, terms), score));
+                    buildSnippet(line, terms), score, file.getOwnerKey(), file.getScope()));
             if (hits.size() >= PER_FILE_HIT_CAP) break;
         }
         return hits;
@@ -654,7 +705,7 @@ public class WorkspaceFileService {
      * {@code ownerKey} is null/blank only shared rows are returned.
      */
     private void applyScopeVisibility(LambdaQueryWrapper<WorkspaceFileEntity> wrapper, String ownerKey) {
-        if (ownerKey == null || ownerKey.isBlank()) {
+        if (!isPersonalOwner(ownerKey)) {
             wrapper.in(WorkspaceFileEntity::getScope, MemoryScope.TEAM, MemoryScope.GLOBAL);
             return;
         }
@@ -694,7 +745,7 @@ public class WorkspaceFileService {
      * Null when the owner has no personal memory yet.
      */
     public String buildOwnerMemoryBlock(Long agentId, String ownerKey) {
-        if (agentId == null || ownerKey == null || ownerKey.isBlank()) {
+        if (agentId == null || !isPersonalOwner(ownerKey)) {
             return null;
         }
         List<WorkspaceFileEntity> files = fileMapper.selectList(
@@ -703,6 +754,7 @@ public class WorkspaceFileService {
                         .eq(WorkspaceFileEntity::getEnabled, true)
                         .eq(WorkspaceFileEntity::getScope, MemoryScope.PERSONAL)
                         .eq(WorkspaceFileEntity::getOwnerKey, ownerKey)
+                        .in(WorkspaceFileEntity::getFilename, OWNER_ALWAYS_ON_FILES)
                         .orderByAsc(WorkspaceFileEntity::getSortOrder));
         return concatFiles(files);
     }
@@ -723,5 +775,12 @@ public class WorkspaceFileService {
             }
         }
         return sb.isEmpty() ? null : sb.toString();
+    }
+
+    private void publishCanonicalWrite(Long agentId, String filename, String action,
+                                       String content, String ownerKey) {
+        if (memoryWritePublisher != null) {
+            memoryWritePublisher.publishIfCanonical(agentId, filename, action, content, ownerKey);
+        }
     }
 }

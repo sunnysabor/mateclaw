@@ -48,6 +48,7 @@ public class CronJobLifecycleService {
     private final CronJobRunMapper runMapper;
     private final ConversationService conversationService;
     private final ConversationCompletionPublisher completionPublisher;
+    private final AgentService agentService;
     private final ApplicationEventPublisher events;
     private final I18nService i18n;
 
@@ -236,11 +237,13 @@ public class CronJobLifecycleService {
         // Memory pipeline (existing behavior preserved — was inline in the
         // old executeJob; now lives behind the same publisher used by the
         // web / channel paths so cron is no longer special-cased).
-        try {
-            completionPublisher.publish(job.getAgentId(), convId, userMessage, text, "cron");
-        } catch (Exception e) {
-            // Memory failures must not break delivery — log + carry on.
-            log.warn("[CronLifecycle] completionPublisher failed for job {}: {}", job.getId(), e.getMessage());
+        if (!agentService.isAcpAgent(job.getAgentId())) {
+            try {
+                completionPublisher.publish(job.getAgentId(), convId, userMessage, text, "cron");
+            } catch (Exception e) {
+                // Memory failures must not break delivery — log + carry on.
+                log.warn("[CronLifecycle] completionPublisher failed for job {}: {}", job.getId(), e.getMessage());
+            }
         }
 
         // Delivery pipeline (RFC-063r §2.7.3) — fired here so listeners only

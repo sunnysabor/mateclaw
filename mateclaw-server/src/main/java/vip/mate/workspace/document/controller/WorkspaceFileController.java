@@ -5,6 +5,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.core.Authentication;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -13,6 +14,7 @@ import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.servlet.HandlerMapping;
 import vip.mate.common.result.R;
 import vip.mate.exception.MateClawException;
+import vip.mate.memory.MemoryProperties;
 import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 import vip.mate.workspace.document.WorkspaceFileService;
 import vip.mate.workspace.document.WorkspaceMemoryArchiveService;
@@ -34,6 +36,7 @@ public class WorkspaceFileController {
 
     private final WorkspaceFileService workspaceFileService;
     private final WorkspaceMemoryArchiveService memoryArchiveService;
+    private final MemoryProperties memoryProperties;
 
     /**
      * 列出 Agent 的所有工作区文件（不含内容）
@@ -130,8 +133,9 @@ public class WorkspaceFileController {
     @RequireWorkspaceRole("viewer")
     public ResponseEntity<byte[]> exportMemory(
             @PathVariable Long agentId,
-            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
-        byte[] body = memoryArchiveService.export(agentId, workspaceId);
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId,
+            Authentication auth) {
+        byte[] body = memoryArchiveService.export(agentId, workspaceId, currentWebOwnerKey(auth));
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType("application/zip"))
                 .header(HttpHeaders.CONTENT_DISPOSITION,
@@ -150,8 +154,10 @@ public class WorkspaceFileController {
     public R<WorkspaceMemoryArchiveService.ImportPreview> previewImportMemory(
             @PathVariable Long agentId,
             @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId,
-            @RequestPart("file") MultipartFile file) {
-        return R.ok(memoryArchiveService.previewImport(agentId, workspaceId, readBytes(file)));
+            @RequestPart("file") MultipartFile file,
+            Authentication auth) {
+        return R.ok(memoryArchiveService.previewImport(agentId, workspaceId, readBytes(file),
+                currentWebOwnerKey(auth)));
     }
 
     /**
@@ -165,8 +171,10 @@ public class WorkspaceFileController {
     public R<WorkspaceMemoryArchiveService.ImportResult> importMemory(
             @PathVariable Long agentId,
             @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId,
-            @RequestPart("file") MultipartFile file) {
-        return R.ok(memoryArchiveService.apply(agentId, workspaceId, readBytes(file)));
+            @RequestPart("file") MultipartFile file,
+            Authentication auth) {
+        return R.ok(memoryArchiveService.apply(agentId, workspaceId, readBytes(file),
+                currentWebOwnerKey(auth)));
     }
 
     private static byte[] readBytes(MultipartFile file) {
@@ -198,5 +206,21 @@ public class WorkspaceFileController {
     @Data
     static class PromptFilesRequest {
         private List<String> files;
+    }
+
+    /**
+     * Match web-console chat ownership: ChatOrigin.web(..., username, ...)
+     * resolves to {@code user:<username>}. Unknown/system auth falls back to
+     * shared-only visibility.
+     */
+    private String currentWebOwnerKey(Authentication auth) {
+        if (!memoryProperties.isLifecycleMediatorEnabled() || auth == null) {
+            return vip.mate.memory.identity.MemoryOwnerResolver.SYSTEM_OWNER;
+        }
+        String username = auth.getName();
+        if (username == null || username.isBlank()) {
+            return vip.mate.memory.identity.MemoryOwnerResolver.SYSTEM_OWNER;
+        }
+        return "user:" + username;
     }
 }

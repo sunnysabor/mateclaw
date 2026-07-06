@@ -7,6 +7,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.Disposable;
+import vip.mate.agent.context.ChatOrigin;
 import vip.mate.workspace.conversation.model.MessageContentPart;
 
 import java.io.IOException;
@@ -225,6 +226,13 @@ public class ChatStreamTracker {
 
         /** Username that owns this run; null for system-driven runs. */
         volatile String username;
+
+        /**
+         * Origin of the current run. Queued follow-up messages inherit it so
+         * per-owner memory isolation (notably api:endUserId) does not fall back
+         * to the logged-in console username when a turn is resumed from queue.
+         */
+        volatile ChatOrigin origin;
 
         RunState(String conversationId) {
             this.conversationId = conversationId;
@@ -465,6 +473,9 @@ public class ChatStreamTracker {
                 nextState.messageQueue.offer(queued);
                 carried++;
             }
+            nextState.agentId = state.agentId;
+            nextState.username = state.username;
+            nextState.origin = state.origin;
             runs.put(conversationId, nextState);
             if (carried > 0) {
                 log.info("[ChatStreamTracker] Carried {} queued message(s) into next run: {}",
@@ -1236,7 +1247,8 @@ public class ChatStreamTracker {
             Disposable d = state.disposable;
             canInterrupt = d != null && !d.isDisposed();
             // 无论是否可中断，都入队（支持多条排队消息）
-            state.messageQueue.offer(new QueuedInput(queuedMessage, agentId, persisted, contentParts));
+            state.messageQueue.offer(new QueuedInput(queuedMessage, agentId, persisted,
+                    contentParts, state.origin));
             if (canInterrupt) {
                 state.interruptType = InterruptType.USER_INTERRUPT_WITH_FOLLOWUP;
                 state.stopRequested.set(true);
@@ -1288,6 +1300,11 @@ public class ChatStreamTracker {
 
     public boolean enqueueMessage(String conversationId, String message, Long agentId, boolean persisted,
                                   List<MessageContentPart> contentParts) {
+        return enqueueMessage(conversationId, message, agentId, persisted, contentParts, null);
+    }
+
+    public boolean enqueueMessage(String conversationId, String message, Long agentId, boolean persisted,
+                                  List<MessageContentPart> contentParts, ChatOrigin origin) {
         RunState state = runs.get(conversationId);
         // Reject when there's no live producer to drain the queue:
         //   - state == null:  conversation truly gone (cleanup completed)
@@ -1303,7 +1320,8 @@ public class ChatStreamTracker {
         if (state == null || state.done) {
             return false;
         }
-        state.messageQueue.offer(new QueuedInput(message, agentId, persisted, contentParts));
+        ChatOrigin queuedOrigin = origin != null ? origin : state.origin;
+        state.messageQueue.offer(new QueuedInput(message, agentId, persisted, contentParts, queuedOrigin));
         // broadcast 在锁外
         try {
             String json = objectMapper.writeValueAsString(Map.of(
@@ -1322,9 +1340,15 @@ public class ChatStreamTracker {
      * 排队输入的原子快照（message + agentId + persisted + contentParts 一起返回，避免分离读取导致不一致）
      */
     public record QueuedInput(String message, Long agentId, boolean persisted,
-                              List<MessageContentPart> contentParts) {
+                              List<MessageContentPart> contentParts,
+                              ChatOrigin origin) {
         public QueuedInput(String message, Long agentId, boolean persisted) {
-            this(message, agentId, persisted, null);
+            this(message, agentId, persisted, null, null);
+        }
+
+        public QueuedInput(String message, Long agentId, boolean persisted,
+                           List<MessageContentPart> contentParts) {
+            this(message, agentId, persisted, contentParts, null);
         }
     }
 
@@ -1659,10 +1683,20 @@ public class ChatStreamTracker {
      * only metadata.
      */
     public void bindRunMeta(String conversationId, Long agentId, String username) {
+        bindRunMeta(conversationId, agentId, username, null);
+    }
+
+    public void bindRunMeta(String conversationId, Long agentId, String username, ChatOrigin origin) {
         RunState s = runs.get(conversationId);
         if (s == null) return;
         if (agentId != null) s.agentId = agentId;
         if (username != null) s.username = username;
+        if (origin != null) s.origin = origin;
+    }
+
+    public ChatOrigin getRunOrigin(String conversationId) {
+        RunState s = runs.get(conversationId);
+        return s != null ? s.origin : null;
     }
 
     /**

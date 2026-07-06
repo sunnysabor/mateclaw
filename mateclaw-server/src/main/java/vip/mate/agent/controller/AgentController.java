@@ -89,6 +89,15 @@ public class AgentController {
         AgentEntity agent = agentService.getAgent(id);
         verifyResourceWorkspace(agent.getWorkspaceId(), workspaceId);
 
+        if (agentService.isAcpAgent(id)) {
+            return R.ok(AgentCapabilitiesVO.builder()
+                    .agentId(id)
+                    .modelName(agent.getAcpEndpointName() != null ? agent.getAcpEndpointName() : "")
+                    .providerId("acp")
+                    .modalities(List.of("TEXT"))
+                    .build());
+        }
+
         ModelConfigEntity primary;
         try {
             primary = modelConfigService.resolveModel(agent.getModelName());
@@ -207,16 +216,20 @@ public class AgentController {
             @PathVariable Long id,
             @RequestParam String message,
             @RequestParam(defaultValue = "default") String conversationId,
-            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId,
+            Authentication auth) {
         AgentEntity agent = agentService.getAgent(id);
         verifyResourceWorkspace(agent != null ? agent.getWorkspaceId() : null, workspaceId);
         verifyAgentEnabled(agent);
+        vip.mate.agent.context.ChatOrigin origin = vip.mate.agent.context.ChatOrigin.web(
+                conversationId, auth != null ? auth.getName() : null,
+                agent != null ? agent.getWorkspaceId() : workspaceId, null);
 
         // RFC-058 PR-1: Utf8SseEmitter 显式 charset=UTF-8，防止中文 SSE 乱码
         SseEmitter emitter = new Utf8SseEmitter(5 * 60 * 1000L);
         sseExecutor.execute(() -> {
             try {
-                agentService.chatStream(id, message, conversationId)
+                agentService.chatStream(id, message, conversationId, origin)
                         .doOnNext(chunk -> {
                             try {
                                 emitter.send(SseEmitter.event().name("message").data(chunk));
@@ -247,11 +260,15 @@ public class AgentController {
     public R<String> chat(
             @PathVariable Long id,
             @RequestBody ChatRequest request,
-            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId,
+            Authentication auth) {
         AgentEntity agent = agentService.getAgent(id);
         verifyResourceWorkspace(agent != null ? agent.getWorkspaceId() : null, workspaceId);
         verifyAgentEnabled(agent);
-        return R.ok(agentService.chat(id, request.getMessage(), request.getConversationId()));
+        vip.mate.agent.context.ChatOrigin origin = vip.mate.agent.context.ChatOrigin.web(
+                request.getConversationId(), auth != null ? auth.getName() : null,
+                agent != null ? agent.getWorkspaceId() : workspaceId, null);
+        return R.ok(agentService.chat(id, request.getMessage(), request.getConversationId(), origin));
     }
 
     @Operation(summary = "执行复杂任务（Plan-Execute）")
@@ -260,11 +277,15 @@ public class AgentController {
     public R<String> execute(
             @PathVariable Long id,
             @RequestBody ChatRequest request,
-            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId,
+            Authentication auth) {
         AgentEntity agent = agentService.getAgent(id);
         verifyResourceWorkspace(agent != null ? agent.getWorkspaceId() : null, workspaceId);
         verifyAgentEnabled(agent);
-        return R.ok(agentService.execute(id, request.getMessage(), request.getConversationId()));
+        vip.mate.agent.context.ChatOrigin origin = vip.mate.agent.context.ChatOrigin.web(
+                request.getConversationId(), auth != null ? auth.getName() : null,
+                agent != null ? agent.getWorkspaceId() : workspaceId, null);
+        return R.ok(agentService.execute(id, request.getMessage(), request.getConversationId(), origin));
     }
 
     @Operation(summary = "获取Agent运行状态")

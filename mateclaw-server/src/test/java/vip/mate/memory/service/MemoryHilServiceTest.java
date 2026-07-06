@@ -7,8 +7,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.context.ApplicationEventPublisher;
-import vip.mate.memory.event.MemoryWriteEvent;
 import vip.mate.workspace.document.WorkspaceFileService;
 import vip.mate.workspace.document.model.WorkspaceFileEntity;
 
@@ -25,13 +23,12 @@ import static org.mockito.Mockito.*;
 class MemoryHilServiceTest {
 
     @Mock private WorkspaceFileService workspaceFileService;
-    @Mock private ApplicationEventPublisher eventPublisher;
 
     private MemoryHilService service;
 
     @BeforeEach
     void setUp() {
-        service = new MemoryHilService(workspaceFileService, eventPublisher);
+        service = new MemoryHilService(workspaceFileService);
     }
 
     private WorkspaceFileEntity file(String filename, String content) {
@@ -61,28 +58,25 @@ class MemoryHilServiceTest {
     }
 
     @Test
-    @DisplayName("Editing SOUL.md does not publish a MemoryWriteEvent (avoids SOUL self-overwrite)")
-    void editSoul_noEvent() {
+    @DisplayName("Editing SOUL.md writes only the file; canonical events are owned by WorkspaceFileService")
+    void editSoul_fileOnly() {
         when(workspaceFileService.getFile(1L, "SOUL.md"))
                 .thenReturn(file("SOUL.md", "## Tone\ndry\n"));
 
         service.editMemoryEntry(1L, "SOUL.md", "Tone", "warm");
 
         verify(workspaceFileService).saveFile(eq(1L), eq("SOUL.md"), any());
-        verify(eventPublisher, never()).publishEvent(any());
     }
 
     @Test
-    @DisplayName("Editing MEMORY.md publishes a MemoryWriteEvent targeting MEMORY.md")
-    void editMemory_publishesEvent() {
+    @DisplayName("Editing MEMORY.md writes back through WorkspaceFileService once")
+    void editMemory_savesFile() {
         when(workspaceFileService.getFile(1L, "MEMORY.md"))
                 .thenReturn(file("MEMORY.md", "## Facts\nold\n"));
 
         service.editMemoryEntry(1L, "MEMORY.md", "Facts", "fresh");
 
-        ArgumentCaptor<MemoryWriteEvent> event = ArgumentCaptor.forClass(MemoryWriteEvent.class);
-        verify(eventPublisher).publishEvent(event.capture());
-        assertEquals("MEMORY.md", event.getValue().target());
+        verify(workspaceFileService).saveFile(eq(1L), eq("MEMORY.md"), any());
     }
 
     @Test

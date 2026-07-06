@@ -57,7 +57,7 @@ const { t } = useI18n()
 
 // Routes that benefit from extra editor width — the sub-nav auto-collapses
 // to a 56px rail unless the user has explicitly toggled it open.
-const COMPACT_ROUTES = ['/settings/workflows']
+const COMPACT_ROUTES: string[] = []
 
 const navCollapsed = ref(localStorage.getItem('mc-settings-nav-collapsed') === 'true')
 const userExplicit = ref(localStorage.getItem('mc-settings-nav-collapsed') !== null)
@@ -158,12 +158,6 @@ const sections = computed(() => [
     path: '/settings/scheduler',
     label: t('nav.scheduler', 'Scheduler'),
     icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
-  },
-  {
-    id: 'workflows',
-    path: '/settings/workflows',
-    label: t('nav.workflows', 'Workflows'),
-    icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>',
   },
   {
     id: 'skill-curator',

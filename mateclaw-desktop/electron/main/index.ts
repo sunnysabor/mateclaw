@@ -187,38 +187,38 @@ async function startJavaBackend(): Promise<void> {
   // and guide the user toward the connection chooser instead of showing a
   // generic "file not found" error.
   if (BUILD_MODE === 'remote') {
-    console.log('[MateClaw] Remote build — local backend unavailable, showing connection chooser')
+    console.log('[HHAIOS] Remote build — local backend unavailable, showing connection chooser')
     sendToWindow('backend:status', 'choose')
     return
   }
 
   BACKEND_PORT = await getAvailablePort()
   BACKEND_URL = `http://localhost:${BACKEND_PORT}`
-  console.log(`[MateClaw] Using dynamic port: ${BACKEND_PORT}`)
+  console.log(`[HHAIOS] Using dynamic port: ${BACKEND_PORT}`)
 
   const javaExec = getJavaExecutable()
   const jarPath = getJarPath()
   const workingDir = getUserDataPath()
 
-  console.log(`[MateClaw] Java executable: ${javaExec}`)
-  console.log(`[MateClaw] JAR path: ${jarPath}`)
-  console.log(`[MateClaw] Working directory: ${workingDir}`)
+  console.log(`[HHAIOS] Java executable: ${javaExec}`)
+  console.log(`[HHAIOS] JAR path: ${jarPath}`)
+  console.log(`[HHAIOS] Working directory: ${workingDir}`)
 
   if (!existsSync(javaExec)) {
-    console.error(`[MateClaw] Java executable not found: ${javaExec}`)
+    console.error(`[HHAIOS] Java executable not found: ${javaExec}`)
     dialog.showErrorBox(
-      'MateClaw 启动失败',
-      `找不到 Java 运行时环境。\n路径: ${javaExec}\n\n请重新安装 MateClaw。`
+      'HHAIOS 启动失败',
+      `找不到 Java 运行时环境。\n路径: ${javaExec}\n\n请重新安装 HHAIOS。`
     )
     app.quit()
     return
   }
 
   if (!existsSync(jarPath)) {
-    console.error(`[MateClaw] JAR not found: ${jarPath}`)
+    console.error(`[HHAIOS] JAR not found: ${jarPath}`)
     dialog.showErrorBox(
-      'MateClaw 启动失败',
-      `找不到应用程序包。\n路径: ${jarPath}\n\n请重新安装 MateClaw。`
+      'HHAIOS 启动失败',
+      `找不到应用程序包。\n路径: ${jarPath}\n\n请重新安装 HHAIOS。`
     )
     app.quit()
     return
@@ -254,12 +254,12 @@ async function startJavaBackend(): Promise<void> {
   })
 
   javaProcess.on('error', (err: Error) => {
-    console.error('[MateClaw] Failed to start Java process:', err)
+    console.error('[HHAIOS] Failed to start Java process:', err)
     sendToWindow('backend:crashed', `Java 进程启动失败: ${err.message}`)
   })
 
   javaProcess.on('exit', (code: number | null, signal: string | null) => {
-    console.log(`[MateClaw] Java process exited: code=${code}, signal=${signal}`)
+    console.log(`[HHAIOS] Java process exited: code=${code}, signal=${signal}`)
     javaProcess = null
 
     if (!isQuitting) {
@@ -286,11 +286,11 @@ function pollBackendReady(): void {
     // JVM gets the full window to boot.
     const timeout = connectionMode === 'remote' ? 15_000 : HEALTH_CHECK_TIMEOUT
     if (elapsed > timeout) {
-      console.error('[MateClaw] Backend health check timed out')
+      console.error('[HHAIOS] Backend health check timed out')
       sendToWindow('backend:status', 'timeout')
       if (connectionMode !== 'remote') {
         dialog.showErrorBox(
-          'MateClaw 启动超时',
+          'HHAIOS 启动超时',
           '后端服务启动超时，请检查日志或重启应用。'
         )
       }
@@ -308,7 +308,7 @@ function pollBackendReady(): void {
       res.resume()
 
       backendReady = true
-      console.log(`[MateClaw] Backend ready (${elapsed}ms, status: ${res.statusCode})`)
+      console.log(`[HHAIOS] Backend ready (${elapsed}ms, status: ${res.statusCode})`)
       sendToWindow('backend:status', 'ready')
 
       // Bring up the local-tool tunnel. It waits for a renderer JWT (post-login)
@@ -340,18 +340,18 @@ function pollBackendReady(): void {
 async function stopJavaBackend(): Promise<void> {
   if (!javaProcess) return
 
-  console.log('[MateClaw] Stopping Java backend...')
+  console.log('[HHAIOS] Stopping Java backend...')
 
   return new Promise<void>((resolve) => {
     const timeout = setTimeout(() => {
-      console.log('[MateClaw] Force killing Java process')
+      console.log('[HHAIOS] Force killing Java process')
       javaProcess?.kill('SIGKILL')
       resolve()
     }, 10_000) // 10s grace period
 
     javaProcess!.on('exit', () => {
       clearTimeout(timeout)
-      console.log('[MateClaw] Java process stopped')
+      console.log('[HHAIOS] Java process stopped')
       resolve()
     })
 
@@ -410,7 +410,7 @@ function startRemoteConnection(url: string): void {
   // the new URL once the backend reports ready.
   localBridge.stop()
   BACKEND_URL = normalized
-  console.log(`[MateClaw] Remote mode → ${BACKEND_URL}`)
+  console.log(`[HHAIOS] Remote mode → ${BACKEND_URL}`)
   pollBackendReady()
 }
 
@@ -472,7 +472,7 @@ function createWindow(): void {
     height: WINDOW_HEIGHT,
     minWidth: 900,
     minHeight: 600,
-    title: 'MateClaw',
+    title: 'HHAIOS',
     icon: join(__dirname, '../../build/icon.png'),
     webPreferences: {
       preload: preloadPath,
@@ -545,10 +545,10 @@ function setupAutoUpdater(): void {
     // at the project root. It overrides the publish config from electron-builder.json.
     const devUpdateConfig = resolve(__dirname, '../../dev-app-update.yml')
     if (!existsSync(devUpdateConfig)) {
-      console.log('[MateClaw] Skipping auto-updater in dev mode (no dev-app-update.yml)')
+      console.log('[HHAIOS] Skipping auto-updater in dev mode (no dev-app-update.yml)')
       return
     }
-    console.log('[MateClaw] Dev mode: using dev-app-update.yml for updater')
+    console.log('[HHAIOS] Dev mode: using dev-app-update.yml for updater')
     autoUpdater.forceDevUpdateConfig = true
   }
 
@@ -558,7 +558,7 @@ function setupAutoUpdater(): void {
   autoUpdater.on('checking-for-update', () => {
     updaterState = { status: 'checking' }
     sendToWindow('updater:state', updaterState)
-    console.log('[MateClaw] Checking for update...')
+    console.log('[HHAIOS] Checking for update...')
   })
 
   autoUpdater.on('update-available', (info: UpdateInfo) => {
@@ -568,13 +568,13 @@ function setupAutoUpdater(): void {
       releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : undefined,
     }
     sendToWindow('updater:state', updaterState)
-    console.log(`[MateClaw] Update available: ${info.version}`)
+    console.log(`[HHAIOS] Update available: ${info.version}`)
   })
 
   autoUpdater.on('update-not-available', (info: UpdateInfo) => {
     updaterState = { status: 'not-available', version: info.version }
     sendToWindow('updater:state', updaterState)
-    console.log('[MateClaw] No update available')
+    console.log('[HHAIOS] No update available')
   })
 
   autoUpdater.on('download-progress', (progress: ProgressInfo) => {
@@ -594,13 +594,13 @@ function setupAutoUpdater(): void {
   autoUpdater.on('update-downloaded', (info: UpdateInfo) => {
     updaterState = { status: 'downloaded', version: info.version }
     sendToWindow('updater:state', updaterState)
-    console.log(`[MateClaw] Update downloaded: ${info.version}`)
+    console.log(`[HHAIOS] Update downloaded: ${info.version}`)
   })
 
   autoUpdater.on('error', (err: Error) => {
     updaterState = { status: 'error', error: err.message }
     sendToWindow('updater:state', updaterState)
-    console.error('[MateClaw] Auto-updater error:', err.message)
+    console.error('[HHAIOS] Auto-updater error:', err.message)
 
     setTimeout(() => {
       if (updaterState.status === 'error') {
@@ -613,7 +613,7 @@ function setupAutoUpdater(): void {
   // Check for updates after a short delay to avoid blocking startup
   setTimeout(() => {
     autoUpdater.checkForUpdates().catch((err) => {
-      console.error('[MateClaw] Update check failed:', err.message)
+      console.error('[HHAIOS] Update check failed:', err.message)
     })
   }, 3000)
 }
@@ -710,7 +710,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('app:navigate-to-app', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
-      console.log('[MateClaw] Navigating to main application')
+      console.log('[HHAIOS] Navigating to main application')
       mainWindow.loadURL(BACKEND_URL)
     }
   })
@@ -754,7 +754,7 @@ function registerIpcHandlers(): void {
     try {
       await autoUpdater.checkForUpdates()
     } catch (err: any) {
-      console.error('[MateClaw] Manual update check failed:', err.message)
+      console.error('[HHAIOS] Manual update check failed:', err.message)
     }
     return updaterState
   })
@@ -764,20 +764,20 @@ function registerIpcHandlers(): void {
     try {
       await autoUpdater.downloadUpdate()
     } catch (err: any) {
-      console.error('[MateClaw] Download failed:', err.message)
+      console.error('[HHAIOS] Download failed:', err.message)
     }
   })
 
   ipcMain.handle('updater:install', async () => {
     if (updaterState.status !== 'downloaded') return
 
-    console.log('[MateClaw] Installing update, stopping backend first...')
+    console.log('[HHAIOS] Installing update, stopping backend first...')
     isUpdating = true
 
     try {
       await stopJavaBackend()
     } catch (err) {
-      console.error('[MateClaw] Error stopping backend before update:', err)
+      console.error('[HHAIOS] Error stopping backend before update:', err)
     }
 
     autoUpdater.quitAndInstall(false, true)
@@ -807,14 +807,14 @@ function showAboutDialog(): void {
 
   dialog.showMessageBox({
     type: 'info',
-    title: 'About MateClaw',
-    message: 'MateClaw',
+    title: 'About HHAIOS',
+    message: 'HHAIOS',
     detail: [
       `Version: ${app.getVersion()}`,
       '',
-      'Your intelligent AI assistant powered by Spring AI Alibaba.',
+      'HHAIOS AI Operating System.',
       '',
-      `Copyright © 2026 MateClaw Team`,
+      `Copyright © 2026 HHAIOS Team`,
     ].join('\n'),
     buttons: ['OK'],
     icon,
@@ -891,7 +891,7 @@ async function menuCheckForUpdates(): Promise<void> {
         type: 'info',
         title: 'Check for Updates',
         message: 'You are up to date!',
-        detail: `MateClaw ${app.getVersion()} is the latest version.`,
+        detail: `HHAIOS ${app.getVersion()} is the latest version.`,
       })
     }
     // If update is available, the existing updater:state IPC events will notify the renderer
@@ -995,12 +995,12 @@ function setupApplicationMenu(): void {
         { type: 'separator' as const },
       ] : []),
       {
-        label: 'GitHub Repository',
-        click: () => shell.openExternal('https://github.com/matevip/mateclaw'),
+        label: 'HHAIOS Website',
+        click: () => shell.openExternal('https://example.com'),
       },
       {
-        label: 'Report Issue',
-        click: () => shell.openExternal('https://github.com/matevip/mateclaw/issues'),
+        label: 'Support',
+        click: () => shell.openExternal('https://example.com/support'),
       },
       ...(!isMac ? [
         { type: 'separator' as const },
@@ -1096,7 +1096,7 @@ app.on('before-quit', async (event) => {
   try {
     await stopJavaBackend()
   } catch (err) {
-    console.error('[MateClaw] Error stopping backend:', err)
+    console.error('[HHAIOS] Error stopping backend:', err)
   } finally {
     app.exit(0)
   }

@@ -40,9 +40,20 @@ public class MemoryArchiveService {
      * First line checks archiveEnabled flag.
      */
     public void archiveOldDreams(Long agentId) {
+        archiveOldDreams(agentId, null);
+    }
+
+    /**
+     * Owner-scoped archive path. Personal DREAMS.md files must archive into the
+     * same owner's bucket; otherwise old private dream diary entries leak into
+     * the shared archive files.
+     */
+    public void archiveOldDreams(Long agentId, String ownerKey) {
         if (!properties.getDream().isArchiveEnabled()) return;
 
-        WorkspaceFileEntity dreamsFile = workspaceFileService.getFile(agentId, "DREAMS.md");
+        WorkspaceFileEntity dreamsFile = isPersonal(ownerKey)
+                ? workspaceFileService.getVisibleFile(agentId, "DREAMS.md", ownerKey)
+                : workspaceFileService.getFile(agentId, "DREAMS.md");
         if (dreamsFile == null || dreamsFile.getContent() == null || dreamsFile.getContent().isBlank()) {
             return;
         }
@@ -85,11 +96,11 @@ public class MemoryArchiveService {
         // Write archive files
         for (Map.Entry<String, StringBuilder> entry : archives.entrySet()) {
             String archiveFilename = "memory/dreams/" + entry.getKey() + ".md";
-            String existing = readSafe(agentId, archiveFilename);
+            String existing = readSafe(agentId, archiveFilename, ownerKey);
             String archiveContent = existing.isBlank()
                     ? "# Dreaming Archive " + entry.getKey() + "\n\n" + entry.getValue()
                     : existing + "\n" + entry.getValue();
-            workspaceFileService.saveFile(agentId, archiveFilename, archiveContent);
+            saveSafe(agentId, archiveFilename, archiveContent, ownerKey);
         }
 
         // Update DREAMS.md with only kept entries
@@ -97,7 +108,7 @@ public class MemoryArchiveService {
         if (newContent.isEmpty()) {
             newContent = "# Dreaming 整合日记\n\n> All entries archived.";
         }
-        workspaceFileService.saveFile(agentId, "DREAMS.md", newContent);
+        saveSafe(agentId, "DREAMS.md", newContent, ownerKey);
 
         int archivedMonths = archives.size();
         log.info("[Memory] Archived dream entries to {} monthly files for agent={}", archivedMonths, agentId);
@@ -121,11 +132,30 @@ public class MemoryArchiveService {
     }
 
     private String readSafe(Long agentId, String filename) {
+        return readSafe(agentId, filename, null);
+    }
+
+    private String readSafe(Long agentId, String filename, String ownerKey) {
         try {
-            WorkspaceFileEntity file = workspaceFileService.getFile(agentId, filename);
+            WorkspaceFileEntity file = isPersonal(ownerKey)
+                    ? workspaceFileService.getVisibleFile(agentId, filename, ownerKey)
+                    : workspaceFileService.getFile(agentId, filename);
             return file != null && file.getContent() != null ? file.getContent() : "";
         } catch (Exception e) {
             return "";
         }
+    }
+
+    private void saveSafe(Long agentId, String filename, String content, String ownerKey) {
+        if (isPersonal(ownerKey)) {
+            workspaceFileService.saveMemoryFile(agentId, filename, content, ownerKey);
+        } else {
+            workspaceFileService.saveFile(agentId, filename, content);
+        }
+    }
+
+    private boolean isPersonal(String ownerKey) {
+        return ownerKey != null && !ownerKey.isBlank()
+                && !vip.mate.memory.identity.MemoryOwnerResolver.SYSTEM_OWNER.equals(ownerKey);
     }
 }

@@ -10,6 +10,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import vip.mate.channel.web.Utf8SseEmitter;
 import vip.mate.memory.event.DreamCompletedEvent;
 import vip.mate.memory.event.DreamFailedEvent;
+import vip.mate.memory.identity.MemoryOwnerResolver;
 import vip.mate.memory.service.DreamReport;
 
 import java.util.List;
@@ -30,15 +31,25 @@ public class DreamEventBroadcaster {
     private final ObjectMapper objectMapper;
     private final List<EmitterEntry> emitters = new CopyOnWriteArrayList<>();
 
-    record EmitterEntry(Long agentId, SseEmitter emitter) {}
+    record EmitterEntry(Long agentId, String ownerKey, SseEmitter emitter) {}
 
     /**
      * Register a new SSE emitter for an agent.
      */
     public SseEmitter register(Long agentId) {
+        return register(agentId, null);
+    }
+
+    /**
+     * Register a new SSE emitter for an agent and owner. Owner scoping matters
+     * because dream events include topics and update counts for PERSONAL memory
+     * runs; broadcasting those to every member watching the same agent leaks
+     * another user's private memory activity.
+     */
+    public SseEmitter register(Long agentId, String ownerKey) {
         // RFC-058 PR-1: Utf8SseEmitter 显式 charset=UTF-8，防止中文 SSE 乱码
         SseEmitter emitter = new Utf8SseEmitter(300_000L); // 5 min timeout
-        EmitterEntry entry = new EmitterEntry(agentId, emitter);
+        EmitterEntry entry = new EmitterEntry(agentId, normalizeOwner(ownerKey), emitter);
         emitters.add(entry);
         emitter.onCompletion(() -> emitters.remove(entry));
         emitter.onTimeout(() -> emitters.remove(entry));
@@ -78,8 +89,10 @@ public class DreamEventBroadcaster {
         }
 
         List<EmitterEntry> dead = new java.util.ArrayList<>();
+        String reportOwner = normalizeOwner(report.ownerKey());
         for (EmitterEntry entry : emitters) {
             if (!entry.agentId().equals(agentId)) continue;
+            if (!canReceive(entry.ownerKey(), reportOwner)) continue;
             try {
                 entry.emitter().send(SseEmitter.event()
                         .name(eventType)
@@ -90,5 +103,17 @@ public class DreamEventBroadcaster {
         }
         emitters.removeAll(dead);
         log.debug("[DreamSSE] Broadcast {} to {} clients for agent={}", eventType, emitters.size(), agentId);
+    }
+
+    private String normalizeOwner(String ownerKey) {
+        return ownerKey == null || ownerKey.isBlank()
+                || MemoryOwnerResolver.SYSTEM_OWNER.equals(ownerKey)
+                ? null : ownerKey;
+    }
+
+    private boolean canReceive(String subscriberOwner, String reportOwner) {
+        // Shared TEAM/GLOBAL dream events can be sent to every subscriber for
+        // that agent. PERSONAL events only go to the same owner.
+        return reportOwner == null || reportOwner.equals(subscriberOwner);
     }
 }

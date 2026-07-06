@@ -67,6 +67,18 @@ const router = createRouter({
           meta: { title: 'Enterprise Scenarios', requiredCapability: 'manage:agents' },
         },
         {
+          path: 'workflows',
+          name: 'Workflows',
+          component: () => import('@/views/Workflows.vue'),
+          meta: { title: 'Workflows', requiredCapability: 'manage:settings' },
+        },
+        {
+          path: 'dify-workflows',
+          name: 'DifyWorkflows',
+          component: () => import('@/views/Settings/DifyWorkflows/index.vue'),
+          meta: { title: 'Dify Workflows', requireAdmin: true },
+        },
+        {
           path: 'memory',
           name: 'Memory',
           component: () => import('@/views/Memory/index.vue'),
@@ -208,12 +220,6 @@ const router = createRouter({
               meta: { title: 'Settings - Skill Curator', requiredCapability: 'manage:settings' },
             },
             {
-              path: 'workflows',
-              name: 'SettingsWorkflows',
-              component: () => import('@/views/Workflows.vue'),
-              meta: { title: 'Settings - Workflows', requiredCapability: 'manage:settings' },
-            },
-            {
               path: 'datasources',
               name: 'SettingsDatasources',
               component: () => import('@/views/Datasources.vue'),
@@ -327,6 +333,8 @@ const router = createRouter({
         { path: 'datasources', redirect: '/settings/datasources' },
         { path: 'mcp-servers', redirect: '/settings/mcp-servers' },
         { path: 'token-usage', redirect: '/settings/token-usage' },
+        { path: 'settings/workflows', redirect: '/workflows' },
+        { path: 'settings/dify-workflows', redirect: '/dify-workflows' },
         // RFC-090 Phase 1: Tools 顶层降级到 Settings
         { path: 'tools', redirect: '/settings/tools' },
       ],

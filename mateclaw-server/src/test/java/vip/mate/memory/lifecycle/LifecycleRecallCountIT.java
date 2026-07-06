@@ -43,6 +43,10 @@ class LifecycleRecallCountIT {
     @Mock private ApplicationEventPublisher eventPublisher;
     @Mock private BaseAgent mockAgent;
     @Mock private ConversationMapper conversationMapper;
+    @Mock private vip.mate.acp.service.AcpAgentRuntimeService acpAgentRuntimeService;
+    @Mock private vip.mate.agent.binding.repository.AgentSkillBindingMapper agentSkillBindingMapper;
+    @Mock private vip.mate.agent.binding.repository.AgentToolBindingMapper agentToolBindingMapper;
+    @Mock private vip.mate.agent.binding.repository.AgentWikiKbBindingMapper agentWikiKbBindingMapper;
 
     private MemoryProperties props;
     private AgentService agentService;
@@ -53,13 +57,16 @@ class LifecycleRecallCountIT {
         MemoryLifecycleMediator mediator = new MemoryLifecycleMediator(memoryManager, eventPublisher);
         agentService = new AgentService(agentMapper, agentGraphBuilder,
                 memoryRecallTracker, mediator, props,
-                new vip.mate.memory.identity.MemoryOwnerResolver(), conversationMapper);
+                new vip.mate.memory.identity.MemoryOwnerResolver(), acpAgentRuntimeService,
+                agentSkillBindingMapper, agentToolBindingMapper, agentWikiKbBindingMapper,
+                conversationMapper);
 
         // Stub agent resolution (lenient for structural-only tests)
         AgentEntity entity = new AgentEntity();
         entity.setId(1L);
         entity.setEnabled(true);
         lenient().when(agentMapper.selectById(1L)).thenReturn(entity);
+        lenient().when(acpAgentRuntimeService.isAcpAgent(any())).thenReturn(false);
         lenient().when(agentGraphBuilder.build(any(AgentEntity.class), any(), any())).thenReturn(mockAgent);
         lenient().when(mockAgent.chat(any(), any())).thenReturn("reply");
     }
@@ -74,7 +81,7 @@ class LifecycleRecallCountIT {
         }
 
         // trackRecalls: exactly 10 times (once per chat call)
-        verify(memoryRecallTracker, times(10)).trackRecalls(eq(1L), any());
+        verify(memoryRecallTracker, times(10)).trackRecalls(eq(1L), any(), eq("system"));
 
         // Mediator is not invoked when flag is off
         verify(memoryManager, never()).prefetchAll(any(), any(), any());
@@ -92,7 +99,7 @@ class LifecycleRecallCountIT {
         }
 
         // trackRecalls: still exactly 10 times — NOT 20 (D4: mediator does not call trackRecalls)
-        verify(memoryRecallTracker, times(10)).trackRecalls(eq(1L), any());
+        verify(memoryRecallTracker, times(10)).trackRecalls(eq(1L), any(), eq("system"));
 
         // Mediator IS invoked
         verify(memoryManager, times(10)).prefetchAll(eq(1L), any(), any());
@@ -116,10 +123,28 @@ class LifecycleRecallCountIT {
         }
 
         // Total: 10 trackRecalls calls regardless of flag state
-        verify(memoryRecallTracker, times(10)).trackRecalls(eq(1L), any());
+        verify(memoryRecallTracker, times(10)).trackRecalls(eq(1L), any(), eq("system"));
 
         // Mediator only called for the ON rounds
         verify(memoryManager, times(5)).prefetchAll(eq(1L), any(), any());
+    }
+
+    @Test
+    @DisplayName("ACP agents bypass local memory recall tracking")
+    void acpAgentDoesNotTrackLocalRecalls() {
+        AgentEntity acp = new AgentEntity();
+        acp.setId(2L);
+        acp.setAgentType("acp");
+        acp.setEnabled(true);
+        when(agentMapper.selectById(2L)).thenReturn(acp);
+        when(acpAgentRuntimeService.isAcpAgent(acp)).thenReturn(true);
+        when(acpAgentRuntimeService.chat(acp, "hello", "conv-acp")).thenReturn("external");
+
+        String reply = agentService.chat(2L, "hello", "conv-acp");
+
+        org.junit.jupiter.api.Assertions.assertEquals("external", reply);
+        verify(memoryRecallTracker, never()).trackRecalls(eq(2L), any(), any());
+        verify(agentGraphBuilder, never()).build(eq(acp), any(), any());
     }
 
     @Test

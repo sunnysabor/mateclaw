@@ -1,6 +1,6 @@
 ---
 title: AI Memory System — 4-Layer Memory Lifecycle (Extract, Consolidate, Dream, Recall)
-description: MateClaw's 4-layer memory lifecycle — in-conversation context, post-chat extraction, workspace persistence (PROFILE.md/MEMORY.md), and scheduled Dreaming consolidation. Your AI gets smarter every day.
+description: HHAIOS's 4-layer memory lifecycle — in-conversation context, post-chat extraction, workspace persistence (PROFILE.md/MEMORY.md), and scheduled Dreaming consolidation. Your AI gets smarter every day.
 head:
   - - meta
     - name: keywords
@@ -11,16 +11,16 @@ head:
 
 **Memory is how the system gets better at knowing you.**
 
-Everything else in MateClaw is static the moment you configure it. Agents, tools, knowledge bases — they change when you change them. Memory is the one part that changes on its own, as a byproduct of actual use. That's the whole point.
+Everything else in HHAIOS is static the moment you configure it. Agents, tools, knowledge bases — they change when you change them. Memory is the one part that changes on its own, as a byproduct of actual use. That's the whole point.
 
 ::: tip Your AI dreams about you while you sleep
 That's not a marketing line. It's literal code in the `memory/dreaming/` package.
 
 Every night at 3 AM (default; configurable) a scheduled job runs — its name is **Dreaming**. It walks every agent's conversation trail from the day, consolidates scattered signals into a coherent understanding of you, filters out one-offs and contradictions and stale facts, promotes recurring patterns into `MEMORY.md`, and appends "what it saw, what it concluded, what it rewrote" to `DREAMS.md` — a human-readable audit trail of how memory got to where it is today.
 
-When you open MateClaw the next morning, it **picks up where yesterday left off** — not from zero.
+When you open HHAIOS the next morning, it **picks up where yesterday left off** — not from zero.
 
-> Every other AI starts each day from scratch. MateClaw continues from where yesterday ended.
+> Every other AI starts each day from scratch. HHAIOS continues from where yesterday ended.
 :::
 
 This page covers the four layers that make up memory, the files the system writes for each agent, and how agents themselves read and write those files during a conversation.
@@ -98,7 +98,7 @@ The system prompt bakes in only the shared TEAM/GLOBAL memory (cacheable); each 
 
 ### Third-party APIs pass through an end-user identity
 
-`/api/v1/chat` and `/api/v1/chat/stream` request bodies gain an optional **`endUserId`** field (a string, to preserve large-integer precision). One PAT-authenticated integration represents one MateClaw user but can pass a distinct `endUserId` per end user, and memory isolates per end user automatically.
+`/api/v1/chat` and `/api/v1/chat/stream` request bodies gain an optional **`endUserId`** field (a string, to preserve large-integer precision). One PAT-authenticated integration represents one HHAIOS user but can pass a distinct `endUserId` per end user, and memory isolates per end user automatically.
 
 ### It's a feature flag
 
@@ -118,7 +118,7 @@ Under the hood: migration `V137` adds `owner_key` + `scope` columns to `mate_wor
 
 The memory layer is not one hard-coded implementation. It's an **interface** — the multi-layer architecture lets you stack providers:
 
-- The **default provider** is the workspace-file-based memory described in the rest of this page. It ships with MateClaw, and for most people it's all they'll ever need.
+- The **default provider** is the workspace-file-based memory described in the rest of this page. It ships with HHAIOS, and for most people it's all they'll ever need.
 - **Custom providers** can be dropped in for specialized retrieval — vector-based long-term memory, graph memory, external memory services.
 - **Layering** means a single agent can talk to multiple providers at once. A short-term provider returns recent context; a semantic provider returns related memories; a Wiki provider returns authoritative references. They compose at read time.
 
@@ -163,7 +163,7 @@ Conversation highlights archived by date, in append mode — multiple conversati
 
 ## Short-term: the context window
 
-Before every LLM call, MateClaw builds the prompt that actually gets sent:
+Before every LLM call, HHAIOS builds the prompt that actually gets sent:
 
 ```
 [System Prompt]                        ← Always first

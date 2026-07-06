@@ -242,7 +242,7 @@ import type { Channel } from '@/types'
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 // Lazy-load the canvas + Monaco editor — each pulls a heavy vendor chunk
 // (@vue-flow/* and monaco-editor respectively). Keeping them out of the
-// route's main chunk means /settings/workflows starts as ~500 KB instead
+// route's main chunk means /workflows starts as ~500 KB instead
 // of 4 MB, and the Docker production build no longer needs the
 // --max-old-space-size=6144 escape hatch.
 const WorkflowCanvas = defineAsyncComponent(

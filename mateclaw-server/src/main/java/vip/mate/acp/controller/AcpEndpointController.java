@@ -5,6 +5,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 import vip.mate.acp.model.AcpEndpointEntity;
+import vip.mate.acp.service.AcpAgentDiagnosticService;
 import vip.mate.acp.service.AcpConnectionTester;
 import vip.mate.acp.service.AcpEndpointService;
 import vip.mate.common.result.R;
@@ -27,41 +28,54 @@ public class AcpEndpointController {
 
     private final AcpEndpointService service;
     private final AcpConnectionTester tester;
+    private final AcpAgentDiagnosticService agentDiagnosticService;
 
     @Operation(summary = "List ACP endpoints")
     @GetMapping
     @RequireWorkspaceRole("admin")
-    public R<List<AcpEndpointEntity>> list() {
-        return R.ok(service.list());
+    public R<List<AcpEndpointEntity>> list(
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        return R.ok(service.list(workspaceId));
+    }
+
+    @Operation(summary = "Diagnose first-class coding agents")
+    @GetMapping("/agents/diagnostics")
+    @RequireWorkspaceRole("admin")
+    public R<List<AcpAgentDiagnosticService.AgentDiagnostic>> agentDiagnostics() {
+        return R.ok(agentDiagnosticService.diagnostics());
     }
 
     @Operation(summary = "Get ACP endpoint by id")
     @GetMapping("/{id}")
     @RequireWorkspaceRole("admin")
-    public R<AcpEndpointEntity> get(@PathVariable Long id) {
-        return R.ok(service.get(id));
+    public R<AcpEndpointEntity> get(@PathVariable Long id,
+                                    @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        return R.ok(service.get(id, workspaceId));
     }
 
     @Operation(summary = "Create a custom ACP endpoint")
     @PostMapping
     @RequireWorkspaceRole("admin")
-    public R<AcpEndpointEntity> create(@RequestBody AcpEndpointEntity body) {
-        return R.ok(service.create(body));
+    public R<AcpEndpointEntity> create(@RequestBody AcpEndpointEntity body,
+                                       @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        return R.ok(service.create(body, workspaceId));
     }
 
     @Operation(summary = "Update an ACP endpoint")
     @PutMapping("/{id}")
     @RequireWorkspaceRole("admin")
     public R<AcpEndpointEntity> update(@PathVariable Long id,
-                                        @RequestBody AcpEndpointEntity body) {
-        return R.ok(service.update(id, body));
+                                        @RequestBody AcpEndpointEntity body,
+                                        @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        return R.ok(service.update(id, body, workspaceId));
     }
 
     @Operation(summary = "Delete an ACP endpoint (builtins are protected)")
     @DeleteMapping("/{id}")
     @RequireWorkspaceRole("admin")
-    public R<Void> delete(@PathVariable Long id) {
-        service.delete(id);
+    public R<Void> delete(@PathVariable Long id,
+                          @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        service.delete(id, workspaceId);
         return R.ok();
     }
 
@@ -69,8 +83,9 @@ public class AcpEndpointController {
     @PutMapping("/{id}/toggle")
     @RequireWorkspaceRole("admin")
     public R<AcpEndpointEntity> toggle(@PathVariable Long id,
-                                        @RequestParam boolean enabled) {
-        return R.ok(service.toggle(id, enabled));
+                                        @RequestParam boolean enabled,
+                                        @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        return R.ok(service.toggle(id, enabled, workspaceId));
     }
 
     /**
@@ -80,8 +95,9 @@ public class AcpEndpointController {
     @Operation(summary = "Test ACP endpoint connection (initialize handshake)")
     @PostMapping("/{id}/test")
     @RequireWorkspaceRole("admin")
-    public R<Map<String, Object>> test(@PathVariable Long id) {
-        AcpEndpointEntity endpoint = service.get(id);
+    public R<Map<String, Object>> test(@PathVariable Long id,
+                                       @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        AcpEndpointEntity endpoint = service.get(id, workspaceId);
         return R.ok(tester.testEndpoint(endpoint));
     }
 }

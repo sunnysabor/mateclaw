@@ -18,6 +18,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -34,12 +35,15 @@ import java.util.zip.ZipOutputStream;
 /**
  * Snapshot / restore for agent workspace memory files.
  * <p>
- * The agent's memory surface lives in a small, fixed set of Markdown files —
- * the five top-level files ({@code AGENTS.md}, {@code MEMORY.md},
- * {@code PROFILE.md}, {@code SOUL.md}, {@code KNOWLEDGE.md}) plus the daily
- * ledger under {@code memory/YYYY-MM-DD.md}. Users get to take that surface
- * with them via a single ZIP and re-apply it later: backup-restore, copy to
- * a sibling agent, hand-edit offline in {@code vim} and re-upload.
+ * The agent's visible memory surface lives in a small, fixed set of Markdown
+ * files — the top-level memory files ({@code AGENTS.md}, {@code MEMORY.md},
+ * {@code PROFILE.md}, {@code SOUL.md}, {@code KNOWLEDGE.md}, {@code DREAMS.md}),
+ * typed structured memory under {@code structured/*.md}, the daily ledger under
+ * {@code memory/YYYY-MM-DD.md}, and dream archives under
+ * {@code memory/dreams/YYYY-MM.md}. With per-owner isolation enabled,
+ * export/import operates on the same visible surface as runtime recall:
+ * shared rows plus the current owner's PERSONAL rows, with PERSONAL taking
+ * precedence for the same filename.
  * <p>
  * Three operations:
  * <ul>
@@ -84,11 +88,21 @@ public class WorkspaceMemoryArchiveService {
     private static final Pattern DAILY_FILENAME =
             Pattern.compile("^memory/\\d{4}-\\d{2}-\\d{2}\\.md$");
 
+    /** Typed structured memory files. Only one path segment is allowed after
+     *  {@code structured/}; this keeps the import surface narrow while still
+     *  preserving all first-class structured memory buckets. */
+    private static final Pattern STRUCTURED_FILENAME =
+            Pattern.compile("^structured/[A-Za-z0-9_-]+\\.md$");
+
+    /** Monthly dream diary archives produced by {@code MemoryArchiveService}. */
+    private static final Pattern DREAM_ARCHIVE_FILENAME =
+            Pattern.compile("^memory/dreams/\\d{4}-\\d{2}\\.md$");
+
     /** Top-level whitelist. Anything outside lands in the skip list with reason
      *  {@code "not in whitelist"} so the user can see why their {@code secrets.txt}
      *  was ignored. */
     private static final Set<String> TOP_LEVEL_WHITELIST = Set.of(
-            "AGENTS.md", "MEMORY.md", "PROFILE.md", "SOUL.md", "KNOWLEDGE.md");
+            "AGENTS.md", "MEMORY.md", "PROFILE.md", "SOUL.md", "KNOWLEDGE.md", "DREAMS.md");
 
     /** Per-entry decompressed-size cap. 1 MB comfortably covers a heavy
      *  Markdown memory file but rejects pathological "1 GB of zeroes"
@@ -104,8 +118,8 @@ public class WorkspaceMemoryArchiveService {
     public static final long MAX_TOTAL_BYTES = 16L * 1024 * 1024;
 
     /** Hard limit on entries in one archive. The full whitelisted memory set
-     *  is 5 top-level files + at most ~365 daily ledger files per year, so
-     *  500 is a comfortable ceiling. */
+     *  is a few top-level / structured files + at most ~365 daily ledger files
+     *  per year, so 500 is a comfortable ceiling. */
     public static final int MAX_ENTRIES = 500;
 
     /** Manifest file at the root of the export bundle. Optional on import —
@@ -124,16 +138,25 @@ public class WorkspaceMemoryArchiveService {
     // ==================== Export ====================
 
     public byte[] export(Long agentId, Long workspaceId) {
+        return export(agentId, workspaceId, null);
+    }
+
+    public byte[] export(Long agentId, Long workspaceId, String ownerKey) {
         AgentEntity agent = assertOwnership(agentId, workspaceId);
 
-        List<WorkspaceFileEntity> all = workspaceFileService.listFiles(agentId);
-        // listFiles strips content for transport — re-fetch each allowed file
-        // by name so we can write its body into the archive.
+        String effectiveOwner = isPersonal(ownerKey) ? ownerKey : null;
+        List<WorkspaceFileEntity> all = effectiveOwner != null
+                ? dedupeByFilenamePreferPersonal(workspaceFileService.listVisibleFiles(agentId, effectiveOwner))
+                : workspaceFileService.listFiles(agentId);
+        // Listing strips content for transport — re-fetch each allowed visible
+        // file by name so we can write its body into the archive.
         List<WorkspaceFileEntity> exportable = new ArrayList<>();
         for (WorkspaceFileEntity meta : all) {
             String name = meta.getFilename();
             if (name != null && isAllowedFilename(name)) {
-                WorkspaceFileEntity full = workspaceFileService.getFile(agentId, name);
+                WorkspaceFileEntity full = effectiveOwner != null
+                        ? workspaceFileService.getVisibleFile(agentId, name, effectiveOwner)
+                        : workspaceFileService.getFile(agentId, name);
                 if (full != null && full.getContent() != null) {
                     exportable.add(full);
                 }
@@ -173,19 +196,27 @@ public class WorkspaceMemoryArchiveService {
     // ==================== Preview ====================
 
     public ImportPreview previewImport(Long agentId, Long workspaceId, byte[] zipBytes) {
+        return previewImport(agentId, workspaceId, zipBytes, null);
+    }
+
+    public ImportPreview previewImport(Long agentId, Long workspaceId, byte[] zipBytes, String ownerKey) {
         assertOwnership(agentId, workspaceId);
         Map<String, byte[]> entries = readAndValidateZip(zipBytes);
-        return classify(agentId, entries, /* applyWrites */ false, null);
+        return classify(agentId, entries, /* applyWrites */ false, null, ownerKey);
     }
 
     // ==================== Apply ====================
 
     @Transactional
     public ImportResult apply(Long agentId, Long workspaceId, byte[] zipBytes) {
+        return apply(agentId, workspaceId, zipBytes, null);
+    }
+
+    public ImportResult apply(Long agentId, Long workspaceId, byte[] zipBytes, String ownerKey) {
         assertOwnership(agentId, workspaceId);
         Map<String, byte[]> entries = readAndValidateZip(zipBytes);
         int[] counter = new int[]{0};
-        ImportPreview preview = classify(agentId, entries, /* applyWrites */ true, counter);
+        ImportPreview preview = classify(agentId, entries, /* applyWrites */ true, counter, ownerKey);
         return new ImportResult(counter[0], preview.willSkip.size());
     }
 
@@ -215,20 +246,32 @@ public class WorkspaceMemoryArchiveService {
         if (TOP_LEVEL_WHITELIST.contains(name)) {
             return true;
         }
-        if (!DAILY_FILENAME.matcher(name).matches()) {
-            return false;
-        }
-        // The regex only constrains digit shape, so structurally-valid but
-        // non-existent dates (memory/2026-13-99.md, memory/2026-02-30.md)
-        // would slip through. Parse the date to reject calendar dates that
-        // cannot occur, keeping the daily ledger namespace clean.
-        String date = name.substring("memory/".length(), name.length() - ".md".length());
-        try {
-            LocalDate.parse(date);
+        if (STRUCTURED_FILENAME.matcher(name).matches()) {
             return true;
-        } catch (DateTimeParseException e) {
-            return false;
         }
+        if (DAILY_FILENAME.matcher(name).matches()) {
+            // The regex only constrains digit shape, so structurally-valid but
+            // non-existent dates (memory/2026-13-99.md, memory/2026-02-30.md)
+            // would slip through. Parse the date to reject calendar dates that
+            // cannot occur, keeping the daily ledger namespace clean.
+            String date = name.substring("memory/".length(), name.length() - ".md".length());
+            try {
+                LocalDate.parse(date);
+                return true;
+            } catch (DateTimeParseException e) {
+                return false;
+            }
+        }
+        if (DREAM_ARCHIVE_FILENAME.matcher(name).matches()) {
+            String month = name.substring("memory/dreams/".length(), name.length() - ".md".length());
+            try {
+                YearMonth.parse(month);
+                return true;
+            } catch (DateTimeParseException e) {
+                return false;
+            }
+        }
+        return false;
     }
 
     /**
@@ -299,7 +342,8 @@ public class WorkspaceMemoryArchiveService {
      * incremented per persisted row.
      */
     private ImportPreview classify(Long agentId, Map<String, byte[]> entries,
-                                    boolean applyWrites, int[] counter) {
+                                    boolean applyWrites, int[] counter, String ownerKey) {
+        String effectiveOwner = isPersonal(ownerKey) ? ownerKey : null;
         List<String> willCreate = new ArrayList<>();
         List<FileDiff> willUpdate = new ArrayList<>();
         List<SkipEntry> willSkip = new ArrayList<>();
@@ -321,11 +365,13 @@ public class WorkspaceMemoryArchiveService {
             String newContent = new String(body, StandardCharsets.UTF_8);
             String newHash = sha256Hex(body);
 
-            WorkspaceFileEntity existing = workspaceFileService.getFile(agentId, name);
+            WorkspaceFileEntity existing = effectiveOwner != null
+                    ? workspaceFileService.getVisibleFile(agentId, name, effectiveOwner)
+                    : workspaceFileService.getFile(agentId, name);
             if (existing == null) {
                 willCreate.add(name);
                 if (applyWrites) {
-                    workspaceFileService.saveFile(agentId, name, newContent);
+                    saveVisible(agentId, name, newContent, effectiveOwner);
                     counter[0]++;
                 }
                 continue;
@@ -340,11 +386,36 @@ public class WorkspaceMemoryArchiveService {
             }
             willUpdate.add(new FileDiff(name, existingBytes.length, body.length, oldHash, newHash));
             if (applyWrites) {
-                workspaceFileService.saveFile(agentId, name, newContent);
+                saveVisible(agentId, name, newContent, effectiveOwner);
                 counter[0]++;
             }
         }
         return new ImportPreview(willCreate, willUpdate, willSkip);
+    }
+
+    private void saveVisible(Long agentId, String name, String content, String ownerKey) {
+        if (isPersonal(ownerKey)) {
+            workspaceFileService.saveMemoryFile(agentId, name, content, ownerKey);
+        } else {
+            workspaceFileService.saveFile(agentId, name, content);
+        }
+    }
+
+    private boolean isPersonal(String ownerKey) {
+        return ownerKey != null && !ownerKey.isBlank()
+                && !vip.mate.memory.identity.MemoryOwnerResolver.SYSTEM_OWNER.equals(ownerKey);
+    }
+
+    private List<WorkspaceFileEntity> dedupeByFilenamePreferPersonal(List<WorkspaceFileEntity> files) {
+        Map<String, WorkspaceFileEntity> byName = new LinkedHashMap<>();
+        for (WorkspaceFileEntity file : files) {
+            if (file == null || file.getFilename() == null) continue;
+            WorkspaceFileEntity existing = byName.get(file.getFilename());
+            if (existing == null || vip.mate.memory.identity.MemoryScope.PERSONAL.equals(file.getScope())) {
+                byName.put(file.getFilename(), file);
+            }
+        }
+        return new ArrayList<>(byName.values());
     }
 
     private static String sha256Hex(byte[] body) {

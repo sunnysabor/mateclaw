@@ -113,7 +113,7 @@ public class MateClawApplication {
     public void onReady() {
         log.info("");
         log.info("╔══════════════════════════════════════════════════════════════════════╗");
-        log.info("║  MateClaw is READY  ✓                                              ║");
+        log.info("║  HHAIOS is READY  ✓                                                ║");
         log.info("║  Web UI →  http://localhost:18088                                  ║");
         log.info("║  Swagger → http://localhost:18088/swagger-ui.html                  ║");
         log.info("╚══════════════════════════════════════════════════════════════════════╝");

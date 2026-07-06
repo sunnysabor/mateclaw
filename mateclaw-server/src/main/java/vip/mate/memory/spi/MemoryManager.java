@@ -199,6 +199,29 @@ public class MemoryManager {
         return String.join("\n\n", parts);
     }
 
+    /**
+     * Dispatch canonical memory-write notifications to providers. This is the
+     * bridge from Spring's MemoryWriteEvent bus into the MemoryProvider SPI; it
+     * keeps secondary projections (for example the fact store) synchronized
+     * with MEMORY.md / structured/*.md writes.
+     */
+    public void onMemoryWrite(Long agentId, String target, String action, String content) {
+        onMemoryWrite(agentId, target, action, content, null,
+                vip.mate.memory.identity.MemoryScope.TEAM);
+    }
+
+    public void onMemoryWrite(Long agentId, String target, String action, String content,
+                              String ownerKey, String scope) {
+        for (MemoryProvider provider : providers) {
+            try {
+                provider.onMemoryWrite(agentId, target, action, content, ownerKey, scope);
+            } catch (Exception e) {
+                log.debug("[MemoryManager] Provider '{}' onMemoryWrite failed: {}",
+                        provider.id(), e.getMessage());
+            }
+        }
+    }
+
     // ==================== Context Fencing ====================
 
     /**

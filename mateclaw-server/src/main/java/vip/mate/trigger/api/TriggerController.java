@@ -3,8 +3,12 @@ package vip.mate.trigger.api;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
+import vip.mate.auth.model.UserEntity;
+import vip.mate.auth.service.AuthService;
 import vip.mate.common.result.R;
+import vip.mate.exception.MateClawException;
 import vip.mate.trigger.ingest.TriggerEventEnvelope;
 import vip.mate.trigger.ingest.TriggerEventIngestService;
 import vip.mate.trigger.model.TriggerEntity;
@@ -28,6 +32,7 @@ public class TriggerController {
 
     private final TriggerService triggerService;
     private final TriggerEventIngestService ingestService;
+    private final AuthService authService;
 
     @Operation(summary = "List triggers in the caller's workspace.")
     @GetMapping
@@ -50,11 +55,13 @@ public class TriggerController {
     @PostMapping
     @RequireWorkspaceRole("admin")
     public R<TriggerEntity> create(@RequestBody TriggerEntity trigger,
-                                   @RequestHeader("X-Workspace-Id") long workspaceId) {
+                                   @RequestHeader("X-Workspace-Id") long workspaceId,
+                                   Authentication auth) {
         // The controller forces workspace from the trusted header — the
         // body's workspaceId is ignored so a caller can't plant a trigger
         // into another workspace by tweaking the JSON.
         try {
+            requireDifyGlobalAdmin(trigger, auth);
             return R.ok(triggerService.create(trigger, workspaceId));
         } catch (IllegalArgumentException e) {
             return R.fail(e.getMessage());
@@ -66,8 +73,13 @@ public class TriggerController {
     @RequireWorkspaceRole("admin")
     public R<TriggerEntity> update(@PathVariable long id,
                                    @RequestBody TriggerEntity trigger,
-                                   @RequestHeader("X-Workspace-Id") long workspaceId) {
+                                   @RequestHeader("X-Workspace-Id") long workspaceId,
+                                   Authentication auth) {
         try {
+            TriggerEntity existing = triggerService.get(id, workspaceId);
+            if (existing == null) return R.fail("trigger not found: " + id);
+            requireDifyGlobalAdmin(existing, auth);
+            requireDifyGlobalAdmin(trigger, auth);
             return R.ok(triggerService.update(id, workspaceId, trigger));
         } catch (IllegalArgumentException e) {
             return R.fail(e.getMessage());
@@ -78,9 +90,28 @@ public class TriggerController {
     @DeleteMapping("/{id}")
     @RequireWorkspaceRole("admin")
     public R<Void> delete(@PathVariable long id,
-                          @RequestHeader("X-Workspace-Id") long workspaceId) {
+                          @RequestHeader("X-Workspace-Id") long workspaceId,
+                          Authentication auth) {
+        TriggerEntity existing = triggerService.get(id, workspaceId);
+        if (existing != null) requireDifyGlobalAdmin(existing, auth);
         triggerService.delete(id, workspaceId);
         return R.ok();
+    }
+
+    private void requireDifyGlobalAdmin(TriggerEntity trigger, Authentication auth) {
+        if (trigger == null || !"dify_workflow".equals(trigger.getTargetType())) return;
+        if (!isGlobalAdmin(auth)) {
+            throw new MateClawException("err.dify.trigger_admin_required", 403,
+                    "Global administrator role required for Dify workflow triggers");
+        }
+    }
+
+    private boolean isGlobalAdmin(Authentication auth) {
+        if (auth == null || !auth.isAuthenticated() || "anonymousUser".equals(auth.getPrincipal())) {
+            return false;
+        }
+        UserEntity user = authService.findByUsername(auth.getName());
+        return user != null && "admin".equalsIgnoreCase(user.getRole());
     }
 
     /**

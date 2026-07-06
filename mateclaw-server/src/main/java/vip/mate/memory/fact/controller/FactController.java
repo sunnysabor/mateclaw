@@ -9,9 +9,10 @@ import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 import vip.mate.common.result.R;
 import vip.mate.memory.MemoryProperties;
+import vip.mate.memory.identity.MemoryOwnerResolver;
+import vip.mate.memory.identity.MemoryScope;
 import vip.mate.memory.fact.model.FactContradictionEntity;
 import vip.mate.memory.fact.model.FactEntity;
-import vip.mate.memory.fact.projection.FactProjectionBuilder;
 import vip.mate.memory.fact.query.FactQueryService;
 import vip.mate.memory.fact.repository.FactContradictionMapper;
 import vip.mate.memory.fact.repository.FactMapper;
@@ -38,7 +39,7 @@ public class FactController {
 
     private final FactMapper factMapper;
     private final FactContradictionMapper contradictionMapper;
-    private final FactProjectionBuilder projectionBuilder;
+    private final FactQueryService queryService;
     private final WorkspaceFileService workspaceFileService;
     private final MemoryProperties properties;
 
@@ -46,10 +47,12 @@ public class FactController {
     @GetMapping
     @RequireWorkspaceRole("member")
     public R<List<FactEntity>> listFacts(@PathVariable Long agentId,
-                                          @RequestParam(required = false) String keyword) {
+                                          @RequestParam(required = false) String keyword,
+                                          Authentication auth) {
         LambdaQueryWrapper<FactEntity> query = new LambdaQueryWrapper<FactEntity>()
                 .eq(FactEntity::getAgentId, agentId)
                 .eq(FactEntity::getDeleted, 0);
+        applyFactVisibility(query, currentWebOwnerKey(auth));
         if (keyword != null && !keyword.isBlank()) {
             query.and(w -> w.like(FactEntity::getSubject, keyword)
                     .or().like(FactEntity::getObjectValue, keyword));
@@ -58,7 +61,39 @@ public class FactController {
         return R.ok(factMapper.selectList(query));
     }
 
-    @Operation(summary = "Forget a fact — writes canonical metadata, rebuilds projection")
+    private void applyFactVisibility(LambdaQueryWrapper<FactEntity> query, String ownerKey) {
+        if (ownerKey == null || ownerKey.isBlank()
+                || MemoryOwnerResolver.SYSTEM_OWNER.equals(ownerKey)) {
+            query.in(FactEntity::getScope, MemoryScope.TEAM, MemoryScope.GLOBAL);
+            return;
+        }
+        query.and(s -> s.in(FactEntity::getScope, MemoryScope.TEAM, MemoryScope.GLOBAL)
+                .or(p -> p.eq(FactEntity::getScope, MemoryScope.PERSONAL)
+                        .eq(FactEntity::getOwnerKey, ownerKey)));
+    }
+
+    private String currentWebOwnerKey(Authentication auth) {
+        if (auth == null) {
+            return MemoryOwnerResolver.SYSTEM_OWNER;
+        }
+        String username = auth.getName();
+        if (username == null || username.isBlank()) {
+            return MemoryOwnerResolver.SYSTEM_OWNER;
+        }
+        return "user:" + username;
+    }
+
+    private String canonicalScopeFor(FactEntity fact) {
+        return fact != null && MemoryScope.PERSONAL.equals(fact.getScope())
+                ? MemoryScope.PERSONAL
+                : (fact != null && MemoryScope.GLOBAL.equals(fact.getScope()) ? MemoryScope.GLOBAL : MemoryScope.TEAM);
+    }
+
+    private String canonicalOwnerFor(FactEntity fact) {
+        return fact != null && MemoryScope.PERSONAL.equals(fact.getScope()) ? fact.getOwnerKey() : null;
+    }
+
+    @Operation(summary = "Forget a fact — writes canonical metadata; canonical memory-write event refreshes projection")
     @PostMapping("/{factId}/forget")
     @RequireWorkspaceRole("member")
     public R<Void> forgetFact(@PathVariable Long agentId,
@@ -79,7 +114,11 @@ public class FactController {
         String filename = parts[0];
         String userId = auth != null ? auth.getName() : "unknown";
 
-        WorkspaceFileEntity file = workspaceFileService.getFile(agentId, filename);
+        String ownerKey = canonicalOwnerFor(fact);
+        String scope = canonicalScopeFor(fact);
+        WorkspaceFileEntity file = MemoryScope.PERSONAL.equals(scope)
+                ? workspaceFileService.getMemoryFile(agentId, filename, ownerKey)
+                : workspaceFileService.getFile(agentId, filename);
         if (file != null && file.getContent() != null) {
             String marker = "> Forgotten: " + LocalDate.now() + " by " + userId;
             String sectionKey = parts.length > 1 ? parts[1] : null;
@@ -99,10 +138,13 @@ public class FactController {
             } else {
                 content = content + "\n" + marker + "\n";
             }
-            workspaceFileService.saveFile(agentId, filename, content);
-            // Rebuild projection from the UPDATED canonical content (not stale file object)
-            // Forgotten section will be skipped by PatternEntityExtractor
-            projectionBuilder.rebuildOne(agentId, filename, content);
+            if (MemoryScope.PERSONAL.equals(scope)) {
+                workspaceFileService.saveMemoryFile(agentId, filename, content, ownerKey);
+            } else {
+                workspaceFileService.saveFile(agentId, filename, content);
+            }
+            // WorkspaceFileService is the single source of MemoryWriteEvent publication;
+            // Fact projection is refreshed by MemoryWriteEventDispatcher from the canonical content.
         }
 
         // Do NOT directly write mate_fact — let projection rebuild handle visibility.
@@ -134,7 +176,11 @@ public class FactController {
         String[] parts = sourceRef.split("#", 2);
         String filename = parts[0];
         String sectionKey = parts.length > 1 ? parts[1] : null;
-        WorkspaceFileEntity file = workspaceFileService.getFile(agentId, filename);
+        String ownerKey = canonicalOwnerFor(fact);
+        String scope = canonicalScopeFor(fact);
+        WorkspaceFileEntity file = MemoryScope.PERSONAL.equals(scope)
+                ? workspaceFileService.getMemoryFile(agentId, filename, ownerKey)
+                : workspaceFileService.getFile(agentId, filename);
         if (file != null && file.getContent() != null) {
             String marker = "> UserFeedback: " + kind + " " + LocalDate.now();
             String content = file.getContent();
@@ -151,9 +197,13 @@ public class FactController {
             } else {
                 content = content + "\n" + marker + "\n";
             }
-            workspaceFileService.saveFile(agentId, filename, content);
-            // Rebuild projection from updated canonical — trust will be derived from metadata
-            projectionBuilder.rebuildOne(agentId, filename, content);
+            if (MemoryScope.PERSONAL.equals(scope)) {
+                workspaceFileService.saveMemoryFile(agentId, filename, content, ownerKey);
+            } else {
+                workspaceFileService.saveFile(agentId, filename, content);
+            }
+            // WorkspaceFileService is the single source of MemoryWriteEvent publication;
+            // Fact projection is refreshed by MemoryWriteEventDispatcher from the canonical content.
         }
 
         // Do NOT directly write mate_fact.trust — let projection rebuild derive it from canonical metadata.
@@ -166,13 +216,9 @@ public class FactController {
     @Operation(summary = "List unresolved contradictions")
     @GetMapping("/contradictions")
     @RequireWorkspaceRole("member")
-    public R<List<FactContradictionEntity>> listContradictions(@PathVariable Long agentId) {
-        return R.ok(contradictionMapper.selectList(
-                new LambdaQueryWrapper<FactContradictionEntity>()
-                        .eq(FactContradictionEntity::getAgentId, agentId)
-                        .isNull(FactContradictionEntity::getResolution)
-                        .eq(FactContradictionEntity::getDeleted, 0)
-                        .orderByDesc(FactContradictionEntity::getCreateTime)));
+    public R<List<FactContradictionEntity>> listContradictions(@PathVariable Long agentId,
+                                                               Authentication auth) {
+        return R.ok(queryService.listContradictions(agentId, currentWebOwnerKey(auth)));
     }
 
     @Operation(summary = "Resolve a contradiction (KEEP_A / KEEP_B / MERGE / IGNORE)")

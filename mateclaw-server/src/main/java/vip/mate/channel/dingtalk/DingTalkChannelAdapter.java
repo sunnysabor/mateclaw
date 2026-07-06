@@ -590,7 +590,7 @@ public class DingTalkChannelAdapter extends AbstractChannelAdapter implements St
             if ("markdown".equals(messageType) || "card".equals(messageType)) {
                 jsonBody = objectMapper.writeValueAsString(Map.of(
                         "msgtype", "markdown",
-                        "markdown", Map.of("title", "MateClaw", "text", content)
+                        "markdown", Map.of("title", "HHAIOS", "text", content)
                 ));
             } else {
                 jsonBody = objectMapper.writeValueAsString(Map.of(
@@ -1054,7 +1054,7 @@ public class DingTalkChannelAdapter extends AbstractChannelAdapter implements St
             String msgKey;
             if ("markdown".equals(messageType) || "card".equals(messageType)) {
                 msgKey = "sampleMarkdown";
-                msgParam = Map.of("title", "MateClaw", "text", content);
+                msgParam = Map.of("title", "HHAIOS", "text", content);
             } else {
                 msgKey = "sampleText";
                 msgParam = Map.of("content", content);

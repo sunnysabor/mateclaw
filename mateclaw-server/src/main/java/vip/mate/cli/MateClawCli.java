@@ -156,7 +156,7 @@ public final class MateClawCli { private MateClawCli() { /* namespace */ }
         }
 
         private void printHelp() {
-            System.out.println("\n  MateClaw CLI\n  ═══════════════════════════════════════");
+            System.out.println("\n  HHAIOS CLI\n  ═══════════════════════════════════════");
             System.out.println("  java -jar app.jar --cli.command=<name> [options]");
             System.out.println("  Docker: docker exec <container> java -jar /app/app.jar --cli.command=<name> [options]");
             System.out.println("\n  Global options:");

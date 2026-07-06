@@ -11,7 +11,7 @@ head:
 
 **The page you open when someone says "my agent is stuck."**
 
-A digital employee that's frozen mid-step is one of the few things in MateClaw that doesn't fix itself. Streams hang, subagents fan out into the void, the SSE buffer keeps a flux alive that nobody is reading. Backstage is the one screen that surfaces all of that and lets you reach in.
+A digital employee that's frozen mid-step is one of the few things in HHAIOS that doesn't fix itself. Streams hang, subagents fan out into the void, the SSE buffer keeps a flux alive that nobody is reading. Backstage is the one screen that surfaces all of that and lets you reach in.
 
 It is **admin-only** (`ROLE_ADMIN`), live (auto-refresh every 5 s, pausable), and intentionally simple — one card per running agent, four actions, no menus.
 
@@ -84,11 +84,11 @@ Two distinct conditions, two different signals.
 
 | Step | Default threshold | Notes |
 |---|---|---|
-| Short steps (reasoning chunks, status updates) | 30 s | Token-level liveness |
-| Tool call | 150 s | Includes both built-in and MCP / ACP tools |
-| Whole turn | 600 s | End-to-end ceiling |
+| Short steps (reasoning chunks, status updates) | 150 s | Token-level liveness |
+| Tool call | 600 s | Includes both built-in and MCP / ACP tools |
+| Whole turn | 1800 s | End-to-end ceiling |
 
-All three are configurable. A typical reason string looks like `tool_call.timeout(150s)` or `reasoning.no_progress(30s)` so the card can show *why*, not just *that it died*.
+The three thresholds are currently static constants in `AgentRuntimeAggregator`. A typical reason string is `tool_silent`, `idle_silent`, or `hard_cap` so the card can show *why*, not just *that it died*.
 
 When a run goes stuck the runtime stops feeding it but doesn't tear it down — that's your decision. Hit **End** to recycle, or wait and see if it recovers (some upstream APIs take 5+ minutes when degraded).
 

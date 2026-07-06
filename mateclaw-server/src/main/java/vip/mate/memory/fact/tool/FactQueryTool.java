@@ -1,6 +1,7 @@
 package vip.mate.memory.fact.tool;
 
 import lombok.RequiredArgsConstructor;
+import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
@@ -28,11 +29,12 @@ public class FactQueryTool {
     @Tool(description = "Probe facts about an entity. Returns relevant facts where the entity appears as subject or object.")
     public String fact_probe(
             @ToolParam(description = "Agent ID") Long agentId,
-            @ToolParam(description = "Entity name to search for") String entity) {
+            @ToolParam(description = "Entity name to search for") String entity,
+            ToolContext toolContext) {
         if (!properties.getFact().isProjectionEnabled()) {
             return "Fact projection is disabled.";
         }
-        List<FactEntity> facts = queryService.probe(agentId, entity);
+        List<FactEntity> facts = queryService.probe(agentId, entity, toolContext);
         if (facts.isEmpty()) return "No facts found for entity: " + entity;
 
         // Bump use count
@@ -45,11 +47,12 @@ public class FactQueryTool {
 
     @Tool(description = "List unresolved fact contradictions detected during Dream consolidation.")
     public String fact_list_contradictions(
-            @ToolParam(description = "Agent ID") Long agentId) {
+            @ToolParam(description = "Agent ID") Long agentId,
+            ToolContext toolContext) {
         if (!properties.getFact().isProjectionEnabled()) {
             return "Fact projection is disabled.";
         }
-        List<FactContradictionEntity> contradictions = queryService.listContradictions(agentId);
+        List<FactContradictionEntity> contradictions = queryService.listContradictions(agentId, toolContext);
         if (contradictions.isEmpty()) return "No unresolved contradictions.";
 
         return contradictions.stream()

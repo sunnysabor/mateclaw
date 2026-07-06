@@ -21,8 +21,8 @@ public class MateClawDocTool {
     private final MateClawDocService docService;
 
     @Tool(description = """
-        Read MateClaw project documentation.
-        Use this tool to look up information about MateClaw's features, configuration, and usage.
+        Read HHAIOS project documentation.
+        Use this tool to look up information about HHAIOS features, configuration, and usage.
 
         Parameters:
         - action: "list" to list all available doc files, "read" to read a specific doc
@@ -51,7 +51,7 @@ public class MateClawDocTool {
 
     private String listDocs() {
         StringBuilder sb = new StringBuilder();
-        sb.append("MateClaw Documentation\n\n");
+        sb.append("HHAIOS Documentation\n\n");
 
         sb.append("## 中文文档 (zh/)\n");
         appendGroup(sb, "zh");

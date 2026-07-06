@@ -35,7 +35,7 @@ public class AcpEndpointEntity {
     private String command;
 
     /**
-     * JSON array of CLI args, e.g. {@code ["-y","@zed-industries/codex-acp"]}.
+     * JSON array of CLI args, e.g. {@code ["-y","@agentclientprotocol/codex-acp"]}.
      * MyBatis Plus stores it as a string; the service layer parses on read.
      */
     @TableField(value = "args_json", updateStrategy = FieldStrategy.ALWAYS)

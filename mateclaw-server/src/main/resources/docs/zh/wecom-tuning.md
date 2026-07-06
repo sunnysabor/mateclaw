@@ -2,7 +2,7 @@
 
 **让一个真正能被企业内部群里几十号人用起来的 bot，远不止"接通就行"。**
 
-[多渠道接入 → 企业微信](./channels#企业微信) 那一节是把 bot 跑起来；这一篇是把 bot **跑稳**——所有 MateClaw 在企业微信适配层做过的非显然优化、踩过的平台边角，以及为什么这么处理。
+[多渠道接入 → 企业微信](./channels#企业微信) 那一节是把 bot 跑起来；这一篇是把 bot **跑稳**——所有 HHAIOS 在企业微信适配层做过的非显然优化、踩过的平台边角，以及为什么这么处理。
 
 阅读对象：
 
@@ -38,7 +38,7 @@
 - 防抖窗口（500ms / 2.5s 自适应）会把 A 和 B 的连发消息合并成一条
 - A 问"我想查 X"，B 接着问"我想查 Y"，bot 看到的是"用户问了 X 和 Y 两个不相关的事"
 
-### MateClaw 的处理
+### HHAIOS 的处理
 
 **两层修复**：
 
@@ -47,7 +47,7 @@
 - 同一个人 → 合并（典型场景：粘贴长文被 IM 客户端切片）
 - 不同人 → 立即 flush 已有 pending，给新发送人开新窗口
 
-代码层面是 [`ChannelMessageRouter.isSameSender`](https://github.com/anthropics/mateclaw/blob/main/mateclaw-server/src/main/java/vip/mate/channel/ChannelMessageRouter.java)。null 防御：任一 senderId 缺失都不合并，宁可多 flush 一次也不要错串归属。
+代码层面是 [`ChannelMessageRouter.isSameSender`](mateclaw-server/src/main/java/vip/mate/channel/ChannelMessageRouter.java)。null 防御：任一 senderId 缺失都不合并，宁可多 flush 一次也不要错串归属。
 
 **2. 持久化 + Prompt 都带 `[@sender]` 前缀。** 群聊（`chatId != null`）的每条 user 消息在落库时和送给 LLM 之前都会被 `applyGroupTag(message, content)` 包一层：
 
@@ -88,7 +88,7 @@ DB 里 `mate_message.content` 列直接看 `[@xxx]` 前缀。
 | 语音 | **2 MB** | **必须 AMR**（其他格式平台拒收） |
 | 全局 | **20 MB** | 兜底硬上限 |
 
-### MateClaw 的处理
+### HHAIOS 的处理
 
 **客户端预检**，避免无效上传。`applyWeComUploadLimits(fileSize, mediaType, contentType)` 在上传前判定结果：
 
@@ -155,7 +155,7 @@ WeCom 用户引用前一条消息（图片、文件、文本、语音、小程�
 
 mp.weixin.qq.com 的文章页是**带 captcha-gated SSR 的**，任何 LLM 工具都抓不到正文。如果 bot 假装能读，模型会**凭标题瞎编内容**（生产里观察到："本文讲了三个要点……" 完全是幻觉）。
 
-MateClaw 在 link 分支检测到 `mp.weixin.qq.com` 后，会自动给模型追加一段提示：
+HHAIOS 在 link 分支检测到 `mp.weixin.qq.com` 后，会自动给模型追加一段提示：
 
 > （提示：该链接为公众号文章，正文需要用户在微信内打开后复制粘贴，请优先请用户粘贴正文，不要凭标题猜测内容。）
 
@@ -174,7 +174,7 @@ MateClaw 在 link 分支检测到 `mp.weixin.qq.com` 后，会自动给模型追
 
 群聊里 bot 任何主动消息（cron 推送、异步任务回推、图像生成完成）都必须**搭一辆顺风车**——绑到一个之前用户 inbound 的 frameReqId 上，否则平台拒收。
 
-### MateClaw 的处理
+### HHAIOS 的处理
 
 **LRU 缓存最近 inbound reqId**。`lastChatReqIds: ConcurrentHashMap<chatId, latest-reqId>` 在每条群聊 inbound 进来时被更新，上限 1000 个 chat。
 
@@ -247,11 +247,11 @@ MateClaw 在 link 分支检测到 `mp.weixin.qq.com` 后，会自动给模型追
 
 用户全程看 "生成中..." 等几十秒到几分钟，最后收到一坨重复文本。
 
-### MateClaw 的处理
+### HHAIOS 的处理
 
 **两层守卫**：
 
-1. **检测**：[`hasRepeatingSuffix`](https://github.com/anthropics/mateclaw/blob/main/mateclaw-server/src/main/java/vip/mate/agent/graph/NodeStreamingChatHelper.java) 探测 buffer 尾部是否被同一个 24~240 字符的 unit 连续重复 4 次以上 → 立即 dispose 上游订阅
+1. **检测**：[`hasRepeatingSuffix`](mateclaw-server/src/main/java/vip/mate/agent/graph/NodeStreamingChatHelper.java) 探测 buffer 尾部是否被同一个 24~240 字符的 unit 连续重复 4 次以上 → 立即 dispose 上游订阅
 2. **去重 + 标记**：`dedupTrailingRepeats` 把已累积的 buffer 尾部 N 份拷贝缩成 1 份；ReasoningNode 把 finishReason 设为 `INCOMPLETE`，前端展示截断卡 + "重新生成"按钮
 
 为什么不无脑发警告就算了：用户已经在 SSE 流里看到那坨重复文本（SSE 单向 push 没法 unsend），但 **DB 持久化** 和 **WeCom 回推** 用的都是 `finalAnswer`——所以 IM 群里只看到一份干净的回答 + INCOMPLETE 提示。
@@ -297,7 +297,7 @@ WeCom 长连接断开时（NAT 超时、网络抖动），适配器自动重连�
 
 API 模式 bot 在企业微信管理后台勾选**任何一项数据使用权限**（如"读取消息"、"获取群信息"），bot 会**自动锁定为仅创建者可用**。其他成员发消息 bot 不响应。
 
-**解决**：在管理后台**取消勾选**全部 7 项数据权限，bot 即可对所有授权成员可见。MateClaw 通过 webhook 拿消息，不需要这些数据权限。
+**解决**：在管理后台**取消勾选**全部 7 项数据权限，bot 即可对所有授权成员可见。HHAIOS 通过 webhook 拿消息，不需要这些数据权限。
 
 ### 可见范围 + 数据权限二维矩阵
 
@@ -310,7 +310,7 @@ API 模式 bot 在企业微信管理后台勾选**任何一项数据使用权限
 
 ### 群聊里 @bot 才会触发
 
-WeCom 群的 bot 必须被 `@` 才收到消息。私聊不需要 `@`。这是平台行为，没办法绕过。MateClaw 不会在群里 broadcast 监听所有消息（也做不到）。
+WeCom 群的 bot 必须被 `@` 才收到消息。私聊不需要 `@`。这是平台行为，没办法绕过。HHAIOS 不会在群里 broadcast 监听所有消息（也做不到）。
 
 ---
 

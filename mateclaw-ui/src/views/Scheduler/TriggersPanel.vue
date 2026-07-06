@@ -50,18 +50,29 @@
             class="trigger-toggle"
             :class="{ 'is-on': row.enabled }"
             :title="row.enabled ? t('triggers.enabled') : t('triggers.disabled')"
+            :disabled="!canManageTrigger(row)"
             @click="toggleEnabled(row)"
           >
             <span class="trigger-toggle-knob" />
           </button>
-          <button class="row-btn" :title="t('triggers.actions.edit')" @click="openEdit(row)">
+          <button
+            class="row-btn"
+            :title="canManageTrigger(row) ? t('triggers.actions.edit') : t('triggers.targetDifyAdminOnly')"
+            :disabled="!canManageTrigger(row)"
+            @click="openEdit(row)"
+          >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                  stroke-linecap="round" stroke-linejoin="round">
               <path d="M12 20h9" />
               <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" />
             </svg>
           </button>
-          <button class="row-btn danger" :title="t('triggers.actions.delete')" @click="remove(row)">
+          <button
+            class="row-btn danger"
+            :title="canManageTrigger(row) ? t('triggers.actions.delete') : t('triggers.targetDifyAdminOnly')"
+            :disabled="!canManageTrigger(row)"
+            @click="remove(row)"
+          >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                  stroke-linecap="round" stroke-linejoin="round">
               <path d="M3 6h18" />
@@ -116,14 +127,15 @@
                 />
               </div>
               <label>{{ t('triggers.fields.targetType') }}
-                <!-- v0 only ships the workflow dispatcher; agent target is
-                     reserved for v1 and rejected by the API to avoid the
-                     "looks enabled, never fires" trap. -->
-                <select v-model="formState.targetType" disabled>
+                <select v-model="formState.targetType">
                   <option value="workflow">workflow</option>
+                  <option v-if="workspaceStore.isGlobalAdmin" value="dify_workflow">dify_workflow</option>
                 </select>
+                <small v-if="formState.targetType === 'dify_workflow'" class="target-hint">
+                  {{ t('triggers.targetDifyAdminOnly') }}
+                </small>
               </label>
-              <label>{{ t('triggers.fields.targetId') }}
+              <label v-if="formState.targetType === 'workflow'">{{ t('triggers.fields.targetId') }}
                 <!-- Keep targetId as a string so 19-digit Snowflake IDs survive
                      the v-model round trip; .number would truncate to JS's
                      53-bit safe-integer ceiling. -->
@@ -135,6 +147,17 @@
                     #{{ wf.id }} — {{ wf.name || t('triggers.unnamed') }}
                   </option>
                 </select>
+              </label>
+              <label v-else>{{ t('triggers.fields.targetId') }}
+                <select v-model="formState.targetId" disabled>
+                  <option v-if="!difyConfig?.id" :value="0">
+                    {{ t('triggers.targetDifyWorkflowEmpty') }}
+                  </option>
+                  <option v-else :value="difyConfig.id">
+                    #{{ difyConfig.id }} — {{ difyConfig.name || t('triggers.targetDifyWorkflow') }}
+                  </option>
+                </select>
+                <small class="target-hint">{{ t('triggers.targetDifyWorkflow') }}</small>
               </label>
               <label>{{ t('triggers.fields.ratePerMin') }}
                 <input v-model.number="formState.rateLimitPerMin" type="number" />
@@ -164,8 +187,8 @@
             <button class="btn-ghost" @click="closeForm">{{ t('triggers.actions.cancel') }}</button>
             <button
               class="btn-primary"
-              :disabled="busy || patternHasErrors"
-              :title="patternHasErrors ? Object.values(patternErrors).join('; ') : ''"
+              :disabled="busy || patternHasErrors || !formTargetReady"
+              :title="saveDisabledTitle"
               @click="save"
             >{{ t('triggers.actions.save') }}</button>
           </footer>
@@ -180,7 +203,14 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
-import { triggerApi, type TriggerSummary, workflowApi, type WorkflowSummary } from '@/api'
+import {
+  difyWorkflowApi,
+  triggerApi,
+  type DifyWorkflowConfigVO,
+  type TriggerSummary,
+  workflowApi,
+  type WorkflowSummary,
+} from '@/api'
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 import TriggerPatternForm from '@/components/workflow/TriggerPatternForm.vue'
 
@@ -189,6 +219,7 @@ const workspaceStore = useWorkspaceStore()
 const workspaceId = computed(() => workspaceStore.currentWorkspaceId)
 const triggers = ref<TriggerSummary[]>([])
 const workflows = ref<WorkflowSummary[]>([])
+const difyConfig = ref<DifyWorkflowConfigVO | null>(null)
 
 // Report the trigger count up to the Scheduler shell for the tab badge.
 const emit = defineEmits<{ count: [number] }>()
@@ -208,6 +239,23 @@ function onPatternValidation(errs: Record<string, string>) {
   patternErrors.value = errs
 }
 const patternHasErrors = computed(() => Object.keys(patternErrors.value).length > 0)
+const formTargetReady = computed(() => {
+  if (formState.value.targetType === 'workflow') return Boolean(formState.value.targetId)
+  if (formState.value.targetType === 'dify_workflow') {
+    return workspaceStore.isGlobalAdmin && Boolean(difyConfig.value?.id)
+  }
+  return false
+})
+const saveDisabledTitle = computed(() => {
+  if (patternHasErrors.value) return Object.values(patternErrors.value).join('; ')
+  if (formState.value.targetType === 'dify_workflow' && !difyConfig.value?.id) {
+    return t('triggers.targetDifyWorkflowEmpty')
+  }
+  if (formState.value.targetType === 'dify_workflow' && !workspaceStore.isGlobalAdmin) {
+    return t('triggers.targetDifyAdminOnly')
+  }
+  return ''
+})
 
 const formOpen = ref(false)
 const editing = ref<TriggerSummary | null>(null)
@@ -263,6 +311,17 @@ async function reload() {
   } catch (e) {
     console.error('listWorkflows failed', e)
   }
+  if (workspaceStore.isGlobalAdmin) {
+    try {
+      const res = await difyWorkflowApi.getConfig()
+      difyConfig.value = (res.data as unknown as DifyWorkflowConfigVO) ?? null
+    } catch (e) {
+      difyConfig.value = null
+      console.error('getDifyWorkflowConfig failed', e)
+    }
+  } else {
+    difyConfig.value = null
+  }
 }
 
 function targetName(row: TriggerSummary): string {
@@ -270,7 +329,15 @@ function targetName(row: TriggerSummary): string {
     const wf = workflows.value.find((w) => String(w.id) === String(row.targetId))
     if (wf?.name) return wf.name
   }
+  if (row.targetType === 'dify_workflow') {
+    if (difyConfig.value?.name) return difyConfig.value.name
+    return t('triggers.targetDifyWorkflow')
+  }
   return `${row.targetType} #${row.targetId}`
+}
+
+function canManageTrigger(row: TriggerSummary): boolean {
+  return row.targetType !== 'dify_workflow' || workspaceStore.isGlobalAdmin
 }
 
 // Compact "MM-DD HH:mm" for the activity subline — the full timestamp would
@@ -347,10 +414,12 @@ function truncateError(msg: string | undefined): string {
 function openCreate() {
   editing.value = null
   formState.value = emptyForm()
+  applyTargetDefaults()
   formOpen.value = true
 }
 
 function openEdit(row: TriggerSummary) {
+  if (!canManageTrigger(row)) return
   editing.value = row
   formState.value = {
     name: row.name ?? '',
@@ -373,7 +442,7 @@ function closeForm() {
 }
 
 async function save() {
-  if (!workspaceId.value) return
+  if (!workspaceId.value || !formTargetReady.value) return
   busy.value = true
   try {
     const payload: Partial<TriggerSummary> = {
@@ -395,6 +464,7 @@ async function save() {
 }
 
 async function toggleEnabled(row: TriggerSummary) {
+  if (!canManageTrigger(row)) return
   try {
     await triggerApi.update(row.id, { ...row, enabled: !row.enabled })
     await reload()
@@ -404,6 +474,7 @@ async function toggleEnabled(row: TriggerSummary) {
 }
 
 async function remove(row: TriggerSummary) {
+  if (!canManageTrigger(row)) return
   const ok = await mcConfirm({
     title: t('triggers.actions.delete'),
     message: t('triggers.deleteConfirm', { name: row.name || String(row.id) }),
@@ -421,7 +492,24 @@ async function remove(row: TriggerSummary) {
 
 onMounted(reload)
 watch(workspaceId, reload)
+watch(
+  () => formState.value.targetType,
+  () => applyTargetDefaults()
+)
+watch([availableWorkflows, difyConfig], () => applyTargetDefaults())
 watch(() => triggers.value.length, (n) => emit('count', n), { immediate: true })
+
+function applyTargetDefaults() {
+  const form = formState.value
+  if (form.targetType === 'workflow') {
+    const exists = availableWorkflows.value.some((wf) => String(wf.id) === String(form.targetId))
+    if (!exists) form.targetId = availableWorkflows.value[0]?.id ?? 0
+    return
+  }
+  if (form.targetType === 'dify_workflow') {
+    form.targetId = difyConfig.value?.id ?? 0
+  }
+}
 
 // The Scheduler shell owns the "+ New Trigger" header button; expose the
 // modal opener so it can drive this panel when the Event Triggers tab is active.
@@ -720,6 +808,14 @@ defineExpose({ openCreate })
   font-family: 'JetBrains Mono', Consolas, monospace;
   opacity: 0.7;
   white-space: pre-wrap;
+}
+.target-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--mc-text-tertiary, #9a938b);
+  line-height: 1.45;
 }
 .form-grid-label {
   display: block;

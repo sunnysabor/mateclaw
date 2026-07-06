@@ -114,7 +114,8 @@ public class WorkspaceMemoryTool {
 
         // 追踪主动检索信号（比被动注入更强的"真实需要"指标）
         String content = file.getContent() != null ? file.getContent() : "";
-        memoryRecallTracker.trackActiveRetrieval(agentId, filename, content);
+        memoryRecallTracker.trackActiveRetrieval(agentId, filename, content,
+                "PERSONAL".equals(file.getScope()) ? file.getOwnerKey() : null);
 
         JSONObject result = new JSONObject();
         result.set("agentId", agentId);
@@ -268,12 +269,17 @@ public class WorkspaceMemoryTool {
         // way an explicit read_workspace_memory_file call would.
         Set<String> retrieved = new HashSet<>();
         for (MemorySearchHit hit : hits) {
-            if (retrieved.add(hit.filename())) {
+            String hitKey = hit.filename() + "\u0000" + hit.scope() + "\u0000"
+                    + (hit.ownerKey() != null ? hit.ownerKey() : "");
+            if (retrieved.add(hitKey)) {
                 // Read the same visible row the hit came from (the owner's
                 // PERSONAL row when present) so PERSONAL hits track correctly.
-                WorkspaceFileEntity file = workspaceFileService.getVisibleFile(agentId, hit.filename(), ownerKey);
+                WorkspaceFileEntity file = "PERSONAL".equals(hit.scope()) && hit.ownerKey() != null
+                        ? workspaceFileService.getMemoryFile(agentId, hit.filename(), hit.ownerKey())
+                        : workspaceFileService.getFile(agentId, hit.filename());
                 if (file != null && file.getContent() != null) {
-                    memoryRecallTracker.trackActiveRetrieval(agentId, hit.filename(), file.getContent());
+                    memoryRecallTracker.trackActiveRetrieval(agentId, hit.filename(), file.getContent(),
+                            "PERSONAL".equals(file.getScope()) ? file.getOwnerKey() : null);
                 }
             }
         }

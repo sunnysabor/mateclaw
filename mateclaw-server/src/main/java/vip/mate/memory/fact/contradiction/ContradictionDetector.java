@@ -9,6 +9,7 @@ import vip.mate.memory.fact.model.FactContradictionEntity;
 import vip.mate.memory.fact.model.FactEntity;
 import vip.mate.memory.fact.repository.FactContradictionMapper;
 import vip.mate.memory.fact.repository.FactMapper;
+import vip.mate.memory.identity.MemoryScope;
 import vip.mate.memory.service.PromotedEntry;
 
 import java.time.LocalDateTime;
@@ -46,8 +47,20 @@ public class ContradictionDetector {
      * @return number of new contradictions detected
      */
     public int detect(Long agentId, List<PromotedEntry> promoted) {
+        return detect(agentId, promoted, null, MemoryScope.TEAM);
+    }
+
+    /**
+     * Owner/scope-aware contradiction detection. Personal dreams should only
+     * compare facts inside that owner's private projection; shared dreams compare
+     * shared facts. This avoids leaking one owner's fact values into another
+     * owner's contradiction inbox.
+     */
+    public int detect(Long agentId, List<PromotedEntry> promoted, String ownerKey, String scope) {
         if (!properties.getFact().isContradictionCheckEnabled()) return 0;
         if (promoted == null || promoted.isEmpty()) return 0;
+        String effectiveScope = normalizeScope(scope);
+        String effectiveOwner = MemoryScope.PERSONAL.equals(effectiveScope) ? ownerKey : null;
 
         // Collect subjects from promoted entries
         Set<String> promotedSubjects = new HashSet<>();
@@ -65,6 +78,14 @@ public class ContradictionDetector {
                 new LambdaQueryWrapper<FactEntity>()
                         .eq(FactEntity::getAgentId, agentId)
                         .eq(FactEntity::getDeleted, 0)
+                        .eq(FactEntity::getScope, effectiveScope)
+                        .and(s -> {
+                            if (effectiveOwner == null || effectiveOwner.isBlank()) {
+                                s.isNull(FactEntity::getOwnerKey).or().eq(FactEntity::getOwnerKey, "");
+                            } else {
+                                s.eq(FactEntity::getOwnerKey, effectiveOwner);
+                            }
+                        })
                         .and(w -> {
                             for (String subj : promotedSubjects) {
                                 w.or().like(FactEntity::getSubject, subj);
@@ -112,6 +133,12 @@ public class ContradictionDetector {
             log.info("[Contradiction] Detected {} new contradictions for agent={}", detected, agentId);
         }
         return detected;
+    }
+
+    private String normalizeScope(String scope) {
+        if (MemoryScope.PERSONAL.equals(scope)) return MemoryScope.PERSONAL;
+        if (MemoryScope.GLOBAL.equals(scope)) return MemoryScope.GLOBAL;
+        return MemoryScope.TEAM;
     }
 
     private String extractSubjectProxy(String snippet) {

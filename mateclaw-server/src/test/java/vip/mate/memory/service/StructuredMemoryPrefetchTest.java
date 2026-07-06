@@ -3,7 +3,6 @@ package vip.mate.memory.service;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
-import org.springframework.context.ApplicationEventPublisher;
 import vip.mate.memory.MemoryProperties;
 import vip.mate.workspace.document.WorkspaceFileService;
 
@@ -33,7 +32,7 @@ class StructuredMemoryPrefetchTest {
         if (userMd != null) {
             when(files.getFile(AGENT_ID, "structured/user.md")).thenReturn(fileWith(userMd));
         }
-        return new StructuredMemoryService(files, mock(ApplicationEventPublisher.class), new MemoryProperties());
+        return new StructuredMemoryService(files, new MemoryProperties());
     }
 
     private WorkspaceFileEntity fileWith(String content) {
@@ -126,7 +125,7 @@ class StructuredMemoryPrefetchTest {
         WorkspaceFileEntity ref = new WorkspaceFileEntity();
         ref.setContent("## api_endpoint\n参考:订单查询接口 /api/orders。\n> Source: agent | Updated: 2026-05-29");
         when(files.getFile(AGENT_ID, "structured/reference.md")).thenReturn(ref);
-        StructuredMemoryService svc = new StructuredMemoryService(files, mock(ApplicationEventPublisher.class), new MemoryProperties());
+        StructuredMemoryService svc = new StructuredMemoryService(files, new MemoryProperties());
 
         String block = svc.buildPrefetchBlock(AGENT_ID, "订单查询接口参考是什么?");
 
@@ -163,7 +162,7 @@ class StructuredMemoryPrefetchTest {
         MemoryProperties props = new MemoryProperties();
         props.setSystemBlockMaxChars(160);
         StructuredMemoryService svc = new StructuredMemoryService(
-                files, mock(ApplicationEventPublisher.class), props);
+                files, props);
 
         String block = svc.buildMemoryBlock(AGENT_ID);
 
@@ -183,7 +182,7 @@ class StructuredMemoryPrefetchTest {
         when(files.getFile(AGENT_ID, "structured/user.md")).thenReturn(
                 fileWith("## a\nold value\n> Source: agent | Updated: 2026-01-01"));
         StructuredMemoryService svc = new StructuredMemoryService(
-                files, mock(ApplicationEventPublisher.class), new MemoryProperties());
+                files, new MemoryProperties());
 
         LinkedHashMap<String, String> entries = new LinkedHashMap<>();
         entries.put("a", "consolidated value");   // existing key — keeps its date
@@ -208,7 +207,7 @@ class StructuredMemoryPrefetchTest {
         WorkspaceFileService files = mock(WorkspaceFileService.class);
         when(files.getFile(eq(AGENT_ID), anyString())).thenReturn(null);
         StructuredMemoryService svc = new StructuredMemoryService(
-                files, mock(ApplicationEventPublisher.class), new MemoryProperties());
+                files, new MemoryProperties());
 
         LinkedHashMap<String, String> entries = new LinkedHashMap<>();
         entries.put("reply_style", "偏好简洁直接的回答。");

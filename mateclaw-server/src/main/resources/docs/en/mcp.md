@@ -1,6 +1,6 @@
 ---
 title: MCP Integration — Model Context Protocol Tool Extension
-description: MateClaw acts as an MCP client, connecting to any external tool server via Model Context Protocol. JSON-RPC dynamic discovery, SSE/stdio dual transport, seamless unification with built-in tools.
+description: HHAIOS acts as an MCP client, connecting to any external tool server via Model Context Protocol. JSON-RPC dynamic discovery, SSE/stdio dual transport, seamless unification with built-in tools.
 head:
   - - meta
     - name: keywords
@@ -9,11 +9,11 @@ head:
 
 # MCP — Model Context Protocol
 
-**MCP is how MateClaw talks to tools someone else built.**
+**MCP is how HHAIOS talks to tools someone else built.**
 
-Model Context Protocol is an open standard from Anthropic for connecting AI models to external tools and data. An MCP server is a process — local or remote — that advertises a set of tools over JSON-RPC. MateClaw acts as an MCP *client*: it connects, discovers tools via `tools/list`, and exposes them to your agents as if they were native. **From the agent's point of view, there's no difference between a built-in `@Tool` Spring bean and a tool coming from an MCP server.**
+Model Context Protocol is an open standard from Anthropic for connecting AI models to external tools and data. An MCP server is a process — local or remote — that advertises a set of tools over JSON-RPC. HHAIOS acts as an MCP *client*: it connects, discovers tools via `tools/list`, and exposes them to your agents as if they were native. **From the agent's point of view, there's no difference between a built-in `@Tool` Spring bean and a tool coming from an MCP server.**
 
-This is the escape hatch. If you need a capability MateClaw doesn't ship with — filesystem access for a sandboxed directory, Tavily search, a custom internal data service, a browser automation suite — there's probably already an MCP server for it, and you can plug it in without writing a line of Java.
+This is the escape hatch. If you need a capability HHAIOS doesn't ship with — filesystem access for a sandboxed directory, Tavily search, a custom internal data service, a browser automation suite — there's probably already an MCP server for it, and you can plug it in without writing a line of Java.
 
 ---
 
@@ -21,7 +21,7 @@ This is the escape hatch. If you need a capability MateClaw doesn't ship with �
 
 ```
 ┌───────────────────────┐              ┌───────────────────────┐
-│     MateClaw           │              │     MCP Server        │
+│     HHAIOS           │              │     MCP Server        │
 │     (MCP Client)       │              │     (Tool Provider)   │
 │                       │   JSON-RPC   │                       │
 │  Agent Engine  ───────┼──────────────┼──► Tool A             │
@@ -33,7 +33,7 @@ This is the escape hatch. If you need a capability MateClaw doesn't ship with �
 
 Core concepts:
 
-- **MCP Client** — MateClaw, connecting to servers, discovering tools, forwarding invocations
+- **MCP Client** — HHAIOS, connecting to servers, discovering tools, forwarding invocations
 - **MCP Server** — a third-party process declaring its available tools and executing calls
 - **Tool Discovery** — the client sends `tools/list` to retrieve every tool and its parameter schema
 - **Tool Invocation** — when the agent decides to call a tool, the client forwards the request to the right MCP server
@@ -48,10 +48,10 @@ Three transports for different deployment scenarios:
 
 ### stdio (Standard I/O)
 
-MateClaw spawns a local child process and exchanges JSON-RPC messages via stdin/stdout.
+HHAIOS spawns a local child process and exchanges JSON-RPC messages via stdin/stdout.
 
 ```
-MateClaw  ── stdin ──►  MCP Server subprocess
+HHAIOS  ── stdin ──►  MCP Server subprocess
           ◄─ stdout ──
 ```
 
@@ -64,7 +64,7 @@ MateClaw  ── stdin ──►  MCP Server subprocess
 Standard HTTP POST for JSON-RPC, responses streamed back over HTTP. **Recommended for production.**
 
 ```
-MateClaw  ── HTTP POST ──►  Remote MCP Server
+HHAIOS  ── HTTP POST ──►  Remote MCP Server
           ◄─ HTTP Stream ──
 ```
 
@@ -82,7 +82,7 @@ Earlier HTTP transport using SSE for server-to-client push. Legacy compatibility
 | Deployment | Local only | Local or remote | Local or remote |
 | Network requirement | None | HTTP reachable | HTTP reachable |
 | Authentication | Environment variables | HTTP Headers | HTTP Headers |
-| Process management | MateClaw manages subprocess | External | External |
+| Process management | HHAIOS manages subprocess | External | External |
 | Recommendation | Local tools | Remote services | Legacy compatibility |
 
 ---
@@ -103,7 +103,7 @@ Earlier HTTP transport using SSE for server-to-client push. Legacy compatibility
 - **Connect timeout** — default 30s
 - **Read timeout** — default **60s** (raised from 30s in 1.5.0, #247; a single callTool round-trip that legitimately runs longer no longer gets cut off. Each server is tunable 5–300s)
 
-Save. If enabled, MateClaw auto-attempts to connect and discover tools.
+Save. If enabled, HHAIOS auto-attempts to connect and discover tools.
 
 ### Testing, enabling, status
 
@@ -387,7 +387,7 @@ Keeps secrets out of the database.
 
 ### "Command not found" (stdio)
 
-1. Confirm the command is in PATH of the user running MateClaw
+1. Confirm the command is in PATH of the user running HHAIOS
 2. Verify: `which npx` or `npx --version`
 3. Docker: confirm command is installed in the container
 4. Use full path: `/usr/local/bin/npx`
@@ -422,7 +422,7 @@ Keeps secrets out of the database.
 
 ### Orphaned subprocesses (stdio)
 
-Subprocesses are cleaned up on normal shutdown. If MateClaw was force-killed (`kill -9`), subprocesses may remain. `ps aux | grep mcp` and terminate.
+Subprocesses are cleaned up on normal shutdown. If HHAIOS was force-killed (`kill -9`), subprocesses may remain. `ps aux | grep mcp` and terminate.
 
 ---
 
