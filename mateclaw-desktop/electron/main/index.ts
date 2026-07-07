@@ -5,6 +5,7 @@ import { existsSync, mkdirSync } from 'fs'
 import http from 'http'
 import https from 'https'
 import net from 'net'
+import type { IncomingMessage } from 'http'
 import { autoUpdater } from 'electron-updater'
 import type { UpdateInfo, ProgressInfo } from 'electron-updater'
 import {
@@ -70,6 +71,16 @@ const trustedCertHosts = new Set<string>()
 // decision still happens at BrowserWindow navigation via the certificate-error
 // handler, which prompts the user before loading the page.
 const insecureAgent = new https.Agent({ rejectUnauthorized: false })
+
+function getServerRoot(
+  serverUrl: string,
+  onResponse: (res: IncomingMessage) => void
+): http.ClientRequest {
+  if (serverUrl.startsWith('https:')) {
+    return https.get(`${serverUrl}/`, { agent: insecureAgent }, onResponse)
+  }
+  return http.get(`${serverUrl}/`, onResponse)
+}
 
 // ─── Build Mode Detection ────────────────────────────────────────────────────
 
@@ -297,10 +308,7 @@ function pollBackendReady(): void {
       return
     }
 
-    const isHttps = BACKEND_URL.startsWith('https:')
-    const client = isHttps ? https : http
-    const reqOpts = isHttps ? { agent: insecureAgent } : {}
-    const req = client.get(`${BACKEND_URL}/`, reqOpts, (res) => {
+    const req = getServerRoot(BACKEND_URL, (res) => {
       if (resolved) return
       resolved = true
 
@@ -427,17 +435,14 @@ function probeServer(
       return
     }
 
-    const isHttps = normalized.startsWith('https:')
-    const client = isHttps ? https : http
-    const reqOpts = isHttps ? { agent: insecureAgent } : {}
-    const req = client.get(`${normalized}/`, reqOpts, (res) => {
+    const req = getServerRoot(normalized, (res) => {
       res.resume()
       const status = res.statusCode ?? 0
       // Any non-5xx response means the server is reachable and serving.
       resolve({ ok: status > 0 && status < 500, status })
     })
 
-    req.on('error', (err) => resolve({ ok: false, error: err.message }))
+    req.on('error', (err: Error) => resolve({ ok: false, error: err.message }))
     req.setTimeout(timeoutMs, () => {
       req.destroy()
       resolve({ ok: false, error: 'timeout' })
