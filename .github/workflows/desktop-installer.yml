@@ -197,6 +197,61 @@ jobs:
             mateclaw-desktop/release/builder-debug.yml
             mateclaw-desktop/ci-logs/*.log
 
+  publish-dev-release:
+    name: Publish latest desktop dev release
+    if: github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main'
+    needs:
+      - build-macos
+      - build-windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download installer artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Publish/update desktop-dev release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mapfile -d '' files < <(find release-assets -type f \
+            \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' -o -name '*.blockmap' -o -name 'latest*.yml' \) \
+            -print0)
+
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No desktop installer assets found." >&2
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f desktop-dev "${GITHUB_SHA}"
+          git push origin refs/tags/desktop-dev --force
+
+          notes="Latest desktop dev installers built from ${GITHUB_SHA} on branch ${GITHUB_REF_NAME}."
+          if gh release view desktop-dev >/dev/null 2>&1; then
+            gh release edit desktop-dev \
+              --title "Desktop Dev Build" \
+              --notes "$notes" \
+              --prerelease
+            gh release upload desktop-dev "${files[@]}" --clobber
+          else
+            gh release create desktop-dev "${files[@]}" \
+              --title "Desktop Dev Build" \
+              --notes "$notes" \
+              --prerelease \
+              --target "${GITHUB_SHA}"
+          fi
+
   publish-release:
     name: Publish tagged desktop release
     if: startsWith(github.ref, 'refs/tags/v')
