@@ -63,18 +63,33 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Disable unsigned macOS code signing fallback
-        shell: bash
-        run: |
-          if [ -z "${CSC_LINK:-}" ]; then
-            echo "CSC_IDENTITY_AUTO_DISCOVERY=false" >> "$GITHUB_ENV"
-          fi
-        env:
-          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+      - name: Build desktop app
+        run: pnpm run build
 
-      - name: Build macOS installers
-        run: pnpm run package:mac:remote
+      - name: Detect macOS signing secrets
+        id: mac-signing
+        shell: bash
         env:
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+        run: |
+          if [ -n "${MAC_CSC_LINK:-}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build unsigned macOS installers
+        if: steps.mac-signing.outputs.enabled != 'true'
+        run: pnpm exec electron-builder --mac --x64 --arm64
+        env:
+          BUILD_MODE: remote
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Build signed macOS installers
+        if: steps.mac-signing.outputs.enabled == 'true'
+        run: pnpm exec electron-builder --mac --x64 --arm64
+        env:
+          BUILD_MODE: remote
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -133,9 +148,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build desktop app
+        run: pnpm run build
+
       - name: Build Windows installer
-        run: pnpm run package:win:remote
+        run: pnpm exec electron-builder --win --x64
         env:
+          BUILD_MODE: remote
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
       - name: Upload Windows installer
