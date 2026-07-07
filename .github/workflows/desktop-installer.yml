@@ -305,8 +305,10 @@ jobs:
             \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' \) \
             -print0)
 
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "No desktop installer assets found." >&2
+          if [ "${#files[@]}" -lt 6 ]; then
+            echo "Expected at least 6 desktop installer assets, found ${#files[@]}." >&2
+            printf 'Found assets:\n' >&2
+            printf '  %s\n' "${files[@]}" >&2
             exit 1
           fi
 
@@ -376,8 +378,10 @@ jobs:
             \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' \) \
             -print0)
 
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "No desktop installer assets found." >&2
+          if [ "${#files[@]}" -lt 6 ]; then
+            echo "Expected at least 6 desktop installer assets, found ${#files[@]}." >&2
+            printf 'Found assets:\n' >&2
+            printf '  %s\n' "${files[@]}" >&2
             exit 1
           fi
 

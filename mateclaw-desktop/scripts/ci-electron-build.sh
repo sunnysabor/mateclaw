@@ -16,8 +16,8 @@ arch="$2"
 build_mode="${BUILD_MODE:-remote}"
 
 case "$build_mode" in
-  remote) variant_label="企业远程轻客户端" ;;
-  local)  variant_label="个人版客户端（完整本地客户端）" ;;
+  remote) variant_label="Enterprise_Remote_Lite_Client" ;;
+  local)  variant_label="Personal_Full_Local_Client" ;;
   *) echo "Unsupported BUILD_MODE: $build_mode" >&2; exit 2 ;;
 esac
 

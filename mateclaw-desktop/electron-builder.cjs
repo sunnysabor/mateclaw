@@ -27,10 +27,13 @@ const { loadBrandConfig } = require('./scripts/branding.cjs')
 
 const mode = process.env.BUILD_MODE === 'remote' ? 'remote' : 'local'
 const brand = loadBrandConfig(__dirname)
+// Keep artifact file names ASCII: electron-builder sanitizes non-ASCII names on
+// some targets, which can collapse Chinese labels into ambiguous punctuation.
+// Release notes and workflow step names still use the Chinese product names.
 const variantName =
   mode === 'remote'
-    ? '企业远程轻客户端'
-    : '个人版客户端（完整本地客户端）'
+    ? 'Enterprise_Remote_Lite_Client'
+    : 'Personal_Full_Local_Client'
 
 function parseArchList(envValue, fallback) {
   if (!envValue) return fallback
