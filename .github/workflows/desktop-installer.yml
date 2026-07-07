@@ -81,34 +81,25 @@ jobs:
       - name: Build unsigned macOS x64 installers
         if: steps.mac-signing.outputs.enabled != 'true'
         shell: bash
-        run: |
-          mkdir -p ci-logs
-          pnpm exec electron-builder --mac 2>&1 | tee ci-logs/electron-builder-macos-x64.log
+        run: bash scripts/ci-electron-build.sh mac x64
         env:
           BUILD_MODE: remote
-          DESKTOP_BUILD_ARCH: x64
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
       - name: Build unsigned macOS arm64 installers
         if: steps.mac-signing.outputs.enabled != 'true'
         shell: bash
-        run: |
-          mkdir -p ci-logs
-          pnpm exec electron-builder --mac 2>&1 | tee ci-logs/electron-builder-macos-arm64.log
+        run: bash scripts/ci-electron-build.sh mac arm64
         env:
           BUILD_MODE: remote
-          DESKTOP_BUILD_ARCH: arm64
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
       - name: Build signed macOS x64 installers
         if: steps.mac-signing.outputs.enabled == 'true'
         shell: bash
-        run: |
-          mkdir -p ci-logs
-          pnpm exec electron-builder --mac 2>&1 | tee ci-logs/electron-builder-macos-x64.log
+        run: bash scripts/ci-electron-build.sh mac x64
         env:
           BUILD_MODE: remote
-          DESKTOP_BUILD_ARCH: x64
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -118,12 +109,9 @@ jobs:
       - name: Build signed macOS arm64 installers
         if: steps.mac-signing.outputs.enabled == 'true'
         shell: bash
-        run: |
-          mkdir -p ci-logs
-          pnpm exec electron-builder --mac 2>&1 | tee ci-logs/electron-builder-macos-arm64.log
+        run: bash scripts/ci-electron-build.sh mac arm64
         env:
           BUILD_MODE: remote
-          DESKTOP_BUILD_ARCH: arm64
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -190,12 +178,9 @@ jobs:
 
       - name: Build Windows installer
         shell: bash
-        run: |
-          mkdir -p ci-logs
-          pnpm exec electron-builder --win 2>&1 | tee ci-logs/electron-builder-windows-x64.log
+        run: bash scripts/ci-electron-build.sh win x64
         env:
           BUILD_MODE: remote
-          DESKTOP_BUILD_ARCH: x64
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
       - name: Upload Windows installer
