@@ -80,7 +80,10 @@ jobs:
 
       - name: Build unsigned macOS x64 installers
         if: steps.mac-signing.outputs.enabled != 'true'
-        run: pnpm exec electron-builder --mac
+        shell: bash
+        run: |
+          mkdir -p ci-logs
+          pnpm exec electron-builder --mac 2>&1 | tee ci-logs/electron-builder-macos-x64.log
         env:
           BUILD_MODE: remote
           DESKTOP_BUILD_ARCH: x64
@@ -88,7 +91,10 @@ jobs:
 
       - name: Build unsigned macOS arm64 installers
         if: steps.mac-signing.outputs.enabled != 'true'
-        run: pnpm exec electron-builder --mac
+        shell: bash
+        run: |
+          mkdir -p ci-logs
+          pnpm exec electron-builder --mac 2>&1 | tee ci-logs/electron-builder-macos-arm64.log
         env:
           BUILD_MODE: remote
           DESKTOP_BUILD_ARCH: arm64
@@ -96,7 +102,10 @@ jobs:
 
       - name: Build signed macOS x64 installers
         if: steps.mac-signing.outputs.enabled == 'true'
-        run: pnpm exec electron-builder --mac
+        shell: bash
+        run: |
+          mkdir -p ci-logs
+          pnpm exec electron-builder --mac 2>&1 | tee ci-logs/electron-builder-macos-x64.log
         env:
           BUILD_MODE: remote
           DESKTOP_BUILD_ARCH: x64
@@ -108,7 +117,10 @@ jobs:
 
       - name: Build signed macOS arm64 installers
         if: steps.mac-signing.outputs.enabled == 'true'
-        run: pnpm exec electron-builder --mac
+        shell: bash
+        run: |
+          mkdir -p ci-logs
+          pnpm exec electron-builder --mac 2>&1 | tee ci-logs/electron-builder-macos-arm64.log
         env:
           BUILD_MODE: remote
           DESKTOP_BUILD_ARCH: arm64
@@ -119,16 +131,19 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       - name: Upload macOS installers
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: desktop-macos-${{ github.sha }}
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
           path: |
             mateclaw-desktop/release/*.dmg
             mateclaw-desktop/release/*.zip
             mateclaw-desktop/release/*.blockmap
             mateclaw-desktop/release/latest-mac.yml
+            mateclaw-desktop/release/builder-debug.yml
+            mateclaw-desktop/ci-logs/*.log
 
   build-windows:
     name: Windows remote installer
@@ -174,22 +189,28 @@ jobs:
         run: pnpm run build
 
       - name: Build Windows installer
-        run: pnpm exec electron-builder --win
+        shell: bash
+        run: |
+          mkdir -p ci-logs
+          pnpm exec electron-builder --win 2>&1 | tee ci-logs/electron-builder-windows-x64.log
         env:
           BUILD_MODE: remote
           DESKTOP_BUILD_ARCH: x64
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
       - name: Upload Windows installer
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: desktop-windows-${{ github.sha }}
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
           path: |
             mateclaw-desktop/release/*.exe
             mateclaw-desktop/release/*.blockmap
             mateclaw-desktop/release/latest.yml
+            mateclaw-desktop/release/builder-debug.yml
+            mateclaw-desktop/ci-logs/*.log
 
   publish-release:
     name: Publish tagged desktop release
