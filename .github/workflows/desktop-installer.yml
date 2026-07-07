@@ -1,0 +1,202 @@
+name: Build Desktop Installers
+
+"on":
+  push:
+    branches:
+      - dev
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-installer-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22'
+  PNPM_VERSION: '10.30.3'
+  ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+  ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+  BRAND_GITHUB_URL: https://github.com/${{ github.repository }}
+
+jobs:
+  build-macos:
+    name: macOS remote installer
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: mateclaw-desktop
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@${{ env.PNPM_VERSION }} --activate
+
+      - name: Resolve pnpm store
+        id: pnpm-store
+        shell: bash
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache desktop dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ steps.pnpm-store.outputs.path }}
+            ${{ env.ELECTRON_CACHE }}
+            ${{ env.ELECTRON_BUILDER_CACHE }}
+          key: ${{ runner.os }}-desktop-${{ hashFiles('mateclaw-desktop/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-desktop-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Disable unsigned macOS code signing fallback
+        shell: bash
+        run: |
+          if [ -z "${CSC_LINK:-}" ]; then
+            echo "CSC_IDENTITY_AUTO_DISCOVERY=false" >> "$GITHUB_ENV"
+          fi
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+
+      - name: Build macOS installers
+        run: pnpm run package:mac:remote
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Upload macOS installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macos-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            mateclaw-desktop/release/*.dmg
+            mateclaw-desktop/release/*.zip
+            mateclaw-desktop/release/*.blockmap
+            mateclaw-desktop/release/latest-mac.yml
+
+  build-windows:
+    name: Windows remote installer
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: mateclaw-desktop
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Enable pnpm
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@${{ env.PNPM_VERSION }} --activate
+
+      - name: Resolve pnpm store
+        id: pnpm-store
+        shell: bash
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache desktop dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ steps.pnpm-store.outputs.path }}
+            ${{ env.ELECTRON_CACHE }}
+            ${{ env.ELECTRON_BUILDER_CACHE }}
+          key: ${{ runner.os }}-desktop-${{ hashFiles('mateclaw-desktop/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-desktop-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Windows installer
+        run: pnpm run package:win:remote
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            mateclaw-desktop/release/*.exe
+            mateclaw-desktop/release/*.blockmap
+            mateclaw-desktop/release/latest.yml
+
+  publish-release:
+    name: Publish tagged desktop release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - build-macos
+      - build-windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify tag matches desktop package version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./mateclaw-desktop/package.json').version")"
+          expected="v${version}"
+          if [ "${GITHUB_REF_NAME}" != "$expected" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match mateclaw-desktop/package.json version ${version} (${expected})." >&2
+            exit 1
+          fi
+
+      - name: Download installer artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Publish GitHub Release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mapfile -d '' files < <(find release-assets -type f \
+            \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' -o -name '*.blockmap' -o -name 'latest*.yml' \) \
+            -print0)
+
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No desktop installer assets found." >&2
+            exit 1
+          fi
+
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" "${files[@]}" --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" "${files[@]}" \
+              --title "MateClaw Desktop ${GITHUB_REF_NAME}" \
+              --notes "Desktop installers built from ${GITHUB_SHA}."
+          fi
