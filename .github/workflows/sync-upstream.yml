@@ -1,0 +1,105 @@
+name: Sync Official Upstream
+
+"on":
+  schedule:
+    # Runs every day at 03:23 Asia/Shanghai (19:23 UTC).
+    - cron: '23 19 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: sync-official-upstream-dev
+  cancel-in-progress: false
+
+env:
+  # Use HTTPS in GitHub Actions so the public upstream can be fetched without SSH keys.
+  UPSTREAM_REPOSITORY: https://github.com/mateaix/mateclaw.git
+  UPSTREAM_BRANCH: dev
+  TARGET_BRANCH: dev
+
+jobs:
+  sync:
+    name: Merge official dev into fork dev
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout target branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 0
+
+      - name: Configure Git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge official upstream
+        id: merge
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git remote add upstream "${UPSTREAM_REPOSITORY}" 2>/dev/null || git remote set-url upstream "${UPSTREAM_REPOSITORY}"
+          git fetch --prune upstream "+refs/heads/${UPSTREAM_BRANCH}:refs/remotes/upstream/${UPSTREAM_BRANCH}"
+          git fetch --prune origin "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
+          git checkout -B "${TARGET_BRANCH}" "origin/${TARGET_BRANCH}"
+
+          if git merge-base --is-ancestor "upstream/${UPSTREAM_BRANCH}" HEAD; then
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+            echo "origin/${TARGET_BRANCH} already contains upstream/${UPSTREAM_BRANCH}."
+            exit 0
+          fi
+
+          set +e
+          git merge --no-edit -X theirs "upstream/${UPSTREAM_BRANCH}"
+          merge_status=$?
+          set -e
+
+          if [ "${merge_status}" -ne 0 ]; then
+            echo "::warning::Merge had conflicts. Resolving conflicted paths by preferring upstream/${UPSTREAM_BRANCH}."
+
+            git diff --name-only --diff-filter=U -z | while IFS= read -r -d '' path; do
+              if git cat-file -e "upstream/${UPSTREAM_BRANCH}:${path}" 2>/dev/null; then
+                git checkout "upstream/${UPSTREAM_BRANCH}" -- "${path}"
+                git add "${path}"
+              else
+                git rm -f --ignore-unmatch -- "${path}"
+              fi
+            done
+
+            unresolved="$(git diff --name-only --diff-filter=U || true)"
+            if [ -n "${unresolved}" ]; then
+              echo "::error::Unresolved conflicts remain after taking upstream versions:"
+              echo "${unresolved}"
+              git status --short
+              exit 1
+            fi
+
+            git commit --no-edit
+          fi
+
+          if git diff --quiet "origin/${TARGET_BRANCH}" HEAD; then
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "changed=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+          echo "Synced commit: $(git rev-parse --short HEAD)"
+
+      - name: Push synced branch
+        if: steps.merge.outputs.changed == 'true'
+        run: git push origin "HEAD:${TARGET_BRANCH}"
+
+      - name: Dispatch downstream builds
+        if: steps.merge.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Pushes made with GITHUB_TOKEN do not fan out into normal push workflows,
+          # so explicitly start the existing build workflows after an upstream sync.
+          gh workflow run desktop-installer.yml --ref "${TARGET_BRANCH}"
+          gh workflow run docker-image.yml --ref "${TARGET_BRANCH}"
