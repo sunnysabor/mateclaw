@@ -18,6 +18,7 @@ concurrency:
 
 env:
   NODE_VERSION: '22'
+  JAVA_VERSION: '21'
   PNPM_VERSION: '10.30.3'
   ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
   ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
@@ -25,7 +26,7 @@ env:
 
 jobs:
   build-macos:
-    name: macOS remote installer
+    name: macOS installers
     runs-on: macos-15
     defaults:
       run:
@@ -38,6 +39,13 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
 
       - name: Enable pnpm
         run: |
@@ -56,7 +64,8 @@ jobs:
             ${{ steps.pnpm-store.outputs.path }}
             ${{ env.ELECTRON_CACHE }}
             ${{ env.ELECTRON_BUILDER_CACHE }}
-          key: ${{ runner.os }}-desktop-${{ hashFiles('mateclaw-desktop/pnpm-lock.yaml') }}
+            mateclaw-desktop/resources/jre
+          key: ${{ runner.os }}-desktop-${{ hashFiles('mateclaw-desktop/pnpm-lock.yaml') }}-${{ hashFiles('mateclaw-desktop/scripts/download-jre.sh') }}
           restore-keys: |
             ${{ runner.os }}-desktop-
 
@@ -65,6 +74,12 @@ jobs:
 
       - name: Build desktop app
         run: pnpm run build
+
+      - name: Build backend JAR for personal client
+        run: bash scripts/build.sh
+
+      - name: Prepare macOS JREs for personal client
+        run: bash scripts/download-jre.sh all
 
       - name: Detect macOS signing secrets
         id: mac-signing
@@ -78,7 +93,7 @@ jobs:
             echo "enabled=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build unsigned macOS x64 installers
+      - name: Build unsigned macOS enterprise remote x64 installer
         if: steps.mac-signing.outputs.enabled != 'true'
         shell: bash
         run: bash scripts/ci-electron-build.sh mac x64
@@ -86,7 +101,7 @@ jobs:
           BUILD_MODE: remote
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
-      - name: Build unsigned macOS arm64 installers
+      - name: Build unsigned macOS enterprise remote arm64 installer
         if: steps.mac-signing.outputs.enabled != 'true'
         shell: bash
         run: bash scripts/ci-electron-build.sh mac arm64
@@ -94,7 +109,23 @@ jobs:
           BUILD_MODE: remote
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
-      - name: Build signed macOS x64 installers
+      - name: Build unsigned macOS personal x64 installer
+        if: steps.mac-signing.outputs.enabled != 'true'
+        shell: bash
+        run: bash scripts/ci-electron-build.sh mac x64
+        env:
+          BUILD_MODE: local
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Build unsigned macOS personal arm64 installer
+        if: steps.mac-signing.outputs.enabled != 'true'
+        shell: bash
+        run: bash scripts/ci-electron-build.sh mac arm64
+        env:
+          BUILD_MODE: local
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Build signed macOS enterprise remote x64 installer
         if: steps.mac-signing.outputs.enabled == 'true'
         shell: bash
         run: bash scripts/ci-electron-build.sh mac x64
@@ -106,12 +137,36 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
-      - name: Build signed macOS arm64 installers
+      - name: Build signed macOS enterprise remote arm64 installer
         if: steps.mac-signing.outputs.enabled == 'true'
         shell: bash
         run: bash scripts/ci-electron-build.sh mac arm64
         env:
           BUILD_MODE: remote
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Build signed macOS personal x64 installer
+        if: steps.mac-signing.outputs.enabled == 'true'
+        shell: bash
+        run: bash scripts/ci-electron-build.sh mac x64
+        env:
+          BUILD_MODE: local
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Build signed macOS personal arm64 installer
+        if: steps.mac-signing.outputs.enabled == 'true'
+        shell: bash
+        run: bash scripts/ci-electron-build.sh mac arm64
+        env:
+          BUILD_MODE: local
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -134,7 +189,7 @@ jobs:
             mateclaw-desktop/ci-logs/*.log
 
   build-windows:
-    name: Windows remote installer
+    name: Windows installers
     runs-on: windows-latest
     defaults:
       run:
@@ -147,6 +202,13 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
 
       - name: Enable pnpm
         shell: bash
@@ -166,7 +228,8 @@ jobs:
             ${{ steps.pnpm-store.outputs.path }}
             ${{ env.ELECTRON_CACHE }}
             ${{ env.ELECTRON_BUILDER_CACHE }}
-          key: ${{ runner.os }}-desktop-${{ hashFiles('mateclaw-desktop/pnpm-lock.yaml') }}
+            mateclaw-desktop/resources/jre
+          key: ${{ runner.os }}-desktop-${{ hashFiles('mateclaw-desktop/pnpm-lock.yaml') }}-${{ hashFiles('mateclaw-desktop/scripts/download-jre.sh') }}
           restore-keys: |
             ${{ runner.os }}-desktop-
 
@@ -176,14 +239,29 @@ jobs:
       - name: Build desktop app
         run: pnpm run build
 
-      - name: Build Windows installer
+      - name: Build backend JAR for personal client
+        shell: bash
+        run: bash scripts/build.sh
+
+      - name: Prepare Windows JRE for personal client
+        shell: bash
+        run: bash scripts/download-jre.sh x64
+
+      - name: Build Windows enterprise remote installer
         shell: bash
         run: bash scripts/ci-electron-build.sh win x64
         env:
           BUILD_MODE: remote
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
-      - name: Upload Windows installer
+      - name: Build Windows personal installer
+        shell: bash
+        run: bash scripts/ci-electron-build.sh win x64
+        env:
+          BUILD_MODE: local
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Upload Windows installers
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -224,7 +302,7 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -d '' files < <(find release-assets -type f \
-            \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' -o -name '*.blockmap' -o -name 'latest*.yml' \) \
+            \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' \) \
             -print0)
 
           if [ "${#files[@]}" -eq 0 ]; then
@@ -237,12 +315,19 @@ jobs:
           git tag -f desktop-dev "${GITHUB_SHA}"
           git push origin refs/tags/desktop-dev --force
 
-          notes="Latest desktop dev installers built from ${GITHUB_SHA} on branch ${GITHUB_REF_NAME}."
+          notes="Latest desktop dev installers built from ${GITHUB_SHA} on branch ${GITHUB_REF_NAME}. Includes 企业远程轻客户端 and 个人版客户端（完整本地客户端）."
           if gh release view desktop-dev >/dev/null 2>&1; then
             gh release edit desktop-dev \
               --title "Desktop Dev Build" \
               --notes "$notes" \
               --prerelease
+            gh release view desktop-dev --json assets --jq '.assets[].name' | while IFS= read -r asset; do
+              case "$asset" in
+                *.dmg|*.zip|*.exe|*.blockmap|latest*.yml)
+                  gh release delete-asset desktop-dev "$asset" -y || true
+                  ;;
+              esac
+            done
             gh release upload desktop-dev "${files[@]}" --clobber
           else
             gh release create desktop-dev "${files[@]}" \
@@ -288,7 +373,7 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -d '' files < <(find release-assets -type f \
-            \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' -o -name '*.blockmap' -o -name 'latest*.yml' \) \
+            \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' \) \
             -print0)
 
           if [ "${#files[@]}" -eq 0 ]; then
@@ -297,9 +382,16 @@ jobs:
           fi
 
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets[].name' | while IFS= read -r asset; do
+              case "$asset" in
+                *.dmg|*.zip|*.exe|*.blockmap|latest*.yml)
+                  gh release delete-asset "${GITHUB_REF_NAME}" "$asset" -y || true
+                  ;;
+              esac
+            done
             gh release upload "${GITHUB_REF_NAME}" "${files[@]}" --clobber
           else
             gh release create "${GITHUB_REF_NAME}" "${files[@]}" \
               --title "MateClaw Desktop ${GITHUB_REF_NAME}" \
-              --notes "Desktop installers built from ${GITHUB_SHA}."
+              --notes "Desktop installers built from ${GITHUB_SHA}. Includes 企业远程轻客户端 and 个人版客户端（完整本地客户端）."
           fi

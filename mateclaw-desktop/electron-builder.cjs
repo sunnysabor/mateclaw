@@ -27,6 +27,10 @@ const { loadBrandConfig } = require('./scripts/branding.cjs')
 
 const mode = process.env.BUILD_MODE === 'remote' ? 'remote' : 'local'
 const brand = loadBrandConfig(__dirname)
+const variantName =
+  mode === 'remote'
+    ? '企业远程轻客户端'
+    : '个人版客户端（完整本地客户端）'
 
 function parseArchList(envValue, fallback) {
   if (!envValue) return fallback
@@ -48,6 +52,23 @@ const desktopBuildArches = parseArchList(
   process.env.DESKTOP_BUILD_ARCHES || process.env.DESKTOP_BUILD_ARCH,
   ['arm64', 'x64']
 )
+
+function getLocalJreResourcePath() {
+  // CI builds one architecture at a time through scripts/ci-electron-build.sh.
+  // Use an explicit source path there so Windows can use the Node platform name
+  // (win32-x64), while retaining electron-builder's macros for local multi-arch
+  // builds.
+  if (desktopBuildArches.length === 1) {
+    const platform =
+      process.platform === 'darwin'
+        ? 'mac'
+        : process.platform === 'win32'
+          ? 'win32'
+          : process.platform
+    return `resources/jre/${platform}-${desktopBuildArches[0]}/`
+  }
+  return 'resources/jre/${os}-${arch}/'
+}
 
 // Derive a short slug from the brand name for artifact file names.
 // "MyAI" → "MyAI", "Cool App" → "Cool_App"
@@ -85,7 +106,7 @@ const config = {
     mode === 'local'
       ? [
           {
-            from: 'resources/jre/${os}-${arch}/',
+            from: getLocalJreResourcePath(),
             to: 'jre/',
             filter: ['**/*'],
           },
@@ -108,10 +129,7 @@ const config = {
     entitlements: 'build/entitlements.mac.plist',
     entitlementsInherit: 'build/entitlements.mac.inherit.plist',
     // Differentiate installers so users can tell local vs remote builds apart.
-    artifactName:
-      mode === 'remote'
-        ? `${brandSlug}_Remote_${'$'}{version}_${'$'}{arch}.${'$'}{ext}`
-        : `${brandSlug}_${'$'}{version}_${'$'}{arch}.${'$'}{ext}`,
+    artifactName: `${brandSlug}_${variantName}_${'$'}{version}_${'$'}{arch}.${'$'}{ext}`,
   },
 
   dmg: {
@@ -127,10 +145,7 @@ const config = {
       { target: 'nsis', arch: desktopBuildArches },
     ],
     icon: 'build/icon.ico',
-    artifactName:
-      mode === 'remote'
-        ? `${brandSlug}_Remote_${'$'}{version}_${'$'}{arch}_Setup.${'$'}{ext}`
-        : `${brandSlug}_${'$'}{version}_${'$'}{arch}_Setup.${'$'}{ext}`,
+    artifactName: `${brandSlug}_${variantName}_${'$'}{version}_${'$'}{arch}_Setup.${'$'}{ext}`,
   },
 
   nsis: {
@@ -149,10 +164,7 @@ const config = {
     target: ['AppImage'],
     icon: 'build/icon.png',
     category: 'Utility',
-    artifactName:
-      mode === 'remote'
-        ? `${brandSlug}_Remote_${'$'}{version}.${'$'}{ext}`
-        : `${brandSlug}_${'$'}{version}.${'$'}{ext}`,
+    artifactName: `${brandSlug}_${variantName}_${'$'}{version}.${'$'}{ext}`,
   },
 }
 

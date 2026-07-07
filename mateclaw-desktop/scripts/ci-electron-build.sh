@@ -13,6 +13,13 @@ fi
 
 platform="$1"
 arch="$2"
+build_mode="${BUILD_MODE:-remote}"
+
+case "$build_mode" in
+  remote) variant_label="企业远程轻客户端" ;;
+  local)  variant_label="个人版客户端（完整本地客户端）" ;;
+  *) echo "Unsupported BUILD_MODE: $build_mode" >&2; exit 2 ;;
+esac
 
 case "$platform" in
   mac|win|linux) ;;
@@ -25,10 +32,10 @@ case "$arch" in
 esac
 
 mkdir -p ci-logs release
-log="ci-logs/electron-builder-${platform}-${arch}.log"
+log="ci-logs/electron-builder-${build_mode}-${platform}-${arch}.log"
 
 set +e
-BUILD_MODE="${BUILD_MODE:-remote}" \
+BUILD_MODE="$build_mode" \
 DESKTOP_BUILD_ARCH="$arch" \
 pnpm exec electron-builder "--${platform}" 2>&1 | tee "$log"
 build_status=${PIPESTATUS[0]}
@@ -41,22 +48,25 @@ find release -maxdepth 1 -type f -print | sort | tee -a "$log" || true
 shopt -s nullglob
 case "$platform" in
   mac)
-    installers=(release/*_${arch}.dmg release/*_${arch}.zip)
-    required_label="macOS ${arch} .dmg/.zip"
+    installers=(release/*_"${variant_label}"_*_${arch}.dmg release/*_"${variant_label}"_*_${arch}.zip)
+    required_label="macOS ${arch} ${variant_label} .dmg/.zip"
     ;;
   win)
-    installers=(release/*_${arch}_Setup.exe)
-    required_label="Windows ${arch} NSIS .exe"
+    installers=(release/*_"${variant_label}"_*_${arch}_Setup.exe)
+    required_label="Windows ${arch} ${variant_label} NSIS .exe"
     ;;
   linux)
-    installers=(release/*.AppImage)
-    required_label="Linux AppImage"
+    installers=(release/*_"${variant_label}"_*.AppImage release/*_"${variant_label}".AppImage)
+    required_label="Linux ${variant_label} AppImage"
     ;;
 esac
 
 if [ "${#installers[@]}" -eq 0 ]; then
   echo "ERROR: Missing expected installer artifact: ${required_label}" | tee -a "$log" >&2
-  exit "${build_status:-1}"
+  if [ "$build_status" -ne 0 ]; then
+    exit "$build_status"
+  fi
+  exit 1
 fi
 
 printf 'Found expected installer artifact(s):\n' | tee -a "$log"
