@@ -155,8 +155,34 @@ Login: `admin` / `admin123`
 ### Docker
 
 ```bash
-cp .env.example .env
-docker compose up -d          # http://localhost:18080
+# Self-test one-command deploy: generates .env with random secrets, then builds and starts.
+bash scripts/deploy-selftest.sh
+
+# Open http://SERVER_IP:18080
+```
+
+For faster cloud deployment, build/push images once and let the server pull them:
+
+```bash
+# 1. Build machine: login and push images
+docker login YOUR_REGISTRY
+bash scripts/build-push-images.sh YOUR_REGISTRY/NAMESPACE --tag selftest
+
+# 2. Export a tiny server deploy bundle
+bash scripts/export-prebuilt-deploy-bundle.sh
+
+# 3. Server: pull images and start, no frontend/backend build on server
+tar -xzf mateclaw-prebuilt-deploy.tar.gz
+cd mateclaw
+docker login YOUR_REGISTRY
+bash scripts/deploy-prebuilt.sh --image-prefix YOUR_REGISTRY/NAMESPACE --tag selftest
+```
+
+For a manually hardened production deployment:
+
+```bash
+cp .env.example .env          # edit passwords, public URL, CORS, etc.
+docker compose up -d --build  # http://localhost:18080
 ```
 
 ### Desktop

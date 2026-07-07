@@ -165,6 +165,115 @@ curl -s http://localhost:18080/api/v1/system/browser-health | jq .
 
 ## 第一次部署
 
+### 简易自测：上传源码后一键启动
+
+如果只是把源码上传到云服务器做自测，不想手工编辑 `.env`：
+
+```sh
+bash scripts/deploy-selftest.sh
+```
+
+脚本会自动完成：
+
+1. 检查 Docker / Docker Compose。
+2. 自动生成 `.env`。
+3. 为 MySQL、JWT、SearXNG 生成随机密钥。
+4. 自动探测公网 IP，并写入 `MATECLAW_PUBLIC_BASE_URL`。
+5. 执行 `docker compose up -d --build`。
+6. 打印访问地址和常用排障命令。
+
+默认只公开 MateClaw Web 端口 `18080`。MySQL、SearXNG 和 OAuth 回调端口只绑定宿主机 `127.0.0.1`，避免自测时把内部服务裸露到公网。
+
+SearXNG 基础镜像默认使用 `ghcr.io/searxng/searxng:latest`，用于避开部分 Docker Hub 镜像源 500/超时问题。如果你的服务器访问 GHCR 慢，可以在启动前覆盖：
+
+```sh
+SEARXNG_IMAGE=searxng/searxng:latest bash scripts/deploy-selftest.sh
+```
+
+
+如果自动探测公网 IP 不准确，可以显式指定：
+
+```sh
+bash scripts/deploy-selftest.sh --public-url http://你的服务器IP:18080
+```
+
+如果构建依赖拉取很慢，可以启用国内 Maven 加速：
+
+```sh
+MAVEN_FLAGS=-Paliyun-first bash scripts/deploy-selftest.sh --regen-env
+```
+
+### 推荐：预构建镜像后服务器一键拉起
+
+如果云服务器构建慢、Docker Hub/GHCR 拉基础镜像不稳定，建议在本地电脑或 CI 机器先构建并推送 MateClaw 镜像到你的私有镜像仓库。服务器只拉最终镜像启动，不再现场执行 `pnpm install`、`vite build`、`mvn package`。
+
+#### 1. 本地/构建机：构建并推送
+
+```sh
+docker login 你的镜像仓库
+
+# 示例：阿里云 ACR
+bash scripts/build-push-images.sh registry.cn-hangzhou.aliyuncs.com/你的命名空间 --tag selftest
+
+# 国内 Maven 拉包慢时：
+MAVEN_FLAGS=-Paliyun-first bash scripts/build-push-images.sh registry.cn-hangzhou.aliyuncs.com/你的命名空间 --tag selftest
+```
+
+脚本会推送两个镜像：
+
+```text
+registry.../mateclaw-server:selftest
+registry.../mateclaw-searxng:selftest
+```
+
+#### 2. 导出小部署包
+
+```sh
+bash scripts/export-prebuilt-deploy-bundle.sh
+```
+
+生成：
+
+```text
+mateclaw-prebuilt-deploy.tar.gz
+```
+
+这个包只包含预构建部署所需的 compose 和脚本，不包含源码、`node_modules`、`target`。
+
+#### 3. 服务器：拉镜像启动
+
+```sh
+tar -xzf mateclaw-prebuilt-deploy.tar.gz
+cd mateclaw
+
+docker login 你的镜像仓库
+bash scripts/deploy-prebuilt.sh --image-prefix registry.cn-hangzhou.aliyuncs.com/你的命名空间 --tag selftest
+```
+
+脚本会自动生成 `.env`、随机密码和密钥，然后执行：
+
+```sh
+docker compose -f docker-compose.prebuilt.yml pull
+docker compose -f docker-compose.prebuilt.yml up -d --no-build
+```
+
+默认访问地址：
+
+```text
+http://服务器IP:18080
+```
+
+如果公网 IP 自动识别不准：
+
+```sh
+bash scripts/deploy-prebuilt.sh \
+  --image-prefix registry.cn-hangzhou.aliyuncs.com/你的命名空间 \
+  --tag selftest \
+  --public-url http://你的服务器IP:18080
+```
+
+### 生产手工部署
+
 ```sh
 git clone https://example.com.git
 cd mateclaw
@@ -305,6 +414,7 @@ MySQL 数据卷（`mysql_data`）不会动，Flyway 自动跑增量迁移 + 自�
 
 ## 下一步
 
+- [企业集中部署 + Desktop 远程客户端](./enterprise-remote-deploy) —— Docker 服务端 + 员工 Remote/Lite Desktop 的落地方案
 - [配置说明](./config) —— 所有环境变量和运行时开关
 - [Doctor 健康检查](./doctor) —— UI 里自带的启动体检
 - [安全与审批](./security) —— 生产部署前的加固清单

@@ -93,6 +93,12 @@ const router = createRouter({
           meta: { title: 'Docs' },
         },
         {
+          path: 'billing',
+          name: 'Billing',
+          component: () => import('@/views/Settings/Billing/index.vue'),
+          meta: { title: 'Billing' },
+        },
+        {
           path: 'points',
           name: 'Points',
           component: () => import('@/views/Settings/Points/index.vue'),
@@ -339,6 +345,7 @@ const router = createRouter({
         { path: 'datasources', redirect: '/settings/datasources' },
         { path: 'mcp-servers', redirect: '/settings/mcp-servers' },
         { path: 'token-usage', redirect: '/settings/token-usage' },
+        { path: 'settings/billing', redirect: '/billing' },
         { path: 'settings/points', redirect: '/points' },
         { path: 'settings/workflows', redirect: '/workflows' },
         { path: 'settings/dify-workflows', redirect: '/dify-workflows' },

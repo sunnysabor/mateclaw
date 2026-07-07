@@ -773,6 +773,21 @@ export const securityApi = {
 }
 
 
+// ==================== Billing ====================
+export const billingApi = {
+  getSummary: () => http.get('/billing/summary'),
+  listPackages: () => http.get('/billing/packages'),
+  listOrders: (params?: { limit?: number }) => http.get('/billing/orders', { params }),
+  listLedger: (params?: { limit?: number }) => http.get('/billing/ledger', { params }),
+  createOrder: (data: { packageId: string | number; paymentMethod?: string }) =>
+    http.post('/billing/orders', data),
+  mockPay: (id: string | number) => http.post(`/billing/orders/${id}/mock-pay`),
+  cancelOrder: (id: string | number) => http.post(`/billing/orders/${id}/cancel`),
+  manualCredit: (data: { userId: string | number; amountCents: number; remark?: string }) =>
+    http.post('/admin/billing/manual-credit', data),
+}
+
+
 // ==================== Points ====================
 export const pointsApi = {
   getSummary: (params?: { limit?: number }) => http.get('/points/summary', { params }),

@@ -1,0 +1,370 @@
+#!/usr/bin/env bash
+#
+# One-command deployment from prebuilt MateClaw images.
+# This script does not build frontend/backend on the server; it only pulls images.
+#
+# Example:
+#   docker login registry.cn-hangzhou.aliyuncs.com
+#   bash scripts/deploy-prebuilt.sh --image-prefix registry.cn-hangzhou.aliyuncs.com/my-namespace --tag selftest
+
+set -Eeuo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+IMAGE_PREFIX="${MATECLAW_IMAGE_PREFIX:-}"
+TAG="${MATECLAW_IMAGE_TAG:-latest}"
+PUBLIC_URL="${PUBLIC_URL:-}"
+REGEN_ENV=0
+NO_PULL=0
+COMPOSE_FILE="docker-compose.prebuilt.yml"
+
+usage() {
+  cat <<'USAGE'
+MateClaw prebuilt-image deploy
+
+Usage:
+  bash scripts/deploy-prebuilt.sh --image-prefix IMAGE_PREFIX [options]
+
+Options:
+  --image-prefix VALUE  Registry/repository prefix, e.g.
+                        registry.cn-hangzhou.aliyuncs.com/my-namespace
+  --tag TAG             Image tag. Default: latest
+  --public-url URL      Public URL written/updated in .env, e.g. http://1.2.3.4:18080
+  --regen-env           Regenerate .env after backing up the existing file
+  --no-pull             Skip docker compose pull, then start existing local images
+  -h, --help            Show this help
+
+Environment overrides:
+  MATECLAW_IMAGE_PREFIX Same as --image-prefix
+  MATECLAW_IMAGE_TAG    Same as --tag
+  PUBLIC_URL            Same as --public-url
+
+The script writes these image names into .env:
+  MATECLAW_SERVER_IMAGE=IMAGE_PREFIX/mateclaw-server:TAG
+  MATECLAW_SEARXNG_IMAGE=IMAGE_PREFIX/mateclaw-searxng:TAG
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --image-prefix)
+      [[ $# -ge 2 ]] || { echo "Missing value for --image-prefix" >&2; exit 2; }
+      IMAGE_PREFIX="$2"
+      shift 2
+      ;;
+    --tag)
+      [[ $# -ge 2 ]] || { echo "Missing value for --tag" >&2; exit 2; }
+      TAG="$2"
+      shift 2
+      ;;
+    --public-url)
+      [[ $# -ge 2 ]] || { echo "Missing value for --public-url" >&2; exit 2; }
+      PUBLIC_URL="$2"
+      shift 2
+      ;;
+    --regen-env)
+      REGEN_ENV=1
+      shift
+      ;;
+    --no-pull)
+      NO_PULL=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "Missing required command: $1" >&2
+    exit 1
+  }
+}
+
+compose() {
+  if docker compose version >/dev/null 2>&1; then
+    docker compose -f "$COMPOSE_FILE" "$@"
+  elif command -v docker-compose >/dev/null 2>&1; then
+    docker-compose -f "$COMPOSE_FILE" "$@"
+  else
+    echo "Docker Compose not found. Install Docker Compose v2 or docker-compose." >&2
+    exit 1
+  fi
+}
+
+rand_hex() {
+  local bytes="${1:-24}"
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex "$bytes"
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import os, sys; print(os.urandom(int(sys.argv[1])).hex())' "$bytes"
+  elif command -v od >/dev/null 2>&1; then
+    dd if=/dev/urandom bs="$bytes" count=1 2>/dev/null | od -An -tx1 | tr -d ' \n'
+    echo
+  else
+    echo "No random generator available: install openssl, python3, or od." >&2
+    exit 1
+  fi
+}
+
+detect_public_url() {
+  if [[ -n "$PUBLIC_URL" ]]; then
+    echo "$PUBLIC_URL"
+    return
+  fi
+
+  local ip=""
+  if command -v curl >/dev/null 2>&1; then
+    ip="$(curl -fsS --max-time 2 https://api.ipify.org 2>/dev/null || true)"
+    if [[ -z "$ip" ]]; then
+      ip="$(curl -fsS --max-time 2 https://ifconfig.me 2>/dev/null || true)"
+    fi
+  fi
+  if [[ -z "$ip" ]] && command -v hostname >/dev/null 2>&1; then
+    ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  fi
+  if [[ -z "$ip" ]]; then
+    ip="127.0.0.1"
+  fi
+  echo "http://${ip}:18080"
+}
+
+make_cors_origins() {
+  local public_url="$1"
+  local host_port="${2:-18080}"
+  echo "${public_url},http://localhost:${host_port},http://127.0.0.1:${host_port}"
+}
+
+read_env_value() {
+  local key="$1"
+  [[ -f .env ]] || return 0
+  awk -F= -v k="$key" '$1 == k { sub(/^[^=]*=/, ""); print; exit }' .env
+}
+
+upsert_env_key() {
+  local key="$1"
+  local value="$2"
+  local tmp
+  tmp="$(mktemp)"
+  awk -F= -v k="$key" -v v="$value" '
+    $1 == k { print k "=" v; found = 1; next }
+    { print }
+    END { if (!found) print k "=" v }
+  ' .env > "$tmp"
+  mv "$tmp" .env
+  chmod 600 .env
+}
+
+sanitize_prefix() {
+  local prefix="$1"
+  prefix="${prefix%/}"
+  echo "$prefix"
+}
+
+image_from_prefix() {
+  local name="$1"
+  local prefix
+  prefix="$(sanitize_prefix "$IMAGE_PREFIX")"
+  if [[ -z "$prefix" ]]; then
+    echo ""
+  else
+    echo "${prefix}/${name}:${TAG}"
+  fi
+}
+
+write_env() {
+  local public_url="$1"
+  local server_image="$2"
+  local searxng_image="$3"
+  local cors
+  cors="$(make_cors_origins "$public_url" "${MATECLAW_HOST_PORT:-18080}")"
+  local generated_at
+  generated_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+  cat > .env <<EOF_ENV
+# Auto-generated by scripts/deploy-prebuilt.sh at ${generated_at}
+# Server pulls prebuilt images; it does not build frontend/backend from source.
+
+# Images
+MATECLAW_SERVER_IMAGE=${server_image}
+MATECLAW_SEARXNG_IMAGE=${searxng_image}
+MYSQL_IMAGE=mysql:8.0
+
+# Database
+DB_HOST=localhost
+DB_PORT=3306
+DB_NAME=mateclaw
+DB_USERNAME=mateclaw
+DB_PASSWORD=$(rand_hex 24)
+DB_ROOT_PASSWORD=$(rand_hex 24)
+
+# Public entry
+MATECLAW_HOST_BIND=0.0.0.0
+MATECLAW_HOST_PORT=18080
+MATECLAW_CORS_ALLOWED_ORIGINS=${cors}
+MATECLAW_PUBLIC_BASE_URL=${public_url}
+
+# Keep internal support services local-only on the host by default.
+MYSQL_HOST_BIND=127.0.0.1
+MYSQL_HOST_PORT=3306
+SEARXNG_HOST_BIND=127.0.0.1
+SEARXNG_HOST_PORT=8088
+MATECLAW_OAUTH_HOST_BIND=127.0.0.1
+MATECLAW_OAUTH_HOST_PORT=1455
+
+# Security
+JWT_SECRET=$(rand_hex 48)
+MATECLAW_OPENAPI_EXPOSE_UI=false
+SEARXNG_SECRET=$(rand_hex 32)
+
+# Browser tool defaults: safe for internet-facing self-test.
+PLAYWRIGHT_ALLOW_PRIVATE_NETWORK=false
+PLAYWRIGHT_IGNORE_HTTPS_ERRORS=false
+PLAYWRIGHT_DEFAULT_TIMEOUT_SECONDS=30
+PLAYWRIGHT_NAVIGATION_TIMEOUT_SECONDS=30
+PLAYWRIGHT_SNAPSHOT_MAX_LENGTH=20000
+MATECLAW_BROWSER_CDP_URL=
+MATECLAW_BROWSER_CHROME_PATH=
+MATECLAW_BROWSER_CHANNEL=
+
+# OAuth defaults: remote/IP/domain access uses device-code/manual-paste flow.
+MATECLAW_OAUTH_OPENAI_DEPLOYMENT_MODE=
+MATECLAW_OAUTH_OPENAI_CALLBACK_BIND_HOST=0.0.0.0
+
+# Wiki / skills
+MATE_WIKI_ALLOWED_SOURCE_ROOTS=
+MATE_WIKI_WATCHER_ENABLED=false
+MATE_WIKI_WATCHER_INTERVAL_MS=300000
+MATECLAW_SKILL_WORKSPACE_ROOT=
+EOF_ENV
+
+  chmod 600 .env
+}
+
+wait_for_http() {
+  local url="$1"
+  local max_attempts=90
+  local attempt=1
+
+  if ! command -v curl >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo "Waiting for MateClaw Web UI: ${url}"
+  while [[ "$attempt" -le "$max_attempts" ]]; do
+    local code
+    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "$url" 2>/dev/null || true)"
+    if [[ "$code" =~ ^(200|301|302|401)$ ]]; then
+      echo "MateClaw is responding with HTTP ${code}."
+      return 0
+    fi
+    sleep 5
+    attempt=$((attempt + 1))
+  done
+
+  echo "MateClaw did not respond within timeout. Check logs with:" >&2
+  echo "  docker compose -f ${COMPOSE_FILE} logs -f mateclaw-server" >&2
+  return 1
+}
+
+main() {
+  need_cmd docker
+  [[ -f "$COMPOSE_FILE" ]] || { echo "Missing ${COMPOSE_FILE}" >&2; exit 1; }
+
+  if ! docker info >/dev/null 2>&1; then
+    echo "Docker daemon is not running or current user cannot access it." >&2
+    echo "Start Docker first, then rerun this script." >&2
+    exit 1
+  fi
+
+  local server_image
+  local searxng_image
+  server_image="$(image_from_prefix mateclaw-server)"
+  searxng_image="$(image_from_prefix mateclaw-searxng)"
+
+  if [[ -f .env && "$REGEN_ENV" -ne 1 ]]; then
+    echo ".env already exists; reusing it. Use --regen-env to regenerate secrets."
+    if [[ -n "$IMAGE_PREFIX" ]]; then
+      upsert_env_key MATECLAW_SERVER_IMAGE "$server_image"
+      upsert_env_key MATECLAW_SEARXNG_IMAGE "$searxng_image"
+      echo "Updated image names in .env."
+    fi
+    if [[ -n "$PUBLIC_URL" ]]; then
+      if [[ ! "$PUBLIC_URL" =~ ^https?:// ]]; then
+        echo "Invalid public URL: ${PUBLIC_URL}" >&2
+        exit 2
+      fi
+      local host_port
+      host_port="$(read_env_value MATECLAW_HOST_PORT)"
+      host_port="${host_port:-18080}"
+      upsert_env_key MATECLAW_PUBLIC_BASE_URL "$PUBLIC_URL"
+      upsert_env_key MATECLAW_CORS_ALLOWED_ORIGINS "$(make_cors_origins "$PUBLIC_URL" "$host_port")"
+      echo "Updated MATECLAW_PUBLIC_BASE_URL in .env."
+    fi
+  else
+    if [[ -z "$IMAGE_PREFIX" ]]; then
+      echo "--image-prefix is required on first run or when using --regen-env." >&2
+      usage
+      exit 2
+    fi
+    if [[ -f .env ]]; then
+      local backup=".env.bak.$(date +%Y%m%d%H%M%S)"
+      cp .env "$backup"
+      echo "Existing .env backed up to ${backup}"
+    fi
+    local public_url
+    public_url="$(detect_public_url)"
+    if [[ ! "$public_url" =~ ^https?:// ]]; then
+      echo "Invalid public URL: ${public_url}" >&2
+      exit 2
+    fi
+    write_env "$public_url" "$server_image" "$searxng_image"
+    echo "Generated .env with prebuilt image names and random secrets."
+  fi
+
+  local configured_server_image
+  local configured_searxng_image
+  configured_server_image="$(read_env_value MATECLAW_SERVER_IMAGE)"
+  configured_searxng_image="$(read_env_value MATECLAW_SEARXNG_IMAGE)"
+  if [[ -z "$configured_server_image" || -z "$configured_searxng_image" ]]; then
+    echo "MATECLAW_SERVER_IMAGE and MATECLAW_SEARXNG_IMAGE must be set in .env." >&2
+    exit 2
+  fi
+
+  if [[ "$NO_PULL" -ne 1 ]]; then
+    compose pull
+  fi
+  compose up -d --no-build
+
+  echo
+  compose ps
+  echo
+
+  local host_port
+  host_port="$(read_env_value MATECLAW_HOST_PORT)"
+  host_port="${host_port:-18080}"
+  local local_url="http://127.0.0.1:${host_port}"
+  wait_for_http "$local_url" || true
+
+  local public_url
+  public_url="$(read_env_value MATECLAW_PUBLIC_BASE_URL)"
+  echo
+  echo "Prebuilt-image deployment started."
+  echo "Open: ${public_url:-$local_url}"
+  echo "Default login: admin / admin123"
+  echo "Useful commands:"
+  echo "  docker compose -f ${COMPOSE_FILE} ps"
+  echo "  docker compose -f ${COMPOSE_FILE} logs -f mateclaw-server"
+  echo "  docker compose -f ${COMPOSE_FILE} down"
+}
+
+main "$@"

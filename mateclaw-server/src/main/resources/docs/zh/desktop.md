@@ -303,5 +303,6 @@ Electron 主进程通过 Node.js `child_process` 管理 Spring Boot 后端：
 ## 下一步
 
 - [快速开始](./quickstart)——最快走完桌面体验
+- [企业集中部署 + Desktop 远程客户端](./enterprise-remote-deploy)——公司统一服务端、员工连接远程 Server
 - [配置说明](./config)——运行时设置
 - [控制台](./console)——跑在 Electron 窗口里的 UI

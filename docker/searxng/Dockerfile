@@ -4,6 +4,7 @@
 # out of the box with no host bind-mount. The upstream image ships JSON output
 # disabled and the Limiter plugin enabled — both silently break mateclaw's
 # SearXNGSearchProvider, so this override is required.
-FROM searxng/searxng:latest
+ARG SEARXNG_IMAGE=ghcr.io/searxng/searxng:latest
+FROM ${SEARXNG_IMAGE}
 
 COPY settings.yml /etc/searxng/settings.yml

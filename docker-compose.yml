@@ -1,11 +1,9 @@
-version: '3.8'
-
 services:
   # MySQL 数据库
   #
-  # ⚠️ 密码通过环境变量传入，必须从 .env 文件提供。首次部署前：
-  #   1. cp .env.example .env
-  #   2. 编辑 .env 把 DB_ROOT_PASSWORD / DB_PASSWORD 改成强密码
+  # ⚠️ 密码通过环境变量传入，必须从 .env 文件提供。
+  # 简易自测：bash scripts/deploy-selftest.sh 会自动生成随机 .env 并启动。
+  # 手工生产：cp .env.example .env 后把 DB_ROOT_PASSWORD / DB_PASSWORD 改成强密码。
   # 未设置会直接在 `docker compose up` 时报错，避免把默认密码带到生产环境。
   mysql:
     image: mysql:8.0
@@ -18,7 +16,8 @@ services:
       MYSQL_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required in .env}
       TZ: Asia/Shanghai
     ports:
-      - "3306:3306"
+      # Self-test default: bind MySQL to localhost only; do not expose DB publicly.
+      - "${MYSQL_HOST_BIND:-127.0.0.1}:${MYSQL_HOST_PORT:-3306}:3306"
     volumes:
       - mysql_data:/var/lib/mysql
     # Schema and seed data are managed by Flyway on application startup.
@@ -40,6 +39,9 @@ services:
   searxng:
     build:
       context: ./docker/searxng
+      args:
+        # Default to GHCR to avoid Docker Hub mirror 500/timeouts on some CN hosts.
+        SEARXNG_IMAGE: ${SEARXNG_IMAGE:-ghcr.io/searxng/searxng:latest}
     container_name: mateclaw-searxng
     restart: unless-stopped
     environment:
@@ -48,7 +50,8 @@ services:
       - UWSGI_WORKERS=2
       - UWSGI_THREADS=4
     ports:
-      - "8088:8080"
+      # Self-test default: SearXNG is a sidecar; keep host access local-only.
+      - "${SEARXNG_HOST_BIND:-127.0.0.1}:${SEARXNG_HOST_PORT:-8088}:8080"
     healthcheck:
       # Healthz needs json format, so this also doubles as an integration check.
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/healthz"]
@@ -84,6 +87,7 @@ services:
       SERPER_API_KEY: ${SERPER_API_KEY:-}
       JWT_SECRET: ${JWT_SECRET:-}
       MATECLAW_CORS_ALLOWED_ORIGINS: ${MATECLAW_CORS_ALLOWED_ORIGINS:-}
+      MATECLAW_PUBLIC_BASE_URL: ${MATECLAW_PUBLIC_BASE_URL:-}
       # SearXNG: tell the app where to reach the sidecar container
       SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://searxng:8080}
       # Browser automation: the runtime image (mcr.microsoft.com/playwright:*)
@@ -138,8 +142,10 @@ services:
     # recommendation for Playwright / headless chrome.
     shm_size: 2gb
     ports:
-      - "18080:18088"   # host:container — app listens on 18088 inside the container
-      - "1455:1455"
+      - "${MATECLAW_HOST_BIND:-0.0.0.0}:${MATECLAW_HOST_PORT:-18080}:18088"   # host:container — app listens on 18088 inside the container
+      # Remote/IP/domain deployments normally use device-code/manual-paste OAuth.
+      # Keep the localhost callback port local-only unless you explicitly need it.
+      - "${MATECLAW_OAUTH_HOST_BIND:-127.0.0.1}:${MATECLAW_OAUTH_HOST_PORT:-1455}:1455"
     volumes:
       # server_data covers /app/data — H2 DB, wiki-uploads, AND the skill
       # workspace (MATECLAW_SKILL_WORKSPACE_ROOT=/app/data/skills above), so a

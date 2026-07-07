@@ -155,8 +155,34 @@ pnpm install && pnpm dev      # http://localhost:5173
 ### Docker 部署
 
 ```bash
-cp .env.example .env
-docker compose up -d          # http://localhost:18080
+# 自测一键部署：自动生成 .env、随机密码和 JWT secret，然后构建启动
+bash scripts/deploy-selftest.sh
+
+# 访问 http://服务器IP:18080
+```
+
+如需更快的云服务器部署，推荐先把镜像推到你的镜像仓库，服务器只拉镜像启动：
+
+```bash
+# 1. 本地/构建机：登录并推送镜像
+docker login 你的镜像仓库
+bash scripts/build-push-images.sh 你的镜像仓库/命名空间 --tag selftest
+
+# 2. 导出一个小部署包上传服务器
+bash scripts/export-prebuilt-deploy-bundle.sh
+
+# 3. 服务器：拉镜像启动，不再现场构建前后端
+tar -xzf mateclaw-prebuilt-deploy.tar.gz
+cd mateclaw
+docker login 你的镜像仓库
+bash scripts/deploy-prebuilt.sh --image-prefix 你的镜像仓库/命名空间 --tag selftest
+```
+
+如需手工生产部署：
+
+```bash
+cp .env.example .env          # 修改密码、域名、CORS 等
+docker compose up -d --build  # http://localhost:18080
 ```
 
 ### 桌面端
