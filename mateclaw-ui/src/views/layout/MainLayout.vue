@@ -548,6 +548,11 @@ const navGroups = computed(() => [
         requiredCapability: 'manage:models',
       },
       {
+        path: '/points',
+        label: t('nav.points'),
+        icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><path d="M12 8v8"/><path d="M8 12h8"/><path d="M17.5 6.5 19 5"/><path d="M5 19l1.5-1.5"/></svg>`,
+      },
+      {
         path: '/security',
         label: t('nav.security'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`,
@@ -574,6 +579,9 @@ function toggleSidebar() {
 function isNavItemActive(item: { path: string; label: string }) {
   if (item.path.startsWith('/settings')) {
     return route.path.startsWith('/settings')
+  }
+  if (item.path === '/points') {
+    return route.path.startsWith('/points')
   }
   if (item.path === '/security') {
     return route.path.startsWith('/security')

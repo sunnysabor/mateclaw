@@ -92,6 +92,12 @@ const router = createRouter({
           component: () => import('@/views/Docs/index.vue'),
           meta: { title: 'Docs' },
         },
+        {
+          path: 'points',
+          name: 'Points',
+          component: () => import('@/views/Settings/Points/index.vue'),
+          meta: { title: 'Points' },
+        },
         // ==================== Connect ====================
         {
           path: 'channels',
@@ -333,6 +339,7 @@ const router = createRouter({
         { path: 'datasources', redirect: '/settings/datasources' },
         { path: 'mcp-servers', redirect: '/settings/mcp-servers' },
         { path: 'token-usage', redirect: '/settings/token-usage' },
+        { path: 'settings/points', redirect: '/points' },
         { path: 'settings/workflows', redirect: '/workflows' },
         { path: 'settings/dify-workflows', redirect: '/dify-workflows' },
         // RFC-090 Phase 1: Tools 顶层降级到 Settings

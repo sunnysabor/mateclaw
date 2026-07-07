@@ -772,6 +772,16 @@ export const securityApi = {
   listApprovals: (params?: any) => http.get('/security/approvals', { params }),
 }
 
+
+// ==================== Points ====================
+export const pointsApi = {
+  getSummary: (params?: { limit?: number }) => http.get('/points/summary', { params }),
+  getAccount: () => http.get('/points/account'),
+  listLedger: (params?: { limit?: number }) => http.get('/points/ledger', { params }),
+  manualAdjust: (data: { userId: string | number; amount: number; reason?: string; remark?: string }) =>
+    http.post('/admin/points/manual-adjust', data),
+}
+
 // ==================== Token Usage ====================
 export const tokenUsageApi = {
   getSummary: (params?: { startDate?: string; endDate?: string; modelName?: string; providerId?: string }) =>
