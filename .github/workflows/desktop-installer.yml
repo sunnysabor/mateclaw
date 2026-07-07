@@ -78,18 +78,40 @@ jobs:
             echo "enabled=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build unsigned macOS installers
+      - name: Build unsigned macOS x64 installers
         if: steps.mac-signing.outputs.enabled != 'true'
-        run: pnpm exec electron-builder --mac --x64 --arm64
+        run: pnpm exec electron-builder --mac
         env:
           BUILD_MODE: remote
+          DESKTOP_BUILD_ARCH: x64
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
-      - name: Build signed macOS installers
-        if: steps.mac-signing.outputs.enabled == 'true'
-        run: pnpm exec electron-builder --mac --x64 --arm64
+      - name: Build unsigned macOS arm64 installers
+        if: steps.mac-signing.outputs.enabled != 'true'
+        run: pnpm exec electron-builder --mac
         env:
           BUILD_MODE: remote
+          DESKTOP_BUILD_ARCH: arm64
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Build signed macOS x64 installers
+        if: steps.mac-signing.outputs.enabled == 'true'
+        run: pnpm exec electron-builder --mac
+        env:
+          BUILD_MODE: remote
+          DESKTOP_BUILD_ARCH: x64
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Build signed macOS arm64 installers
+        if: steps.mac-signing.outputs.enabled == 'true'
+        run: pnpm exec electron-builder --mac
+        env:
+          BUILD_MODE: remote
+          DESKTOP_BUILD_ARCH: arm64
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -152,9 +174,10 @@ jobs:
         run: pnpm run build
 
       - name: Build Windows installer
-        run: pnpm exec electron-builder --win --x64
+        run: pnpm exec electron-builder --win
         env:
           BUILD_MODE: remote
+          DESKTOP_BUILD_ARCH: x64
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
       - name: Upload Windows installer

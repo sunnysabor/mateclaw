@@ -28,6 +28,27 @@ const { loadBrandConfig } = require('./scripts/branding.cjs')
 const mode = process.env.BUILD_MODE === 'remote' ? 'remote' : 'local'
 const brand = loadBrandConfig(__dirname)
 
+function parseArchList(envValue, fallback) {
+  if (!envValue) return fallback
+  const allowed = new Set(['x64', 'arm64'])
+  const arches = envValue
+    .split(',')
+    .map((arch) => arch.trim())
+    .filter(Boolean)
+
+  for (const arch of arches) {
+    if (!allowed.has(arch)) {
+      throw new Error(`Unsupported DESKTOP_BUILD_ARCHES value: ${envValue}`)
+    }
+  }
+  return arches.length > 0 ? arches : fallback
+}
+
+const desktopBuildArches = parseArchList(
+  process.env.DESKTOP_BUILD_ARCHES || process.env.DESKTOP_BUILD_ARCH,
+  ['arm64', 'x64']
+)
+
 // Derive a short slug from the brand name for artifact file names.
 // "MyAI" → "MyAI", "Cool App" → "Cool_App"
 const brandSlug = brand.name.replace(/\s+/g, '_')
@@ -78,8 +99,8 @@ const config = {
   mac: {
     category: 'public.app-category.productivity',
     target: [
-      { target: 'dmg', arch: ['arm64', 'x64'] },
-      { target: 'zip', arch: ['arm64', 'x64'] },
+      { target: 'dmg', arch: desktopBuildArches },
+      { target: 'zip', arch: desktopBuildArches },
     ],
     icon: 'build/icon.icns',
     hardenedRuntime: true,
@@ -103,8 +124,7 @@ const config = {
 
   win: {
     target: [
-      { target: 'nsis', arch: 'x64' },
-      { target: 'nsis', arch: 'arm64' },
+      { target: 'nsis', arch: desktopBuildArches },
     ],
     icon: 'build/icon.ico',
     artifactName:
