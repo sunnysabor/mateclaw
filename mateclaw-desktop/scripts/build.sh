@@ -7,14 +7,18 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-SERVER_DIR="$(cd "$PROJECT_ROOT/../mateclaw-server" && pwd)"
+REPO_ROOT="$(cd "$PROJECT_ROOT/.." && pwd)"
+SERVER_DIR="$REPO_ROOT/mateclaw-server"
 RESOURCES_DIR="$PROJECT_ROOT/resources"
 
-echo "==> Building mateclaw-server JAR from $SERVER_DIR"
+echo "==> Building mateclaw-server JAR from $REPO_ROOT"
 
-# Build the Spring Boot fat JAR (skip tests for packaging speed)
-cd "$SERVER_DIR"
-mvn clean package -DskipTests -Dmaven.test.skip=true -q
+# Build the Spring Boot fat JAR and required in-repo Maven modules.
+# Running from the root reactor is required because mateclaw-server depends on
+# mateclaw-plugin-api, which is part of this repository and is not published to
+# Maven Central.
+cd "$REPO_ROOT"
+mvn -pl mateclaw-server -am clean package -DskipTests -Dmaven.test.skip=true -q
 
 # Locate the built JAR
 JAR_FILE=$(ls "$SERVER_DIR"/target/mateclaw-server-*.jar 2>/dev/null | head -1)
