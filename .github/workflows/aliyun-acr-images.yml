@@ -1,0 +1,137 @@
+name: Build and Push Aliyun ACR Images
+
+on:
+  push:
+    branches:
+      - dev
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to push. Defaults to branch/tag name plus sha tag.'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aliyun-acr-images-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ACR_REGISTRY: crpi-7uay3cuef93rvg8g.cn-hangzhou.personal.cr.aliyuncs.com
+  ACR_NAMESPACE: mateclaw
+  # Keep this in sync with mateclaw-server/Dockerfile default unless you need a mirror.
+  SEARXNG_IMAGE: ghcr.io/searxng/searxng:latest
+
+jobs:
+  build-and-push:
+    name: Build and push to Aliyun ACR
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Resolve image tags
+        id: vars
+        shell: bash
+        env:
+          MANUAL_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${MANUAL_TAG:-}" ]]; then
+            primary_tag="${MANUAL_TAG}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            primary_tag="${GITHUB_REF_NAME}"
+          elif [[ "${GITHUB_REF_NAME}" == "dev" ]]; then
+            # Keep the cloud-server deploy command stable for the main development branch.
+            primary_tag="prod"
+          else
+            primary_tag="${GITHUB_REF_NAME}"
+          fi
+
+          # Docker tags cannot contain slashes.
+          primary_tag="${primary_tag//\//-}"
+          ref_tag="${GITHUB_REF_NAME//\//-}"
+          sha_tag="sha-${GITHUB_SHA::12}"
+          prefix="${ACR_REGISTRY}/${ACR_NAMESPACE}"
+
+          server_tags="${prefix}/mateclaw-server:${primary_tag}\n${prefix}/mateclaw-server:${sha_tag}"
+          searxng_tags="${prefix}/mateclaw-searxng:${primary_tag}\n${prefix}/mateclaw-searxng:${sha_tag}"
+
+          # Also publish a ref-named tag when primary_tag differs, e.g. dev -> prod + dev.
+          if [[ "${ref_tag}" != "${primary_tag}" ]]; then
+            server_tags="${server_tags}\n${prefix}/mateclaw-server:${ref_tag}"
+            searxng_tags="${searxng_tags}\n${prefix}/mateclaw-searxng:${ref_tag}"
+          fi
+
+          {
+            echo "primary-tag=${primary_tag}"
+            echo "sha-tag=${sha_tag}"
+            echo "prefix=${prefix}"
+            echo "server-primary=${prefix}/mateclaw-server:${primary_tag}"
+            echo "server-sha=${prefix}/mateclaw-server:${sha_tag}"
+            echo "searxng-primary=${prefix}/mateclaw-searxng:${primary_tag}"
+            echo "searxng-sha=${prefix}/mateclaw-searxng:${sha_tag}"
+            echo "server-tags<<EOF"
+            printf '%b\n' "${server_tags}"
+            echo "EOF"
+            echo "searxng-tags<<EOF"
+            printf '%b\n' "${searxng_tags}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Aliyun ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ACR_REGISTRY }}
+          username: ${{ secrets.ALIYUN_ACR_USERNAME }}
+          password: ${{ secrets.ALIYUN_ACR_PASSWORD }}
+
+      - name: Build and push SearXNG image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker/searxng
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            SEARXNG_IMAGE=${{ env.SEARXNG_IMAGE }}
+          tags: ${{ steps.vars.outputs.searxng-tags }}
+          cache-from: type=gha,scope=aliyun-acr-searxng
+          cache-to: type=gha,mode=max,scope=aliyun-acr-searxng
+
+      - name: Build and push MateClaw server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: mateclaw-server/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.vars.outputs.server-tags }}
+          cache-from: type=gha,scope=aliyun-acr-server
+          cache-to: type=gha,mode=max,scope=aliyun-acr-server
+
+      - name: Deployment hint
+        shell: bash
+        run: |
+          cat <<EOF_HINT
+          Images pushed:
+            ${{ steps.vars.outputs.searxng-primary }}
+            ${{ steps.vars.outputs.server-primary }}
+            ${{ steps.vars.outputs.searxng-sha }}
+            ${{ steps.vars.outputs.server-sha }}
+
+          Deploy with:
+            bash scripts/deploy-prebuilt.sh \\
+              --image-prefix ${{ steps.vars.outputs.prefix }} \\
+              --tag ${{ steps.vars.outputs.primary-tag }} \\
+              --public-url http://YOUR_SERVER_IP:18080
+          EOF_HINT
