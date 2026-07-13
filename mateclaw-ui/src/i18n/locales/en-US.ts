@@ -2,6 +2,9 @@ export default {
   app: {
     title: 'HHAIOS - AI Assistant',
   },
+  router: {
+    chunkLoadFailed: 'Failed to load page resources. Check your network and try again.',
+  },
   common: {
     save: 'Save',
     saving: 'Saving...',
@@ -449,6 +452,17 @@ export default {
       report: 'Report',
       reportCopied: 'Error details copied to clipboard',
       reportFailed: 'Copy failed — check browser permissions',
+    },
+    // Attachment inline preview dialog
+    preview: {
+      download: 'Download',
+      fullscreen: 'Fullscreen',
+      exitFullscreen: 'Exit fullscreen',
+      loading: 'Loading preview…',
+      failed: 'Preview failed to load — please download the file instead',
+      unsupported: 'This format cannot be previewed inline — please download it',
+      truncated: 'Showing first {max} rows — download for the full content',
+      htmlSandboxNotice: 'HTML renders in an isolated sandbox with no access to your session',
     },
     // Approval bar
     approvalAllow: 'Allow',
