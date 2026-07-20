@@ -78,6 +78,15 @@ public class ChannelMessageRouter {
     @Autowired(required = false)
     private vip.mate.workspace.core.service.ChatUploadLocationResolver chatUploadLocationResolver;
 
+    /** Field-injected so the IM sync path can scrub hallucinated
+     *  {@code /api/v1/files/generated/{id}} URLs (LLM wrote a UUID-shaped
+     *  link without ever calling a render tool). The graph's FinalAnswerNode
+     *  already does this, but the IM sync path accumulates {@code delta.content()}
+     *  directly and bypasses FinalAnswerNode — without this scrub, the fake
+     *  URL reaches the IM channel as a clickable link that 404s. */
+    @Autowired(required = false)
+    private vip.mate.tool.document.GeneratedFileCache generatedFileCache;
+
     /** 队列条目：封装消息及其路由上下文 */
     private record QueueEntry(ChannelMessage message, ChannelAdapter adapter, ChannelEntity channelEntity) {}
 
@@ -271,6 +280,11 @@ public class ChannelMessageRouter {
         }
         channelEntity = fresh;
 
+        String conversationId = buildConversationId(message);
+        if (handleMagicCommand(message, adapter, conversationId)) {
+            return;
+        }
+
         // Fan out to the trigger pipeline FIRST — channel_message and
         // content_match triggers fire on every received message regardless
         // of whether the channel has an agent attached. If we returned
@@ -292,7 +306,6 @@ public class ChannelMessageRouter {
         }
 
         String channelType = adapter.getChannelType();
-        String conversationId = buildConversationId(message);
 
         log.info("[{}] Enqueuing message: sender={}, conversationId={}, agentId={}",
                 channelType, message.getSenderId(), conversationId, agentId);
@@ -601,6 +614,10 @@ public class ChannelMessageRouter {
                 adapter.getChannelType(), message.getSenderId(), conversationId, agentId);
 
         try {
+            if (handleMagicCommand(message, adapter, conversationId)) {
+                return;
+            }
+
             // ======= 审批拦截层 =======
             String userText = message.getContent() != null ? message.getContent().trim() : "";
             PendingApproval pending = approvalService.findPendingByConversation(conversationId);
@@ -821,6 +838,22 @@ public class ChannelMessageRouter {
                             .blockLast(Duration.ofMinutes(10));
                     String reply = replyAccumulator.toString();
 
+                    // The IM sync path bypasses FinalAnswerNode, so hallucinated
+                    // /api/v1/files/generated/{id} URLs (LLM wrote a fake link
+                    // without calling a render tool) reach here verbatim. Scrub
+                    // them to the user-visible warning so IM clients don't see
+                    // a clickable link that 404s. Real tool-produced URLs are
+                    // left intact for the channel adapter's scrubber to upgrade
+                    // into native attachments.
+                    if (generatedFileCache != null) {
+                        String scrubbed = generatedFileCache.scrubMissingReferences(reply);
+                        if (!scrubbed.equals(reply)) {
+                            log.info("[{}] Scrubbed hallucinated generated-file URL(s) from IM reply ({} -> {} chars)",
+                                    adapter.getChannelType(), reply.length(), scrubbed.length());
+                            reply = scrubbed;
+                        }
+                    }
+
                     // 检查 chat 过程中是否产生了审批 pending
                     PendingApproval newPending = approvalService.findPendingByConversation(conversationId);
                     if (newPending != null) {
@@ -907,6 +940,38 @@ public class ChannelMessageRouter {
                 log.error("[{}] Failed to send error message: {}",
                         adapter.getChannelType(), sendErr.getMessage());
             }
+        }
+    }
+
+    /**
+     * Handle channel-native control commands before the message is persisted
+     * or forwarded to the agent. Mirrors QwenPaw's control-command dispatch:
+     * a recognized command is terminal for this inbound message.
+     */
+    private boolean handleMagicCommand(ChannelMessage message, ChannelAdapter adapter,
+                                       String conversationId) {
+        String userText = message != null ? message.getContent() : null;
+        if (!ChannelMagicCommand.isClearCommand(userText)) {
+            return false;
+        }
+        cancelPending(conversationId);
+        conversationService.clearMessages(conversationId);
+        String replyTarget = resolveReplyTarget(message);
+        if (replyTarget != null) {
+            adapter.sendMessage(replyTarget, ChannelMagicCommand.clearConfirmation());
+        }
+        log.info("[{}] Magic command handled: clear conversationId={}, sender={}",
+                adapter.getChannelType(), conversationId, message != null ? message.getSenderId() : null);
+        return true;
+    }
+
+    private void cancelPending(String conversationId) {
+        PendingMessage pending;
+        synchronized (pendingMessages) {
+            pending = pendingMessages.remove(conversationId);
+        }
+        if (pending != null && pending.timer != null) {
+            pending.timer.cancel(false);
         }
     }
 
