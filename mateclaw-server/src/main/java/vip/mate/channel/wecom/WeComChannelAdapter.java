@@ -2,18 +2,23 @@ package vip.mate.channel.wecom;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import reactor.core.publisher.Flux;
+import vip.mate.agent.AgentService.StreamDelta;
 import vip.mate.channel.AbstractChannelAdapter;
 import vip.mate.channel.ChannelMessage;
 import vip.mate.channel.ChannelMessageRouter;
+import vip.mate.channel.StreamingChannelAdapter;
 import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 import vip.mate.channel.ExponentialBackoff;
 import vip.mate.channel.media.InboundMediaDownloader;
 import vip.mate.channel.model.ChannelEntity;
+import vip.mate.channel.wecom.cards.tool_guard.ToolGuardCardRenderer;
 import vip.mate.workspace.conversation.model.MessageContentPart;
 
 import javax.crypto.Cipher;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -21,6 +26,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.WebSocket;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -55,12 +61,17 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   <li>welcome_text: 欢迎消息（可选）</li>
  *   <li>media_download_enabled: 是否下载媒体文件（默认 true）</li>
  *   <li>media_dir: 媒体文件保存目录（默认 data/media）</li>
+ *   <li>stream_progress: 处理期间是否在气泡内展示实时进度（默认 true；
+ *       false 退化为"累积后一次性发送"）</li>
+ *   <li>progress_interval_ms: 进度覆写最小间隔（默认 500ms）</li>
+ *   <li>filter_thinking: false 时思考内容流式进入进度气泡（默认 true）</li>
+ *   <li>filter_tool_messages: false 时每次工具调用发独立留痕消息（默认 true）</li>
  * </ul>
  *
  * @author MateClaw Team
  */
 @Slf4j
-public class WeComChannelAdapter extends AbstractChannelAdapter {
+public class WeComChannelAdapter extends AbstractChannelAdapter implements StreamingChannelAdapter {
 
     public static final String CHANNEL_TYPE = "wecom";
 
@@ -187,6 +198,15 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
 
     /** WebSocket 消息碎片缓冲区 */
     private final StringBuilder wsBuffer = new StringBuilder();
+
+    /**
+     * Raw-byte accumulator for fragmented binary WS frames. Bytes are only
+     * decoded (as UTF-8) once the final fragment arrives — decoding each
+     * fragment separately would corrupt any multi-byte character split
+     * across a fragment boundary. Accessed only from the JDK WebSocket
+     * listener callbacks, which are delivered serially per socket.
+     */
+    private final ByteArrayOutputStream wsBinaryBuffer = new ByteArrayOutputStream();
 
     /** 请求 ID 计数器 */
     private final AtomicInteger reqIdCounter = new AtomicInteger(0);
@@ -490,6 +510,9 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
         pendingFrames.clear();
         replyContexts.clear();
         streamLastContent.clear();
+        // 断线时可能残留半截帧碎片，清空以免污染下一个连接的首帧
+        wsBuffer.setLength(0);
+        wsBinaryBuffer.reset();
         if (keepaliveScheduler != null) {
             keepaliveScheduler.shutdownAll();
         }
@@ -753,8 +776,10 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
             }
             byte[] bytes = new byte[data.remaining()];
             data.get(bytes);
-            wsBuffer.append(new String(bytes));
+            wsBinaryBuffer.write(bytes, 0, bytes.length);
             if (last) {
+                wsBuffer.append(new String(wsBinaryBuffer.toByteArray(), StandardCharsets.UTF_8));
+                wsBinaryBuffer.reset();
                 String fullMessage = wsBuffer.toString();
                 wsBuffer.setLength(0);
                 handleWebSocketFrame(fullMessage);
@@ -1345,6 +1370,166 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
         }
     }
 
+    // ==================== StreamingChannelAdapter ====================
+
+    /** Minimum interval between progress overwrites of the stream bubble. */
+    private static final long PROGRESS_MIN_INTERVAL_MS = 500;
+
+    /** Max chars of a tool-argument summary in a standalone tool message. */
+    private static final int TOOL_ARGS_SUMMARY_MAX = 120;
+
+    /**
+     * 流式处理 Agent 事件并渲染到企业微信
+     * <p>
+     * 渲染策略：复用入站时发出的 "🤔 思考中..." reply_stream 气泡，随
+     * agent 事件（思考、工具调用、计划步骤、内容产出）持续覆写为实时进度，
+     * 流结束后原地渐变为最终答案（走 renderAndSend 的分段逻辑）。
+     * <ul>
+     *   <li>覆写节流 {@link #PROGRESS_MIN_INTERVAL_MS}；工具/审批等关键事件立即刷新</li>
+     *   <li>静默期由 {@link WeComKeepaliveScheduler} 每 20s 用进度快照续期</li>
+     *   <li>{@code stream_progress=false} 或无可用气泡（语音入站等）时退化为
+     *       "累积后一次性发送"，与改造前行为一致</li>
+     *   <li>{@code filter_tool_messages=false} 时，每次工具调用另发独立消息留痕</li>
+     *   <li>{@code filter_thinking=false} 时，思考内容以引用块进入进度气泡</li>
+     * </ul>
+     */
+    @Override
+    public String processStream(Flux<StreamDelta> stream, ChannelMessage message, String conversationId) {
+        String replyTarget = message.getReplyToken() != null ? message.getReplyToken()
+                : (message.getChatId() != null ? message.getChatId() : message.getSenderId());
+        WeComReplyContext ctx = replyContexts.get(replyTarget);
+        boolean progressEnabled = getConfigBoolean("stream_progress", true);
+        boolean bubbleUsable = ctx != null && ctx.processingStreamId() != null
+                && !ctx.processingStreamId().isBlank()
+                && ctx.frameReqId() != null && !ctx.frameReqId().isBlank();
+
+        StringBuilder contentAccumulator = new StringBuilder();
+        if (!progressEnabled || !bubbleUsable) {
+            // Degraded path — identical to the pre-streaming sync behavior:
+            // accumulate content only (persistOnly deltas included, matching
+            // the router's legacy collector) and send once at the end.
+            stream.doOnNext(delta -> {
+                        if (!delta.isEvent() && delta.content() != null) {
+                            contentAccumulator.append(delta.content());
+                        }
+                    })
+                    .blockLast(Duration.ofMinutes(10));
+        } else {
+            consumeWithProgress(stream, message, replyTarget, ctx, contentAccumulator);
+        }
+
+        String finalContent = contentAccumulator.toString();
+        if (!finalContent.isBlank()) {
+            renderAndSend(replyTarget, finalContent);
+        }
+        return finalContent;
+    }
+
+    /** Event-driven progress rendering into the existing processing-stream bubble. */
+    private void consumeWithProgress(Flux<StreamDelta> stream, ChannelMessage message,
+                                     String replyTarget, WeComReplyContext ctx,
+                                     StringBuilder contentAccumulator) {
+        boolean showThinking = !getConfigBoolean("filter_thinking", true);
+        boolean standaloneToolMessages = !getConfigBoolean("filter_tool_messages", true);
+        long minIntervalMs = getConfigLong("progress_interval_ms", PROGRESS_MIN_INTERVAL_MS);
+
+        WeComProgressRenderer progress = new WeComProgressRenderer(
+                System.currentTimeMillis(), showThinking);
+        if (keepaliveScheduler != null) {
+            // Silent stretches (long LLM calls with no events) keep showing a
+            // fresh elapsed-time snapshot instead of the static placeholder.
+            keepaliveScheduler.attachTextSupplier(ctx.processingStreamId(), progress::snapshot);
+        }
+
+        final long[] lastFlushAt = {0L};
+        stream.doOnNext(delta -> {
+            boolean flushNow = false;
+            if (delta.isEvent()) {
+                flushNow = progress.onEvent(delta.eventType(), delta.eventData());
+                if (standaloneToolMessages) {
+                    maybeSendToolEventMessage(replyTarget, delta.eventType(), delta.eventData());
+                }
+            } else {
+                if (delta.thinking() != null) {
+                    progress.onThinkingDelta(delta.thinking());
+                }
+                if (delta.content() != null) {
+                    contentAccumulator.append(delta.content());
+                    progress.onContentDelta(delta.content());
+                }
+            }
+            long now = System.currentTimeMillis();
+            if (!flushNow && now - lastFlushAt[0] < minIntervalMs) {
+                return;
+            }
+            // The keepalive force-finish (180s ceiling) evicts the reply
+            // context; once that happens the stream slot is closed and
+            // further overwrites would be silently rejected — stop pushing.
+            if (replyContexts.get(replyTarget) != ctx) {
+                return;
+            }
+            lastFlushAt[0] = now;
+            try {
+                replyStream(ctx.frameReqId(), ctx.processingStreamId(), progress.snapshot(), false);
+            } catch (Exception e) {
+                // Reset the throttle window so the next delta retries the
+                // overwrite immediately instead of waiting out the min
+                // interval — a failed push means the bubble is stale.
+                lastFlushAt[0] = 0L;
+                log.debug("[wecom] progress overwrite failed: {}", e.getMessage());
+            }
+        }).blockLast(Duration.ofMinutes(10));
+    }
+
+    /**
+     * Standalone tool-call trace messages, sent only when the channel's
+     * {@code filter_tool_messages} toggle is off: the user opted into seeing
+     * the tool trail as persistent bubbles (the progress bubble alone is
+     * transient — the final answer overwrites it).
+     */
+    private void maybeSendToolEventMessage(String replyTarget, String eventType,
+                                           Map<String, Object> data) {
+        if (data == null || eventType == null) {
+            return;
+        }
+        Object toolName = data.get("toolName");
+        if (toolName == null) {
+            return;
+        }
+        try {
+            switch (eventType) {
+                case "tool_call_started" -> {
+                    String args = summarizeToolArgs(data.get("arguments"));
+                    sendMessage(replyTarget, "🔧 调用工具 `" + toolName + "`"
+                            + (args.isEmpty() ? "" : "\n> " + args));
+                }
+                case "tool_call_completed" -> {
+                    boolean success = !Boolean.FALSE.equals(data.get("success"));
+                    sendMessage(replyTarget, (success ? "✅ `" : "❌ `") + toolName
+                            + (success ? "` 完成" : "` 失败"));
+                }
+                default -> {
+                    // Other events carry no standalone tool trace.
+                }
+            }
+        } catch (Exception e) {
+            log.debug("[wecom] tool trace message failed: {}", e.getMessage());
+        }
+    }
+
+    private static String summarizeToolArgs(Object arguments) {
+        if (arguments == null) {
+            return "";
+        }
+        String text = arguments.toString().replaceAll("\\s+", " ").trim();
+        if (text.isEmpty() || "{}".equals(text)) {
+            return "";
+        }
+        return text.length() > TOOL_ARGS_SUMMARY_MAX
+                ? text.substring(0, TOOL_ARGS_SUMMARY_MAX) + "…"
+                : text;
+    }
+
     @Override
     public void sendMessage(String targetId, String content) {
         if (webSocket == null) {
@@ -1352,10 +1537,10 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
             return;
         }
 
-        // 检查是否有 pending frame（用于 reply_stream 覆盖"思考中..."）
-        // sendMessage 被 renderAndSend 调用时，尝试用 reply_stream 覆盖
-        // 但由于 rawPayload 信息在 ChannelMessageRouter 层已丢失，
-        // 这里走 send_message 主动推送路径
+        // 无 frame 上下文的通用发送入口（cron/异步通知等主动推送场景）。
+        // 带 WeComReplyContext 的回复路径（renderAndSend / sendContentParts）
+        // 已直接绑定入站 frame 发送，不再落到这里；此处保留
+        // send_message 主动推送 + 群聊缓存 reqId 兜底。
         sendMessageToChat(targetId, content);
     }
 
@@ -1491,6 +1676,10 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
                     && !ctx.processingStreamId().isBlank()) {
                 replyStream(ctx.frameReqId(), ctx.processingStreamId(), segment, true);
                 first = false;
+            } else if (ctx != null && ctx.frameReqId() != null && !ctx.frameReqId().isBlank()) {
+                // 后续分段绑定同一入站 frame 回复——群聊拒收主动推送，
+                // 走 frame 回复在群聊/单聊都可达且保持顺序
+                replyMarkdown(ctx.frameReqId(), segment);
             } else {
                 sendMessage(targetId, segment);
             }
@@ -1609,6 +1798,10 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
                                     && !ctx.processingStreamId().isBlank()) {
                                 replyStream(ctx.frameReqId(), ctx.processingStreamId(), rewritten, true);
                                 firstText = false;
+                            } else if (ctx != null && ctx.frameReqId() != null
+                                    && !ctx.frameReqId().isBlank()) {
+                                // 后续文本绑定同一入站 frame 回复（群聊拒收主动推送）
+                                replyMarkdown(ctx.frameReqId(), rewritten);
                             } else {
                                 sendMessage(targetId, rewritten);
                             }
@@ -1911,6 +2104,42 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
      */
     private final ConcurrentHashMap<String, String> streamLastContent = new ConcurrentHashMap<>();
 
+    /**
+     * Send a markdown bubble bound to an inbound frame via
+     * {@code aibot_respond_msg}.
+     *
+     * <p>Used for reply segments after the first when a live
+     * {@link WeComReplyContext} exists: the platform rejects
+     * {@code aibot_send_msg} in group chats, so segments pushed actively
+     * would silently vanish there. Riding the inbound frame's reply slot
+     * works in both group and single chats, and keeps segment ordering
+     * behind the stream bubble (same per-reqId serial worker queue).
+     *
+     * <p>Failures are logged, not propagated — one bad segment must not
+     * abort the remaining segments of a long reply.
+     */
+    private void replyMarkdown(String frameReqId, String content) {
+        if (frameReqId == null || frameReqId.isBlank()
+                || content == null || content.isBlank()) {
+            return;
+        }
+        try {
+            Map<String, Object> body = Map.of(
+                    "msgtype", "markdown",
+                    "markdown", Map.of("content", content)
+            );
+            Map<String, Object> frame = Map.of(
+                    "cmd", CMD_RESPONSE,
+                    "headers", Map.of("req_id", frameReqId),
+                    "body", body
+            );
+            sendFrameWithAck(frameReqId, frame);
+        } catch (Exception e) {
+            log.error("[wecom] Failed to send reply segment via frame {}: {}",
+                    frameReqId, e.getMessage());
+        }
+    }
+
     // ==================== 上传大小预校验（WeCom 平台限制） ====================
 
     /** WeCom hard limits — verified empirically; sources differ slightly. */
@@ -2089,6 +2318,16 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
     }
 
     /**
+     * URL for the resolved approval card's mandatory {@code card_action}
+     * link (WeCom rejects {@code text_notice} cards without a type-1/2
+     * action). Reads channel config {@code card_action_url}; public so the
+     * card handler (different package) can pass it to the renderer.
+     */
+    public String resolvedCardActionUrl() {
+        return getConfigString("card_action_url", ToolGuardCardRenderer.DEFAULT_CARD_ACTION_URL);
+    }
+
+    /**
      * Keepalive refresh tick (called by {@link WeComKeepaliveScheduler}
      * every 20s). Sends {@code finish=false} on the existing stream so
      * WeCom's server-side TTL counter resets.
@@ -2098,6 +2337,13 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
      * not be triggering refresh ticks.
      */
     public void replyStreamRefreshForKeepalive(String reqId, String streamId, String text) {
+        // Bypass chunk dedup: a refresh whose text equals the previous chunk
+        // (e.g. the static placeholder when no progress supplier is attached)
+        // would otherwise be swallowed by replyStream's dedup guard — no
+        // network frame goes out, the server-side TTL is NOT reset, and the
+        // slot dies exactly the way this keepalive exists to prevent. Clearing
+        // the dedup slot first guarantees every tick produces a real frame.
+        streamLastContent.remove(streamId);
         replyStream(reqId, streamId, text, false);
     }
 
@@ -2997,63 +3243,12 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
     }
 
     /**
-     * 下载并解密企业微信媒体文件（旧版本，保留给 outbound / 其他场景使用）
+     * AES-256-CBC decryption for WeCom media payloads.
      * <p>
-     * AES-256-CBC 解密：base64 decode aesKey → IV = 前 16 字节 → PKCS#7 去填充
-     *
-     * @param url          文件下载 URL
-     * @param aesKey       Base64 编码的 AES-256 密钥
-     * @param msgId        消息 ID（用于生成文件名）
-     * @param fileNameHint 文件名提示
-     * @return 本地文件路径，失败返回 null
-     */
-    private String downloadAndDecryptMedia(String url, String aesKey, String msgId, String fileNameHint) {
-        try {
-            String mediaDir = getConfigString("media_dir", "data/media");
-            Path mediaDirPath = Path.of(mediaDir);
-            Files.createDirectories(mediaDirPath);
-
-            // 1. HTTP GET 下载文件
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .timeout(Duration.ofSeconds(30))
-                    .GET()
-                    .build();
-
-            HttpResponse<InputStream> response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
-            byte[] encryptedData = response.body().readAllBytes();
-
-            byte[] fileData;
-            // 2. AES 解密（如果提供了 aesKey）
-            if (aesKey != null && !aesKey.isBlank()) {
-                fileData = decryptAes256Cbc(encryptedData, aesKey);
-            } else {
-                fileData = encryptedData;
-            }
-
-            // 3. 保存到本地
-            String urlHash = md5Hex(url).substring(0, 8);
-            String safeName = fileNameHint.replaceAll("[^a-zA-Z0-9._-]", "_");
-            if (safeName.isBlank()) safeName = "media";
-            Path filePath = mediaDirPath.resolve("wecom_" + urlHash + "_" + safeName);
-            Files.write(filePath, fileData);
-
-            log.info("[wecom] Media downloaded: {} ({} bytes)", filePath, fileData.length);
-            return filePath.toAbsolutePath().toString();
-
-        } catch (Exception e) {
-            log.error("[wecom] Failed to download media: {}", e.getMessage(), e);
-            return null;
-        }
-    }
-
-    /**
-     * AES-256-CBC 解密（对齐 wecom-aibot-python-sdk crypto_utils.py）
-     * <p>
-     * 1. Base64 decode aesKey（自动补齐 padding）
-     * 2. IV = decoded key 前 16 字节
-     * 3. AES-256-CBC 解密
-     * 4. PKCS#7 去填充
+     * 1. Base64 decode aesKey (auto-fix missing padding)
+     * 2. IV = first 16 bytes of the decoded key
+     * 3. AES-256-CBC decrypt
+     * 4. Strip PKCS#7 padding
      */
     private byte[] decryptAes256Cbc(byte[] encryptedData, String aesKeyBase64) throws Exception {
         // 补齐 Base64 padding
@@ -3129,19 +3324,6 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
      */
     private String generateReqId(String prefix) {
         return prefix + "_" + System.currentTimeMillis() + "_" + reqIdCounter.incrementAndGet();
-    }
-
-    /**
-     * MD5 哈希（hex 字符串）
-     */
-    private String md5Hex(String input) {
-        try {
-            MessageDigest md = MessageDigest.getInstance("MD5");
-            byte[] hash = md.digest(input.getBytes());
-            return bytesToHex(hash);
-        } catch (Exception e) {
-            return Integer.toHexString(input.hashCode());
-        }
     }
 
     /**

@@ -51,8 +51,9 @@ class SkillFileSyncerTest {
         fileService = new SkillFileService(mapper);
         SkillWorkspaceProperties props = new SkillWorkspaceProperties();
         props.setRoot(tmp.toString());
+        props.setBundledSkillsPath("skills");
         workspaceManager = new SkillWorkspaceManager(props, mock(ApplicationEventPublisher.class));
-        syncer = new SkillFileSyncer(skillService, fileService, workspaceManager);
+        syncer = new SkillFileSyncer(skillService, fileService, workspaceManager, props);
     }
 
     @Test
@@ -127,6 +128,24 @@ class SkillFileSyncerTest {
         // After backfill, the reread "current" rows match what's already on disk.
         assertEquals(2, report.filesAlreadyCurrent());
         verify(mapper, times(2)).insert(any(SkillFileEntity.class));
+    }
+
+    @Test
+    @DisplayName("DB and FS empty, builtin skill: backfills from classpath into DB")
+    void backfillsFromClasspathWhenBuiltinAndDbFsEmpty() {
+        SkillEntity skill = newSkill(10L, "pdf");
+        skill.setBuiltin(true);
+        when(skillService.listSkills()).thenReturn(List.of(skill));
+
+        List<SkillFileEntity> after = List.of(
+                newRow(1L, 10L, "scripts/pdftotext.py", "pdf script")
+        );
+        when(mapper.selectList(any())).thenReturn(List.of(), List.of(), after);
+
+        var report = syncer.syncAll();
+
+        assertEquals(1, report.skillsBackfilled());
+        verify(mapper, atLeastOnce()).insert(any(SkillFileEntity.class));
     }
 
     private static SkillEntity newSkill(Long id, String name) {

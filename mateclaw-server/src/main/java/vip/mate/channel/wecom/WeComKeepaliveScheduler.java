@@ -9,6 +9,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 /**
  * Periodically refreshes a WeCom AI Bot {@code stream} reply with the
@@ -47,8 +48,16 @@ public class WeComKeepaliveScheduler {
     /** Hard ceiling — after this many seconds, force-finish the stream. */
     static final long MAX_DURATION_SECONDS = 180;
 
-    /** Placeholder text written on every refresh tick + on force-finish. */
+    /** Placeholder text written on every refresh tick (when no live progress supplier is attached). */
     static final String PROCESSING_TEXT = "🤔 思考中...";
+
+    /**
+     * Text written when the 180s ceiling force-finishes the stream. The real
+     * answer will arrive later as a separate pushed bubble (the reply context
+     * is invalidated below), so the sealed bubble must tell the user the
+     * reply is still coming — freezing it on "思考中..." reads as a hang.
+     */
+    static final String FORCE_FINISH_TEXT = "⏳ 任务耗时较长，仍在处理中，结果稍后送达";
 
     /** One-shot state per active stream. Held by reference inside the scheduled task. */
     private static final class StreamState {
@@ -58,6 +67,10 @@ public class WeComKeepaliveScheduler {
         final String replyToken;
         final long startedAt;
         volatile ScheduledFuture<?> future;
+        /** Optional live progress text source; when set, refresh ticks write
+         *  its current snapshot instead of the static placeholder so the
+         *  bubble keeps showing elapsed time / tool state between events. */
+        volatile Supplier<String> textSupplier;
         StreamState(WeComChannelAdapter a, String r, String s, String t) {
             this.adapter = a; this.reqId = r; this.streamId = s; this.replyToken = t;
             this.startedAt = System.currentTimeMillis();
@@ -106,6 +119,22 @@ public class WeComKeepaliveScheduler {
     }
 
     /**
+     * Attach a live progress text source to an already-tracked stream.
+     * Subsequent refresh ticks write the supplier's snapshot instead of the
+     * static placeholder. No-op when the stream is not tracked (already
+     * stopped or force-finished).
+     */
+    public void attachTextSupplier(String streamId, Supplier<String> supplier) {
+        if (streamId == null || streamId.isBlank()) {
+            return;
+        }
+        StreamState st = states.get(streamId);
+        if (st != null) {
+            st.textSupplier = supplier;
+        }
+    }
+
+    /**
      * Stop keepalive for a stream — call this immediately before sending
      * the real reply so the next refresh tick doesn't race the
      * {@code finish=true} chunk on the same stream.
@@ -138,7 +167,7 @@ public class WeComKeepaliveScheduler {
             // replyContext entry so the eventual real reply takes the
             // fresh-stream path.
             try {
-                st.adapter.replyStreamFinishForKeepalive(st.reqId, st.streamId, PROCESSING_TEXT);
+                st.adapter.replyStreamFinishForKeepalive(st.reqId, st.streamId, FORCE_FINISH_TEXT);
             } catch (Exception e) {
                 log.debug("[wecom-keepalive] force-finish replyStream failed for {}: {}",
                         st.streamId, e.getMessage());
@@ -155,10 +184,27 @@ public class WeComKeepaliveScheduler {
             return;
         }
         try {
-            st.adapter.replyStreamRefreshForKeepalive(st.reqId, st.streamId, PROCESSING_TEXT);
+            st.adapter.replyStreamRefreshForKeepalive(st.reqId, st.streamId, refreshText(st));
         } catch (Exception e) {
             log.debug("[wecom-keepalive] refresh failed for {}: {}", st.streamId, e.getMessage());
         }
+    }
+
+    /** Current refresh text: live progress snapshot when attached, static placeholder otherwise. */
+    private String refreshText(StreamState st) {
+        Supplier<String> supplier = st.textSupplier;
+        if (supplier != null) {
+            try {
+                String text = supplier.get();
+                if (text != null && !text.isBlank()) {
+                    return text;
+                }
+            } catch (Exception e) {
+                log.debug("[wecom-keepalive] progress supplier failed for {}: {}",
+                        st.streamId, e.getMessage());
+            }
+        }
+        return PROCESSING_TEXT;
     }
 
     // ---- Test hooks ----
