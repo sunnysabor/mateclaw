@@ -1035,7 +1035,10 @@ public class ToolExecutionExecutor {
                 .withWorkspaceBasePath(origin != null ? origin.workspaceBasePath() : null);
 
         if (toolGuardService != null) {
-            GuardEvaluation evaluation = toolGuardService.evaluate(guardCtx);
+            // Defer the NEEDS_APPROVAL audit row: it is written below, once, after
+            // the auto-grant decision, so it carries the resolution outcome
+            // (AUTO_GRANT / SEVERITY_CEILING / NO_GRANT / …) and the pendingId.
+            GuardEvaluation evaluation = toolGuardService.evaluate(guardCtx, true);
 
             if (evaluation.shouldBlock()) {
                 log.warn("[ToolExecutor] Tool call BLOCKED: tool={}, summary={}", toolName, evaluation.summary());
@@ -1049,6 +1052,7 @@ public class ToolExecutionExecutor {
                 // HARD_BLOCK short-circuits to a blocked decision (no approval banner).
                 // APPROVED skips createPending() and lets the tool run as normal.
                 // REQUIRES_HUMAN falls through to the existing manual approval path.
+                String autoOutcome = null;
                 if (autoGrantWired) {
                     AutoApproveResult auto = approvalGrantResolver.tryAutoApprove(guardCtx, evaluation);
                     if (auto.isHardBlocked()) {
@@ -1057,29 +1061,34 @@ public class ToolExecutionExecutor {
                                 + "Please use a safer alternative.";
                         log.warn("[ToolExecutor] Auto-grant HARD_BLOCK: tool={}, reason={}", toolName, auto.reason());
                         events.add(GraphEventPublisher.toolComplete(toolCall.id(), toolName, msg, false));
+                        toolGuardService.recordApprovalAudit(guardCtx, evaluation, null, "HARD_BLOCK");
                         return GuardDecision.blocked(msg);
                     }
                     if (auto.isApproved()) {
                         log.info("[ToolExecutor] Auto-grant APPROVED: tool={}, grantId={}", toolName, auto.grantId());
+                        toolGuardService.recordApprovalAudit(guardCtx, evaluation, null, "AUTO_GRANT");
                         return GuardDecision.allowed();
                     }
-                    // requiresHuman → fall through to legacy human-approval path below.
+                    // requiresHuman → fall through to legacy human-approval path below,
+                    // carrying the denial reason for the audit row.
+                    autoOutcome = auto.reason();
                 }
 
                 // No human can resolve an approval in a non-interactive (scheduled-job)
                 // run, so a pending request would hang the turn until it times out with
                 // no answer. Deny immediately with an actionable message instead.
                 if (origin != null && origin.cronOrigin()) {
+                    toolGuardService.recordApprovalAudit(guardCtx, evaluation, null, autoOutcome);
                     return denyNonInteractiveApproval(toolCall, toolName, events);
                 }
 
                 List<AssistantMessage.ToolCall> remaining = allToolCalls.subList(currentIndex + 1, allToolCalls.size());
-                String approvalResponse = ToolExecutionGuardHelper.handleToolApproval(
+                ToolExecutionGuardHelper.ApprovalRequest approval = ToolExecutionGuardHelper.handleToolApproval(
                         toolCall, toolName, arguments, evaluation,
                         conversationId, agentId, requesterId, approvalService, streamTracker,
                         events, remaining);
-                // Extract pendingId from response (format: "[APPROVAL_PENDING] tool=xxx awaiting user decision")
-                return GuardDecision.needsApproval(approvalResponse, extractPendingId(approvalResponse));
+                toolGuardService.recordApprovalAudit(guardCtx, evaluation, approval.pendingId(), autoOutcome);
+                return GuardDecision.needsApproval(approval.response(), approval.pendingId());
             }
         } else if (toolGuard != null) {
             ToolGuardResult guardResult = toolGuard.check(toolName, arguments);
@@ -1100,7 +1109,9 @@ public class ToolExecutionExecutor {
                         toolCall, toolName, arguments, guardResult,
                         conversationId, agentId, requesterId, approvalService, streamTracker,
                         events, remaining);
-                return GuardDecision.needsApproval(approvalResponse, extractPendingId(approvalResponse));
+                // Legacy path never persisted a pendingId to carry here; the value
+                // is unused downstream (only the boolean awaitingApproval is read).
+                return GuardDecision.needsApproval(approvalResponse, null);
             }
         }
 
@@ -1194,14 +1205,6 @@ public class ToolExecutionExecutor {
         }
 
         return "Tool execution failed: " + message;
-    }
-
-    /**
-     * 从 approval response 中提取 pendingId（best-effort）
-     */
-    private String extractPendingId(String approvalResponse) {
-        // handleToolApproval 内部已经创建了 pending，这里只做标记
-        return approvalResponse;
     }
 
     /**
