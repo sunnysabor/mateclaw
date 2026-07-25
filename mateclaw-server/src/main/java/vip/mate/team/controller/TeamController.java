@@ -10,18 +10,22 @@ import vip.mate.agent.repository.AgentMapper;
 import vip.mate.common.result.R;
 import vip.mate.team.model.AgentTeamEntity;
 import vip.mate.team.model.AgentTeamMemberEntity;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import vip.mate.team.model.TeamTaskCommentEntity;
 import vip.mate.team.model.TeamTaskCreateCommand;
 import vip.mate.team.model.TeamTaskEntity;
+import vip.mate.team.model.TeamTaskEventEntity;
 import vip.mate.team.model.TeamTaskStatus;
 import vip.mate.team.service.TeamAnnounceService;
 import vip.mate.team.service.TeamDispatchService;
+import vip.mate.team.service.TeamEventChannel;
 import vip.mate.team.service.TeamService;
 import vip.mate.team.service.TeamTaskService;
 
 import java.security.Principal;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 /**
@@ -44,6 +48,7 @@ public class TeamController {
     private final TeamTaskService taskService;
     private final TeamDispatchService dispatchService;
     private final TeamAnnounceService announceService;
+    private final TeamEventChannel eventChannel;
     private final AgentMapper agentMapper;
 
     // ==================== team CRUD ====================
@@ -77,24 +82,28 @@ public class TeamController {
     @Operation(summary = "创建团队")
     @PostMapping
     public R<TeamVO> create(@RequestBody CreateTeamRequest req, Principal principal) {
-        AgentTeamEntity team = teamService.createTeam(req.getName(), req.getDescription(),
-                req.getLeadAgentId(), req.getMemberAgentIds(),
-                principal != null ? principal.getName() : "admin");
-        return R.ok(toVO(team));
+        return guarded(() -> {
+            AgentTeamEntity team = teamService.createTeam(req.getName(), req.getDescription(),
+                    req.getLeadAgentId(), req.getMemberAgentIds(),
+                    principal != null ? principal.getName() : "admin");
+            return R.ok(toVO(team));
+        });
     }
 
     @Operation(summary = "更新团队")
     @PutMapping("/{id}")
     public R<TeamVO> update(@PathVariable Long id, @RequestBody UpdateTeamRequest req) {
-        return R.ok(toVO(teamService.updateTeam(id, req.getName(), req.getDescription(),
-                req.getSettings())));
+        return guarded(() -> R.ok(toVO(teamService.updateTeam(id, req.getName(),
+                req.getDescription(), req.getSettings()))));
     }
 
     @Operation(summary = "删除团队")
     @DeleteMapping("/{id}")
     public R<Void> delete(@PathVariable Long id) {
-        teamService.deleteTeam(id);
-        return R.ok(null);
+        return guarded(() -> {
+            teamService.deleteTeam(id);
+            return R.ok(null);
+        });
     }
 
     // ==================== membership ====================
@@ -102,15 +111,19 @@ public class TeamController {
     @Operation(summary = "添加成员")
     @PostMapping("/{id}/members")
     public R<Void> addMember(@PathVariable Long id, @RequestBody MemberRequest req) {
-        teamService.addMember(id, req.getAgentId(), req.getRole());
-        return R.ok(null);
+        return guarded(() -> {
+            teamService.addMember(id, req.getAgentId(), req.getRole());
+            return R.ok(null);
+        });
     }
 
     @Operation(summary = "移除成员")
     @DeleteMapping("/{id}/members/{agentId}")
     public R<Void> removeMember(@PathVariable Long id, @PathVariable Long agentId) {
-        teamService.removeMember(id, agentId);
-        return R.ok(null);
+        return guarded(() -> {
+            teamService.removeMember(id, agentId);
+            return R.ok(null);
+        });
     }
 
     // ==================== task board ====================
@@ -125,87 +138,146 @@ public class TeamController {
     @Operation(summary = "任务详情（含评论）")
     @GetMapping("/{id}/tasks/{taskId}")
     public R<TaskDetailVO> getTask(@PathVariable Long id, @PathVariable Long taskId) {
-        TeamTaskEntity task = requireTask(id, taskId);
-        return R.ok(new TaskDetailVO(toTaskVO(task), taskService.listComments(taskId)));
+        return guarded(() -> {
+            TeamTaskEntity task = requireTask(id, taskId);
+            return R.ok(new TaskDetailVO(toTaskVO(task), taskService.listComments(taskId)));
+        });
     }
 
     @Operation(summary = "手动创建任务")
     @PostMapping("/{id}/tasks")
     public R<TaskVO> createTask(@PathVariable Long id, @RequestBody CreateTaskRequest req,
                                 Principal principal) {
-        TeamTaskEntity task = taskService.createTask(TeamTaskCreateCommand.builder()
-                .teamId(id)
-                .subject(req.getSubject())
-                .description(req.getDescription())
-                .assigneeAgentId(req.getAssigneeAgentId())
-                .priority(req.getPriority())
-                .blockedBy(req.getBlockedBy())
-                .requireApproval(Boolean.TRUE.equals(req.getRequireApproval()))
-                .username(principal != null ? principal.getName() : null)
-                .channel("dashboard")
-                .build());
-        if (TeamTaskStatus.PENDING.equals(task.getStatus())) {
-            dispatchService.requestDispatch(id);
-        }
-        return R.ok(toTaskVO(task));
+        return guarded(() -> {
+            TeamTaskEntity task = taskService.createTask(TeamTaskCreateCommand.builder()
+                    .teamId(id)
+                    .subject(req.getSubject())
+                    .description(req.getDescription())
+                    .assigneeAgentId(req.getAssigneeAgentId())
+                    .priority(req.getPriority())
+                    .blockedBy(req.getBlockedBy())
+                    .requireApproval(Boolean.TRUE.equals(req.getRequireApproval()))
+                    .username(principal != null ? principal.getName() : null)
+                    .channel("dashboard")
+                    .build());
+            eventChannel.publishTaskEvent(task, "team_task_created", Map.of());
+            if (TeamTaskStatus.PENDING.equals(task.getStatus())) {
+                dispatchService.requestDispatch(id);
+            }
+            return R.ok(toTaskVO(task));
+        });
     }
 
     @Operation(summary = "批准 in_review 任务")
     @PostMapping("/{id}/tasks/{taskId}/approve")
-    public R<TaskVO> approve(@PathVariable Long id, @PathVariable Long taskId) {
-        requireTask(id, taskId);
-        List<Long> released = taskService.approveTask(taskId);
-        if (!released.isEmpty()) {
-            dispatchService.requestDispatch(id);
-        }
-        return R.ok(toTaskVO(taskService.getTask(taskId)));
+    public R<TaskVO> approve(@PathVariable Long id, @PathVariable Long taskId,
+                             Principal principal) {
+        return guarded(() -> {
+            requireTask(id, taskId);
+            List<Long> released = taskService.approveTask(taskId);
+            recordUserEvent(id, taskId, TeamTaskEventEntity.APPROVED, principal, null);
+            publishBoardEvent(taskId, "team_task_approved");
+            if (!released.isEmpty()) {
+                dispatchService.requestDispatch(id);
+            }
+            return R.ok(toTaskVO(taskService.getTask(taskId)));
+        });
     }
 
     @Operation(summary = "驳回 in_review 任务")
     @PostMapping("/{id}/tasks/{taskId}/reject")
     public R<TaskVO> reject(@PathVariable Long id, @PathVariable Long taskId,
-                            @RequestBody(required = false) ReasonRequest req) {
-        requireTask(id, taskId);
-        taskService.rejectTask(taskId, req == null ? null : req.getReason());
-        TeamTaskEntity task = taskService.getTask(taskId);
-        // The lead must hear about the rejection to re-plan or retry.
-        announceService.announceTaskSettled(task);
-        dispatchService.requestDispatch(id);
-        return R.ok(toTaskVO(task));
+                            @RequestBody(required = false) ReasonRequest req,
+                            Principal principal) {
+        return guarded(() -> {
+            requireTask(id, taskId);
+            taskService.rejectTask(taskId, req == null ? null : req.getReason());
+            recordUserEvent(id, taskId, TeamTaskEventEntity.REJECTED, principal,
+                    req == null ? null : req.getReason());
+            publishBoardEvent(taskId, "team_task_rejected");
+            TeamTaskEntity task = taskService.getTask(taskId);
+            // The lead must hear about the rejection to re-plan or retry.
+            announceService.announceTaskSettled(task);
+            dispatchService.requestDispatch(id);
+            return R.ok(toTaskVO(task));
+        });
     }
 
     @Operation(summary = "重试 failed/stale 任务")
     @PostMapping("/{id}/tasks/{taskId}/retry")
-    public R<TaskVO> retry(@PathVariable Long id, @PathVariable Long taskId) {
-        requireTask(id, taskId);
-        if (!taskService.retryTask(taskId)) {
-            return R.fail("only failed or stale tasks can be retried");
-        }
-        dispatchService.requestDispatch(id);
-        return R.ok(toTaskVO(taskService.getTask(taskId)));
+    public R<TaskVO> retry(@PathVariable Long id, @PathVariable Long taskId,
+                           Principal principal) {
+        return guarded(() -> {
+            requireTask(id, taskId);
+            if (!taskService.retryTask(taskId)) {
+                return R.fail("only failed or stale tasks can be retried");
+            }
+            recordUserEvent(id, taskId, TeamTaskEventEntity.RETRIED, principal, null);
+            publishBoardEvent(taskId, "team_task_retried");
+            dispatchService.requestDispatch(id);
+            return R.ok(toTaskVO(taskService.getTask(taskId)));
+        });
     }
 
     @Operation(summary = "取消任务")
     @PostMapping("/{id}/tasks/{taskId}/cancel")
     public R<TaskVO> cancel(@PathVariable Long id, @PathVariable Long taskId,
-                            @RequestBody(required = false) ReasonRequest req) {
-        requireTask(id, taskId);
-        List<Long> released = taskService.cancelTask(taskId, req == null ? null : req.getReason());
-        if (!released.isEmpty()) {
-            dispatchService.requestDispatch(id);
-        }
-        return R.ok(toTaskVO(taskService.getTask(taskId)));
+                            @RequestBody(required = false) ReasonRequest req,
+                            Principal principal) {
+        return guarded(() -> {
+            TeamTaskEntity task = requireTask(id, taskId);
+            List<Long> released = taskService.cancelTask(taskId, req == null ? null : req.getReason());
+            recordUserEvent(id, taskId, TeamTaskEventEntity.CANCELLED, principal,
+                    req == null ? null : req.getReason());
+            publishBoardEvent(taskId, "team_task_cancelled");
+            // Stop the member run mid-flight instead of letting it burn to the end.
+            dispatchService.interruptRun(task);
+            if (!released.isEmpty()) {
+                dispatchService.requestDispatch(id);
+            }
+            return R.ok(toTaskVO(taskService.getTask(taskId)));
+        });
+    }
+
+    @Operation(summary = "任务时间线")
+    @GetMapping("/{id}/tasks/{taskId}/events")
+    public R<List<TeamTaskEventEntity>> taskEvents(@PathVariable Long id, @PathVariable Long taskId) {
+        return guarded(() -> {
+            requireTask(id, taskId);
+            return R.ok(taskService.listEvents(taskId));
+        });
+    }
+
+    @Operation(summary = "团队事件流（SSE）")
+    @GetMapping("/{id}/events")
+    public SseEmitter events(@PathVariable Long id,
+                             @RequestHeader(value = "Last-Event-ID", required = false) Long lastEventId) {
+        SseEmitter emitter = new SseEmitter(0L);
+        eventChannel.attach(id, emitter, lastEventId == null ? 0L : lastEventId);
+        return emitter;
+    }
+
+    private void recordUserEvent(Long teamId, Long taskId, String eventType,
+                                 Principal principal, String detail) {
+        taskService.recordEvent(teamId, taskId, eventType, TeamTaskService.AUTHOR_USER,
+                principal != null ? principal.getName() : null, detail);
+    }
+
+    private void publishBoardEvent(Long taskId, String event) {
+        eventChannel.publishTaskEvent(taskService.getTask(taskId), event, Map.of());
     }
 
     @Operation(summary = "添加评论")
     @PostMapping("/{id}/tasks/{taskId}/comments")
     public R<Void> comment(@PathVariable Long id, @PathVariable Long taskId,
                            @RequestBody CommentRequest req, Principal principal) {
-        requireTask(id, taskId);
-        taskService.addComment(taskId, TeamTaskService.AUTHOR_USER,
-                principal != null ? principal.getName() : "admin",
-                TeamTaskService.COMMENT_NOTE, req.getContent());
-        return R.ok(null);
+        return guarded(() -> {
+            requireTask(id, taskId);
+            taskService.addComment(taskId, TeamTaskService.AUTHOR_USER,
+                    principal != null ? principal.getName() : "admin",
+                    TeamTaskService.COMMENT_NOTE, req.getContent());
+            return R.ok(null);
+        });
     }
 
     @Operation(summary = "任务状态统计（看板列头）")
@@ -216,6 +288,20 @@ public class TeamController {
     }
 
     // ==================== helpers / DTOs ====================
+
+    /**
+     * Runs an endpoint body whose service layer reports validation verdicts
+     * (unknown assignee, wrong task status, cross-team task id…) via
+     * IllegalArgumentException / IllegalStateException. Those must reach the
+     * client as readable text in the R envelope, not the catch-all 500 handler.
+     */
+    private <T> R<T> guarded(Supplier<R<T>> action) {
+        try {
+            return action.get();
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return R.fail(e.getMessage());
+        }
+    }
 
     private TeamTaskEntity requireTask(Long teamId, Long taskId) {
         TeamTaskEntity task = taskService.getTask(taskId);

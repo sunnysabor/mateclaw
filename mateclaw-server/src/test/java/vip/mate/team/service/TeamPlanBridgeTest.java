@@ -1,0 +1,228 @@
+package vip.mate.team.service;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.context.ApplicationEventPublisher;
+import vip.mate.agent.model.AgentEntity;
+import vip.mate.agent.repository.AgentMapper;
+import vip.mate.planning.model.PlanEntity;
+import vip.mate.planning.model.SubPlanEntity;
+import vip.mate.planning.service.PlanningService;
+import vip.mate.team.event.TeamTasksDelegatedEvent;
+import vip.mate.team.model.AgentTeamEntity;
+import vip.mate.team.model.AgentTeamMemberEntity;
+import vip.mate.team.model.TeamRole;
+import vip.mate.team.model.TeamTaskCreateCommand;
+import vip.mate.team.model.TeamTaskEntity;
+import vip.mate.team.model.TeamTaskStatus;
+
+import java.util.List;
+import java.util.Optional;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.*;
+
+/**
+ * Pins the plan→board hand-off contract: all-or-nothing member resolution,
+ * dependency→blockedBy mapping with plan linkage in task metadata, parking
+ * via the delegated status + dispatch event, and the three-way resume gate.
+ */
+class TeamPlanBridgeTest {
+
+    private static final Long TEAM_ID = 10L;
+    private static final Long LEAD_ID = 1L;
+    private static final Long WRITER_ID = 2L;
+    private static final Long ANALYST_ID = 3L;
+    private static final Long PLAN_ID = 77L;
+    private static final String CONV = "lead-conv";
+
+    private TeamService teamService;
+    private TeamTaskService taskService;
+    private PlanningService planningService;
+    private AgentMapper agentMapper;
+    private ApplicationEventPublisher eventPublisher;
+    private TeamPlanBridge bridge;
+    private AgentTeamEntity team;
+
+    @BeforeEach
+    void setUp() {
+        teamService = mock(TeamService.class);
+        taskService = mock(TeamTaskService.class);
+        planningService = mock(PlanningService.class);
+        agentMapper = mock(AgentMapper.class);
+        eventPublisher = mock(ApplicationEventPublisher.class);
+        bridge = new TeamPlanBridge(teamService, taskService, planningService,
+                agentMapper, eventPublisher);
+
+        team = new AgentTeamEntity();
+        team.setId(TEAM_ID);
+        team.setName("编队");
+        team.setLeadAgentId(LEAD_ID);
+
+        when(teamService.listMembers(TEAM_ID)).thenReturn(List.of(
+                member(LEAD_ID, TeamRole.LEAD),
+                member(WRITER_ID, TeamRole.MEMBER),
+                member(ANALYST_ID, TeamRole.MEMBER)));
+        when(agentMapper.selectById(WRITER_ID)).thenReturn(agent(WRITER_ID, "写手"));
+        when(agentMapper.selectById(ANALYST_ID)).thenReturn(agent(ANALYST_ID, "分析师"));
+    }
+
+    private static AgentTeamMemberEntity member(Long agentId, String role) {
+        AgentTeamMemberEntity m = new AgentTeamMemberEntity();
+        m.setTeamId(TEAM_ID);
+        m.setAgentId(agentId);
+        m.setRole(role);
+        return m;
+    }
+
+    private static AgentEntity agent(Long id, String name) {
+        AgentEntity a = new AgentEntity();
+        a.setId(id);
+        a.setName(name);
+        return a;
+    }
+
+    private static TeamTaskEntity task(Long id, int number, int stepIndex, String status) {
+        TeamTaskEntity t = new TeamTaskEntity();
+        t.setId(id);
+        t.setTeamId(TEAM_ID);
+        t.setTaskNumber(number);
+        t.setSubject("task " + number);
+        t.setStatus(status);
+        t.setAssigneeAgentId(WRITER_ID);
+        t.setMetadata("{\"planId\":\"" + PLAN_ID + "\",\"stepIndex\":" + stepIndex + "}");
+        return t;
+    }
+
+    // ==================== member resolution ====================
+
+    @Test
+    @DisplayName("resolution is all-or-nothing: one unknown name keeps the legacy pipeline")
+    void resolutionAllOrNothing() {
+        assertEquals(List.of(WRITER_ID, ANALYST_ID),
+                bridge.resolveMembers(team, List.of("s1", "s2"), List.of("写手", "分析师")));
+        assertNull(bridge.resolveMembers(team, List.of("s1", "s2"), List.of("写手", "路人")));
+        assertNull(bridge.resolveMembers(team, List.of("s1", "s2"), List.of("写手", "")));
+        assertNull(bridge.resolveMembers(team, List.of("s1", "s2"), null));
+    }
+
+    // ==================== hand-off ====================
+
+    @Test
+    @DisplayName("delegatePlan maps deps to blockedBy, stamps plan linkage, parks and nudges dispatch")
+    void delegatePlanCreatesLinkedTasks() {
+        when(taskService.createTask(any())).thenAnswer(inv -> {
+            TeamTaskCreateCommand cmd = inv.getArgument(0);
+            TeamTaskEntity created = new TeamTaskEntity();
+            created.setId((long) (100 + cmd.getMetadata().hashCode() % 1000));
+            created.setId(cmd.getMetadata().contains("\"stepIndex\":0") ? 101L : 102L);
+            created.setTaskNumber(created.getId().intValue() - 100);
+            created.setSubject(cmd.getSubject());
+            created.setAssigneeAgentId(cmd.getAssigneeAgentId());
+            return created;
+        });
+
+        String announcement = bridge.delegatePlan(team, PLAN_ID, "整体请求",
+                List.of("第一步", "第二步"), List.of(List.of(), List.of(0)),
+                List.of(WRITER_ID, ANALYST_ID), CONV);
+
+        ArgumentCaptor<TeamTaskCreateCommand> captor =
+                ArgumentCaptor.forClass(TeamTaskCreateCommand.class);
+        verify(taskService, times(2)).createTask(captor.capture());
+        TeamTaskCreateCommand first = captor.getAllValues().get(0);
+        TeamTaskCreateCommand second = captor.getAllValues().get(1);
+
+        assertNull(first.getBlockedBy());
+        assertEquals(List.of(101L), second.getBlockedBy());
+        assertTrue(first.getMetadata().contains("\"planId\":\"" + PLAN_ID + "\""));
+        assertTrue(second.getMetadata().contains("\"stepIndex\":1"));
+        assertEquals(CONV, first.getLeadConversationId());
+        assertEquals(LEAD_ID, first.getCreatedByAgentId());
+        assertTrue(first.getDescription().contains("整体请求"));
+
+        verify(planningService).markPlanDelegated(PLAN_ID);
+        verify(eventPublisher).publishEvent(new TeamTasksDelegatedEvent(TEAM_ID));
+        assertTrue(announcement.contains("并行"));
+        assertTrue(announcement.contains("前置"));
+    }
+
+    // ==================== resume gate ====================
+
+    private void parkedPlan() {
+        PlanEntity plan = new PlanEntity();
+        plan.setId(PLAN_ID);
+        plan.setAgentId(String.valueOf(LEAD_ID));
+        plan.setConversationId(CONV);
+        plan.setStatus("delegated");
+        plan.setGoal("整体请求");
+        when(planningService.findDelegatedPlan(CONV)).thenReturn(plan);
+        when(teamService.getTeamForAgent(LEAD_ID)).thenReturn(Optional.of(team));
+        when(teamService.isLead(team, LEAD_ID)).thenReturn(true);
+        SubPlanEntity sub0 = new SubPlanEntity();
+        sub0.setStepIndex(0);
+        sub0.setDescription("第一步");
+        SubPlanEntity sub1 = new SubPlanEntity();
+        sub1.setStepIndex(1);
+        sub1.setDescription("第二步");
+        when(planningService.getSubPlans(PLAN_ID)).thenReturn(List.of(sub0, sub1));
+    }
+
+    @Test
+    @DisplayName("no parked plan yields None; in-flight boards yield a progress answer")
+    void gateNoneAndInFlight() {
+        when(planningService.findDelegatedPlan(CONV)).thenReturn(null);
+        assertInstanceOf(TeamPlanBridge.None.class, bridge.checkParkedPlan(CONV));
+
+        parkedPlan();
+        when(taskService.listTasksByPlan(TEAM_ID, PLAN_ID)).thenReturn(List.of(
+                task(101L, 1, 0, TeamTaskStatus.COMPLETED),
+                task(102L, 2, 1, TeamTaskStatus.IN_PROGRESS)));
+
+        TeamPlanBridge.ParkedPlanState state = bridge.checkParkedPlan(CONV);
+        TeamPlanBridge.InFlight inFlight = assertInstanceOf(TeamPlanBridge.InFlight.class, state);
+        assertTrue(inFlight.progressText().contains("in_progress"));
+        verify(planningService, never()).updateSubPlanResult(any(), anyInt(), anyString());
+    }
+
+    @Test
+    @DisplayName("a settled board syncs the sub-plan mirror and returns summary-ready results")
+    void gateSettled() {
+        parkedPlan();
+        TeamTaskEntity done = task(101L, 1, 0, TeamTaskStatus.COMPLETED);
+        done.setResult("卖点已产出");
+        done.setMetadata("{\"planId\":\"" + PLAN_ID + "\",\"stepIndex\":0,"
+                + "\"deliverables\":[{\"name\":\"a.docx\",\"url\":\"/api/v1/files/generated/x\"}]}");
+        TeamTaskEntity failed = task(102L, 2, 1, TeamTaskStatus.FAILED);
+        failed.setReason("blocked: 缺输入");
+        when(taskService.listTasksByPlan(TEAM_ID, PLAN_ID)).thenReturn(List.of(done, failed));
+        when(taskService.listDeliverables(done)).thenReturn(List.of(
+                new TeamTaskService.Deliverable("a.docx", "/api/v1/files/generated/x", null)));
+
+        TeamPlanBridge.ParkedPlanState state = bridge.checkParkedPlan(CONV);
+        TeamPlanBridge.Settled settled = assertInstanceOf(TeamPlanBridge.Settled.class, state);
+
+        assertEquals(PLAN_ID, settled.planId());
+        assertEquals("整体请求", settled.goal());
+        assertEquals(List.of("第一步", "第二步"), settled.steps());
+        assertTrue(settled.completedResults().get(0).contains("步骤1结果：卖点已产出"));
+        assertTrue(settled.completedResults().get(0).contains("a.docx → /api/v1/files/generated/x"));
+        assertTrue(settled.completedResults().get(1).contains("步骤2未完成"));
+        verify(planningService).updateSubPlanResult(PLAN_ID, 0, "卖点已产出");
+        verify(planningService).updateSubPlanFailure(eq(PLAN_ID), eq(1), anyString());
+    }
+
+    @Test
+    @DisplayName("a vanished board fails the plan instead of wedging the conversation")
+    void gateVanishedBoardFailsPlan() {
+        parkedPlan();
+        when(taskService.listTasksByPlan(TEAM_ID, PLAN_ID)).thenReturn(List.of());
+
+        assertInstanceOf(TeamPlanBridge.None.class, bridge.checkParkedPlan(CONV));
+        verify(planningService).markPlanFailed(eq(PLAN_ID), anyString());
+    }
+}

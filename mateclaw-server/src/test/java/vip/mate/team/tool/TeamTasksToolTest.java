@@ -12,6 +12,7 @@ import vip.mate.team.model.TeamTaskCreateCommand;
 import vip.mate.team.model.TeamTaskEntity;
 import vip.mate.team.model.TeamTaskStatus;
 import vip.mate.team.service.TeamDispatchService;
+import vip.mate.team.service.TeamEventChannel;
 import vip.mate.team.service.TeamService;
 import vip.mate.team.service.TeamTaskService;
 import vip.mate.tool.builtin.ToolExecutionContext;
@@ -42,6 +43,7 @@ class TeamTasksToolTest {
     private TeamService teamService;
     private TeamTaskService taskService;
     private TeamDispatchService dispatchService;
+    private TeamEventChannel eventChannel;
     private ConversationService conversationService;
     private AgentMapper agentMapper;
     private TeamTasksTool tool;
@@ -52,10 +54,11 @@ class TeamTasksToolTest {
         teamService = mock(TeamService.class);
         taskService = mock(TeamTaskService.class);
         dispatchService = mock(TeamDispatchService.class);
+        eventChannel = mock(TeamEventChannel.class);
         conversationService = mock(ConversationService.class);
         agentMapper = mock(AgentMapper.class);
         tool = new TeamTasksTool(teamService, taskService, dispatchService,
-                conversationService, agentMapper);
+                eventChannel, conversationService, agentMapper);
 
         team = new AgentTeamEntity();
         team.setId(TEAM_ID);
@@ -92,7 +95,7 @@ class TeamTasksToolTest {
 
     private String invoke(String action, String taskId) {
         return tool.team_tasks(action, taskId, null, null, null, null, null,
-                null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null);
     }
 
     // ==================== context & membership gating ====================
@@ -130,7 +133,8 @@ class TeamTasksToolTest {
     void memberCannotCreate() {
         callerIs(MEMBER_ID);
         String out = tool.team_tasks("create", null, "subj", "desc",
-                String.valueOf(MEMBER_ID), null, null, null, null, null, null, null, null);
+                String.valueOf(MEMBER_ID), null, null, null, null, null, null, null, null,
+                null, null, null);
         assertTrue(out.contains("only the team lead can create"));
         verify(taskService, never()).createTask(any());
     }
@@ -159,7 +163,8 @@ class TeamTasksToolTest {
         when(agentMapper.selectById(MEMBER_ID)).thenReturn(member);
 
         String out = tool.team_tasks("create", null, "collect data", "step details",
-                String.valueOf(MEMBER_ID), "11,12", 5, null, null, null, null, null, null);
+                String.valueOf(MEMBER_ID), "11,12", 5, null, null, null, null, null, null,
+                null, null, null);
 
         assertTrue(out.startsWith("✓ Created task #3"));
         assertTrue(out.contains("写手"));
@@ -182,9 +187,42 @@ class TeamTasksToolTest {
         when(taskService.createTask(any())).thenReturn(blocked);
 
         tool.team_tasks("create", null, "later step", null,
-                String.valueOf(MEMBER_ID), "50", null, null, null, null, null, null, null);
+                String.valueOf(MEMBER_ID), "50", null, null, null, null, null, null, null,
+                null, null, null);
 
         verify(dispatchService, never()).requestDispatch(any());
+    }
+
+    @Test
+    @DisplayName("lead create passes requireApproval through to the command")
+    void createPassesRequireApproval() {
+        callerIs(LEAD_ID);
+        when(taskService.createTask(any())).thenReturn(task(52L, TeamTaskStatus.PENDING));
+
+        tool.team_tasks("create", null, "publish notes", null,
+                String.valueOf(MEMBER_ID), null, null, true, null, null, null, null, null,
+                null, null, null);
+
+        ArgumentCaptor<TeamTaskCreateCommand> captor =
+                ArgumentCaptor.forClass(TeamTaskCreateCommand.class);
+        verify(taskService).createTask(captor.capture());
+        assertTrue(captor.getValue().isRequireApproval());
+    }
+
+    @Test
+    @DisplayName("lead cancel interrupts the running member conversation")
+    void cancelInterruptsRun() {
+        callerIs(LEAD_ID);
+        TeamTaskEntity running = task(5L, TeamTaskStatus.IN_PROGRESS);
+        running.setConversationId("team-task-abc");
+        when(taskService.getTask(5L)).thenReturn(running);
+        when(taskService.cancelTask(eq(5L), any())).thenReturn(List.of(6L));
+
+        String out = invoke("cancel", "5");
+
+        assertTrue(out.startsWith("✓ Task cancelled"));
+        verify(dispatchService).interruptRun(running);
+        verify(dispatchService).requestDispatch(TEAM_ID);
     }
 
     @Test
@@ -194,7 +232,8 @@ class TeamTasksToolTest {
         when(taskService.createTask(any()))
                 .thenThrow(new IllegalArgumentException("assignee is required"));
         String out = tool.team_tasks("create", null, "s", null,
-                String.valueOf(MEMBER_ID), null, null, null, null, null, null, null, null);
+                String.valueOf(MEMBER_ID), null, null, null, null, null, null, null, null,
+                null, null, null);
         assertEquals("Error: assignee is required", out);
     }
 
@@ -211,7 +250,7 @@ class TeamTasksToolTest {
         assertTrue(invoke("complete", "5").startsWith("Error: result is required"));
 
         String ok = tool.team_tasks("complete", "5", null, null, null, null, null,
-                "done, see report", null, null, null, null, null);
+                null, "done, see report", null, null, null, null, null, null, null);
         assertTrue(ok.contains("Released 1 dependent task(s)"));
     }
 
@@ -224,8 +263,23 @@ class TeamTasksToolTest {
                 anyString(), eq("blocker"), anyString())).thenReturn(true);
 
         String out = tool.team_tasks("comment", "5", null, null, null, null, null,
-                null, null, null, "missing credentials", "blocker", null);
+                null, null, null, null, "missing credentials", "blocker", null, null, null);
         assertTrue(out.contains("stop working"));
+    }
+
+    @Test
+    @DisplayName("attach registers a deliverable and reminds the member to keep the result a summary")
+    void attachRegistersDeliverable() {
+        callerIs(MEMBER_ID);
+        when(taskService.getTask(5L)).thenReturn(task(5L, TeamTaskStatus.IN_PROGRESS));
+
+        String out = tool.team_tasks("attach", "5", null, null, null, null, null,
+                null, null, null, null, null, null,
+                "report.docx", "/api/v1/files/generated/abc", null);
+
+        assertTrue(out.startsWith("✓ Deliverable attached: report.docx"));
+        verify(taskService).addDeliverable(5L, MEMBER_ID, "report.docx",
+                "/api/v1/files/generated/abc");
     }
 
     @Test

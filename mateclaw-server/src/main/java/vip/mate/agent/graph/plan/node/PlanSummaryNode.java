@@ -74,7 +74,9 @@ public class PlanSummaryNode implements NodeAction {
             Prompt prompt = new Prompt(List.of(
                     new SystemMessage("请根据以下各步骤的执行结果，给出一个简洁完整的总结回答。"
                             + "直接回答用户的原始问题，不要罗列步骤。"
-                            + "如果对话上下文中包含用户的特殊要求（如风格、语言、格式等），请在总结中体现。"),
+                            + "如果对话上下文中包含用户的特殊要求（如风格、语言、格式等），请在总结中体现。"
+                            + "若执行结果中包含交付物下载链接，请在回答中原样列出这些链接。"
+                            + "若某些步骤未完成，如实说明未完成的部分及原因。"),
                     new UserMessage(userContent.toString())
             ));
 

@@ -887,8 +887,15 @@ export interface TeamTask {
   dispatchCount: number
   conversationId: string | null
   leadConversationId: string | null
+  metadata: string | null
   createTime?: string
   updateTime?: string
+}
+
+export interface TeamTaskDeliverable {
+  name: string
+  url: string
+  time?: string
 }
 
 export interface TeamTaskVO {
@@ -904,6 +911,17 @@ export interface TeamTaskComment {
   authorId: string
   commentType: string
   content: string
+  createTime?: string
+}
+
+export interface TeamTaskEvent {
+  id: string
+  teamId: string
+  taskId: string
+  eventType: string
+  actorType: string | null
+  actorId: string | null
+  detail: string | null
   createTime?: string
 }
 
@@ -936,6 +954,7 @@ export const teamApi = {
       requireApproval?: boolean
     },
   ) => http.post(`/teams/${id}/tasks`, data),
+  listTaskEvents: (id: string, taskId: string) => http.get(`/teams/${id}/tasks/${taskId}/events`),
   approveTask: (id: string, taskId: string) => http.post(`/teams/${id}/tasks/${taskId}/approve`),
   rejectTask: (id: string, taskId: string, reason?: string) =>
     http.post(`/teams/${id}/tasks/${taskId}/reject`, { reason }),

@@ -16,6 +16,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.ArgumentMatchers.startsWith;
 import static org.mockito.Mockito.*;
 
 /**
@@ -36,6 +37,7 @@ class TeamDispatchServiceTest {
     private ConversationService conversationService;
     private ChatStreamTracker streamTracker;
     private TeamAnnounceService announceService;
+    private TeamEventChannel eventChannel;
     private TeamDispatchService service;
 
     @BeforeEach
@@ -46,8 +48,9 @@ class TeamDispatchServiceTest {
         conversationService = mock(ConversationService.class);
         streamTracker = mock(ChatStreamTracker.class);
         announceService = mock(TeamAnnounceService.class);
+        eventChannel = mock(TeamEventChannel.class);
         service = new TeamDispatchService(teamService, taskService, agentService,
-                conversationService, streamTracker, announceService);
+                conversationService, streamTracker, announceService, eventChannel);
     }
 
     private TeamTaskEntity task(Long id, Long assignee) {
@@ -144,7 +147,7 @@ class TeamDispatchServiceTest {
         service.settleOutcome(running, "analysis finished");
 
         verify(taskService).completeTask(1L, null, "analysis finished");
-        verify(streamTracker).broadcastObject(eq("lead-conv"), eq("team_task_completed"), any());
+        verify(eventChannel).publishTaskEvent(any(), eq("team_task_completed"), any());
         verify(announceService).announceTaskSettled(done);
     }
 
@@ -159,7 +162,115 @@ class TeamDispatchServiceTest {
         service.settleOutcome(failed, "irrelevant reply");
 
         verify(taskService, never()).completeTask(any(), any(), anyString());
-        verify(streamTracker).broadcastObject(eq("lead-conv"), eq("team_task_failed"), any());
+        verify(eventChannel).publishTaskEvent(any(), eq("team_task_failed"), any());
+    }
+
+    // ==================== run tracking & interrupt ====================
+
+    @Test
+    @DisplayName("a member run is registered with the stream tracker and completed afterwards")
+    void runTaskTracksChildConversation() {
+        TeamTaskEntity assigned = task(1L, MEMBER_A);
+        assigned.setStatus(TeamTaskStatus.IN_PROGRESS);
+        TeamTaskEntity done = task(1L, MEMBER_A);
+        done.setStatus(TeamTaskStatus.COMPLETED);
+        when(taskService.getTask(1L)).thenReturn(assigned, done, done);
+        when(taskService.completeTask(eq(1L), isNull(), anyString())).thenReturn(List.of());
+        when(agentService.chatWithUsage(eq(MEMBER_A), anyString(), anyString()))
+                .thenReturn(AgentService.ChatResult.contentOnly("all done"));
+
+        service.runTask(TEAM_ID, assigned);
+
+        // The child run must be trackable so requestStop() can interrupt it.
+        verify(streamTracker).register(startsWith("team-task-"));
+        verify(streamTracker).incrementFlux(startsWith("team-task-"));
+        verify(streamTracker).complete(startsWith("team-task-"));
+        // Both sides of the run persist, so the task card's transcript view has content.
+        verify(conversationService).saveMessage(startsWith("team-task-"), eq("user"), anyString());
+        verify(conversationService).saveMessage(startsWith("team-task-"), eq("assistant"), eq("all done"));
+    }
+
+    @Test
+    @DisplayName("an interrupted run whose task was cancelled produces no failed event")
+    void interruptedCancelledRunStaysSilent() {
+        TeamTaskEntity assigned = task(1L, MEMBER_A);
+        assigned.setStatus(TeamTaskStatus.IN_PROGRESS);
+        when(agentService.chatWithUsage(eq(MEMBER_A), anyString(), anyString()))
+                .thenThrow(new RuntimeException("run interrupted"));
+        // The guarded transition refuses: the task is already terminal (cancelled).
+        when(taskService.failTask(eq(1L), anyString())).thenReturn(false);
+
+        service.runTask(TEAM_ID, assigned);
+
+        verify(eventChannel, never())
+                .publishTaskEvent(any(), eq("team_task_failed"), any());
+        verify(announceService, never()).announceTaskSettled(any());
+        // Tracking still ends cleanly.
+        verify(streamTracker).complete(startsWith("team-task-"));
+    }
+
+    @Test
+    @DisplayName("a genuine member run error still fails the task and notifies the lead")
+    void genuineRunErrorStillAnnounced() {
+        TeamTaskEntity assigned = task(1L, MEMBER_A);
+        assigned.setStatus(TeamTaskStatus.IN_PROGRESS);
+        when(agentService.chatWithUsage(eq(MEMBER_A), anyString(), anyString()))
+                .thenThrow(new RuntimeException("model unavailable"));
+        when(taskService.failTask(eq(1L), anyString())).thenReturn(true);
+        TeamTaskEntity failed = task(1L, MEMBER_A);
+        failed.setStatus(TeamTaskStatus.FAILED);
+        when(taskService.getTask(1L)).thenReturn(failed);
+
+        service.runTask(TEAM_ID, assigned);
+
+        verify(eventChannel).publishTaskEvent(any(), eq("team_task_failed"), any());
+        verify(announceService).announceTaskSettled(failed);
+    }
+
+    @Test
+    @DisplayName("interruptRun stops the attached member conversation and tolerates idle tasks")
+    void interruptRunStopsAttachedConversation() {
+        TeamTaskEntity running = task(1L, MEMBER_A);
+        running.setConversationId("team-task-abc");
+        when(streamTracker.requestStop("team-task-abc")).thenReturn(true);
+
+        service.interruptRun(running);
+        verify(streamTracker).requestStop("team-task-abc");
+
+        // Never-dispatched task and null task are silent no-ops.
+        service.interruptRun(task(2L, MEMBER_A));
+        service.interruptRun(null);
+        verifyNoMoreInteractions(streamTracker);
+    }
+
+    // ==================== prerequisite hand-off ====================
+
+    @Test
+    @DisplayName("the dispatch envelope carries prerequisite results and deliverables")
+    void envelopeCarriesPrerequisiteResults() {
+        TeamTaskEntity dependent = task(3L, MEMBER_B);
+        dependent.setBlockedBy("[\"1\",\"2\"]");
+        TeamTaskEntity done = task(1L, MEMBER_A);
+        done.setStatus(TeamTaskStatus.COMPLETED);
+        done.setResult("pricing collected: 3 competitors");
+        when(taskService.getTask(1L)).thenReturn(done);
+        when(taskService.getTask(2L)).thenReturn(null); // vanished blocker is skipped
+        when(taskService.listDeliverables(done)).thenReturn(List.of(
+                new TeamTaskService.Deliverable("prices.xlsx", "/api/v1/files/generated/x", null)));
+
+        StringBuilder sb = new StringBuilder();
+        service.appendPrerequisiteResults(sb, dependent);
+        String section = sb.toString();
+
+        assertTrue(section.contains("[Prerequisite results]"));
+        assertTrue(section.contains("pricing collected: 3 competitors"));
+        assertTrue(section.contains("prices.xlsx → /api/v1/files/generated/x"));
+        assertFalse(section.contains("#2"), "vanished blockers leave no trace");
+
+        // No blockers → no section at all.
+        StringBuilder plain = new StringBuilder();
+        service.appendPrerequisiteResults(plain, task(4L, MEMBER_A));
+        assertEquals(0, plain.length());
     }
 
     @Test

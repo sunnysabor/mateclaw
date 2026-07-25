@@ -1,5 +1,6 @@
 package vip.mate.team.service;
 
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.apache.ibatis.session.Configuration;
@@ -12,8 +13,10 @@ import vip.mate.team.model.AgentTeamEntity;
 import vip.mate.team.model.TeamTaskCommentEntity;
 import vip.mate.team.model.TeamTaskCreateCommand;
 import vip.mate.team.model.TeamTaskEntity;
+import vip.mate.team.model.TeamTaskEventEntity;
 import vip.mate.team.model.TeamTaskStatus;
 import vip.mate.team.repository.TeamTaskCommentMapper;
+import vip.mate.team.repository.TeamTaskEventMapper;
 import vip.mate.team.repository.TeamTaskMapper;
 
 import java.util.List;
@@ -36,6 +39,7 @@ class TeamTaskServiceTest {
 
     private TeamTaskMapper taskMapper;
     private TeamTaskCommentMapper commentMapper;
+    private TeamTaskEventMapper eventMapper;
     private TeamService teamService;
     private TeamTaskService service;
 
@@ -47,14 +51,16 @@ class TeamTaskServiceTest {
         MapperBuilderAssistant assistant = new MapperBuilderAssistant(new Configuration(), "");
         TableInfoHelper.initTableInfo(assistant, TeamTaskEntity.class);
         TableInfoHelper.initTableInfo(assistant, TeamTaskCommentEntity.class);
+        TableInfoHelper.initTableInfo(assistant, TeamTaskEventEntity.class);
     }
 
     @BeforeEach
     void setUp() {
         taskMapper = mock(TeamTaskMapper.class);
         commentMapper = mock(TeamTaskCommentMapper.class);
+        eventMapper = mock(TeamTaskEventMapper.class);
         teamService = mock(TeamService.class);
-        service = new TeamTaskService(taskMapper, commentMapper, teamService);
+        service = new TeamTaskService(taskMapper, commentMapper, eventMapper, teamService);
 
         AgentTeamEntity team = new AgentTeamEntity();
         team.setId(TEAM_ID);
@@ -261,5 +267,79 @@ class TeamTaskServiceTest {
         assertTrue(TeamTaskService.parseIdArray(" ").isEmpty());
         assertTrue(TeamTaskService.parseIdArray("not-json").isEmpty());
         assertEquals(List.of(99L), TeamTaskService.parseIdArray("[\"99\"]"));
+    }
+
+    // ==================== deliverables ====================
+
+    @Test
+    @DisplayName("addDeliverable appends into metadata JSON and round-trips through listDeliverables")
+    void addDeliverableRoundTrip() {
+        TeamTaskEntity running = task(5L, TeamTaskStatus.IN_PROGRESS);
+        running.setOwnerAgentId(MEMBER_ID);
+        when(taskMapper.selectById(5L)).thenReturn(running);
+
+        service.addDeliverable(5L, MEMBER_ID, "report.docx", "/api/v1/files/generated/abc");
+
+        ArgumentCaptor<LambdaUpdateWrapper<TeamTaskEntity>> captor =
+                ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(taskMapper).update(isNull(), captor.capture());
+        String metadataJson = String.valueOf(captor.getValue().getParamNameValuePairs().values().stream()
+                .filter(v -> String.valueOf(v).contains("deliverables")).findFirst().orElse(""));
+        assertTrue(metadataJson.contains("report.docx"));
+
+        TeamTaskEntity stored = task(5L, TeamTaskStatus.IN_PROGRESS);
+        stored.setMetadata(metadataJson);
+        List<TeamTaskService.Deliverable> files = service.listDeliverables(stored);
+        assertEquals(1, files.size());
+        assertEquals("report.docx", files.get(0).name());
+        assertEquals("/api/v1/files/generated/abc", files.get(0).url());
+    }
+
+    @Test
+    @DisplayName("deliverable guards: external URL, non-owner, terminal task and overflow are rejected")
+    void addDeliverableGuards() {
+        TeamTaskEntity running = task(5L, TeamTaskStatus.IN_PROGRESS);
+        running.setOwnerAgentId(MEMBER_ID);
+        when(taskMapper.selectById(5L)).thenReturn(running);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> service.addDeliverable(5L, MEMBER_ID, "x", "https://evil.example.com/f.docx"));
+        assertThrows(IllegalStateException.class,
+                () -> service.addDeliverable(5L, 999L, "x", "/api/v1/files/generated/abc"));
+
+        when(taskMapper.selectById(6L)).thenReturn(task(6L, TeamTaskStatus.COMPLETED));
+        assertThrows(IllegalStateException.class,
+                () -> service.addDeliverable(6L, MEMBER_ID, "x", "/api/v1/files/generated/abc"));
+
+        TeamTaskEntity full = task(7L, TeamTaskStatus.IN_PROGRESS);
+        full.setOwnerAgentId(MEMBER_ID);
+        StringBuilder many = new StringBuilder("{\"deliverables\":[");
+        for (int i = 0; i < 10; i++) {
+            many.append(i > 0 ? "," : "")
+                    .append("{\"name\":\"f").append(i).append("\",\"url\":\"/api/v1/files/generated/x\"}");
+        }
+        full.setMetadata(many.append("]}").toString());
+        when(taskMapper.selectById(7L)).thenReturn(full);
+        assertThrows(IllegalStateException.class,
+                () -> service.addDeliverable(7L, MEMBER_ID, "x", "/api/v1/files/generated/abc"));
+
+        verify(taskMapper, never()).update(isNull(), any());
+    }
+
+    @Test
+    @DisplayName("absolute generated-file URLs pass validation; listDeliverables tolerates junk metadata")
+    void deliverableUrlAndParsingTolerance() {
+        TeamTaskEntity running = task(5L, TeamTaskStatus.IN_PROGRESS);
+        running.setOwnerAgentId(MEMBER_ID);
+        when(taskMapper.selectById(5L)).thenReturn(running);
+
+        service.addDeliverable(5L, MEMBER_ID, "a.xlsx",
+                "https://claw.example.com/api/v1/files/generated/xyz");
+        verify(taskMapper).update(isNull(), any());
+
+        TeamTaskEntity junk = task(8L, TeamTaskStatus.IN_PROGRESS);
+        junk.setMetadata("not-json");
+        assertTrue(service.listDeliverables(junk).isEmpty());
+        assertTrue(service.listDeliverables(null).isEmpty());
     }
 }

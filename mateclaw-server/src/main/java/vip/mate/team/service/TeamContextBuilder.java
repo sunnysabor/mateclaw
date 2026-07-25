@@ -6,8 +6,12 @@ import vip.mate.agent.model.AgentEntity;
 import vip.mate.agent.repository.AgentMapper;
 import vip.mate.team.model.AgentTeamEntity;
 import vip.mate.team.model.AgentTeamMemberEntity;
+import vip.mate.team.model.TeamTaskEntity;
+import vip.mate.team.model.TeamTaskStatus;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -31,7 +35,11 @@ public class TeamContextBuilder {
             You are not part of any agent team. Do NOT call the team_tasks tool.
             """;
 
+    /** Snapshot line cap; larger boards are folded behind a "…and N more" line. */
+    static final int SNAPSHOT_MAX_LINES = 15;
+
     private final TeamService teamService;
+    private final TeamTaskService taskService;
     private final AgentMapper agentMapper;
 
     /** Build the team context block for the given agent; never returns null. */
@@ -76,12 +84,81 @@ public class TeamContextBuilder {
         return sb.toString();
     }
 
+    /**
+     * Render a live snapshot of the team's non-terminal tasks for the lead's
+     * per-turn runtime context, so the lead never duplicates in-flight work or
+     * declares it finished. Returns null for non-leads, agents outside any
+     * team, and boards with no active tasks — callers inject nothing in those
+     * cases. Injected as a meta user message, never the system prompt, so the
+     * per-turn variation cannot break the system prompt cache.
+     */
+    public String buildBoardSnapshot(Long agentId) {
+        Optional<AgentTeamEntity> teamOpt = teamService.getTeamForAgent(agentId);
+        if (teamOpt.isEmpty() || !teamService.isLead(teamOpt.get(), agentId)) {
+            return null;
+        }
+        AgentTeamEntity team = teamOpt.get();
+        List<TeamTaskEntity> all = taskService.listTasks(team.getId(), null);
+        List<TeamTaskEntity> active = all.stream()
+                .filter(t -> !TeamTaskStatus.isTerminal(t.getStatus()))
+                .toList();
+        if (active.isEmpty()) {
+            return null;
+        }
+        Map<Long, Integer> numberById = new HashMap<>();
+        for (TeamTaskEntity task : all) {
+            numberById.put(task.getId(), task.getTaskNumber());
+        }
+
+        StringBuilder sb = new StringBuilder(512);
+        sb.append("[team-board] Live board of team \"").append(team.getName())
+                .append("\" — tasks currently in flight:\n");
+        for (TeamTaskEntity task : active.subList(0, Math.min(active.size(), SNAPSHOT_MAX_LINES))) {
+            sb.append("- #").append(task.getTaskNumber())
+                    .append(" [").append(task.getStatus()).append("] ")
+                    .append(task.getSubject())
+                    .append(" (assignee: ").append(agentName(task.getAssigneeAgentId()));
+            if (task.getProgressPercent() != null
+                    && TeamTaskStatus.IN_PROGRESS.equals(task.getStatus())) {
+                sb.append(", ").append(task.getProgressPercent()).append('%');
+            }
+            if (TeamTaskStatus.BLOCKED.equals(task.getStatus())) {
+                List<Long> blockers = TeamTaskService.parseIdArray(task.getBlockedBy());
+                if (!blockers.isEmpty()) {
+                    sb.append(", waits on");
+                    for (Long blockerId : blockers) {
+                        Integer number = numberById.get(blockerId);
+                        sb.append(" #").append(number != null ? number : blockerId);
+                    }
+                }
+            }
+            sb.append(")\n");
+        }
+        if (active.size() > SNAPSHOT_MAX_LINES) {
+            sb.append("- …and ").append(active.size() - SNAPSHOT_MAX_LINES)
+                    .append(" more (call team_tasks list for the full board)\n");
+        }
+        sb.append("Do NOT create a task duplicating any of the above, "
+                + "and do NOT claim in-flight work is finished.");
+        return sb.toString();
+    }
+
+    private String agentName(Long agentId) {
+        if (agentId == null) {
+            return "-";
+        }
+        AgentEntity agent = agentMapper.selectById(agentId);
+        return agent != null && agent.getName() != null ? agent.getName()
+                : String.valueOf(agentId);
+    }
+
     private static String leadPlaybook() {
         return """
 
                 ### Delegation workflow (mandatory)
                 - Delegate work by creating tasks on the team board: `team_tasks(action="create", subject=..., description=..., assigneeAgentId=...)`. Every delegation MUST go through the board — never pretend a teammate did something without a task backing it.
-                - Check the board FIRST: call `team_tasks(action="list")` before creating tasks so you never create duplicates.
+                - Check the board FIRST: a live board snapshot is injected into your context whenever tasks are in flight; consult it (or call `team_tasks(action="list")`) before creating tasks so you never create duplicates.
+                - When a task's outcome needs a human decision before it counts as done (publishing something, destructive changes), create it with `requireApproval=true`; it will park in review for sign-off instead of completing automatically.
                 - Create ALL tasks for the request up front in one batch. Order dependent work with `blockedBy` (ids of prerequisite tasks). Then announce the assignments to the user and STOP — do not keep reasoning while members work.
                 - Delegation is NOT completion. After creating tasks, never say the work is "done" or "finished"; say it has been assigned and results will follow.
                 - Never assign a task to yourself — the lead orchestrates, members execute.
@@ -102,6 +179,7 @@ public class TeamContextBuilder {
                 ### Working on assigned tasks
                 - When a task is dispatched to you, focus entirely on executing it. Your final reply becomes the task result and is reported back to the lead automatically.
                 - Report meaningful milestones with `team_tasks(action="progress", taskId=..., percent=..., step=...)`. The taskId is included in the dispatch message.
+                - When the output is a document, spreadsheet or presentation, produce a real file (renderDocx / renderXlsx / renderPptx, or the docx/pptx/xlsx skills), then register it with `team_tasks(action="attach", taskId=..., name="report.docx", url=<the download link the render tool returned>)`. Keep your final reply a summary — never paste the file's full content as the result.
                 - Leave findings other teammates may need as comments: `team_tasks(action="comment", taskId=..., text=...)`.
                 - If you cannot proceed (missing input, unclear scope, failed dependency), report it with `team_tasks(action="comment", taskId=..., type="blocker", text="what you need")`. This fails the task and notifies the lead — do NOT silently improvise around a blocker.
                 - You may inspect the board with `action="list"` or `action="get"` for context, but do not create or cancel tasks.

@@ -32,6 +32,7 @@ import vip.mate.agent.graph.state.MateClawStateKeys;
 import vip.mate.agent.graph.state.SourceEvidenceLedger;
 
 import vip.mate.channel.web.ChatStreamTracker;
+import vip.mate.team.service.TeamContextBuilder;
 
 import java.util.*;
 import java.util.concurrent.CancellationException;
@@ -388,6 +389,18 @@ public class ReasoningNode implements NodeAction {
     public void setRunningConversationRegistry(
             vip.mate.agent.runtime.RunningConversationRegistry runningConversationRegistry) {
         this.runningConversationRegistry = runningConversationRegistry;
+    }
+
+    /**
+     * Live team-board snapshot source for agents leading a team. When non-null,
+     * each turn's prompt prefix carries the board's in-flight tasks as a meta
+     * user message so the lead never duplicates or prematurely closes work.
+     * Null in tests / legacy paths — injection is simply skipped.
+     */
+    private TeamContextBuilder teamContextBuilder;
+
+    public void setTeamContextBuilder(TeamContextBuilder teamContextBuilder) {
+        this.teamContextBuilder = teamContextBuilder;
     }
 
     /** Floor for the window-aware output clamp — an answer needs at least this much room. */
@@ -1316,6 +1329,20 @@ public class ReasoningNode implements NodeAction {
                 }
             } catch (NumberFormatException ignored) {
                 // agentId not numeric — skip wiki injection (matches prior behavior).
+            }
+        }
+        // Live team-board snapshot for leads: a UserMessage (never SystemMessage,
+        // per the runtime-context cache discipline) listing in-flight tasks, so a
+        // lead mid-conversation neither duplicates nor prematurely closes work.
+        // buildBoardSnapshot returns null for non-leads and idle boards.
+        if (teamContextBuilder != null && agentIdStr != null && !agentIdStr.isEmpty()) {
+            try {
+                String boardSnapshot = teamContextBuilder.buildBoardSnapshot(Long.parseLong(agentIdStr));
+                if (boardSnapshot != null && !boardSnapshot.isBlank()) {
+                    prefix.add(new UserMessage(boardSnapshot));
+                }
+            } catch (NumberFormatException ignored) {
+                // agentId not numeric — skip board injection.
             }
         }
         return prefix;

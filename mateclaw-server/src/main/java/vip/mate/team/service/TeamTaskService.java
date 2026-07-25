@@ -1,5 +1,7 @@
 package vip.mate.team.service;
 
+import cn.hutool.json.JSONArray;
+import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
@@ -11,9 +13,12 @@ import vip.mate.team.model.TeamTaskCommentEntity;
 import vip.mate.team.model.TeamTaskCreateCommand;
 import vip.mate.team.model.TeamTaskEntity;
 import vip.mate.team.model.TeamTaskStatus;
+import vip.mate.team.model.TeamTaskEventEntity;
 import vip.mate.team.repository.TeamTaskCommentMapper;
+import vip.mate.team.repository.TeamTaskEventMapper;
 import vip.mate.team.repository.TeamTaskMapper;
 
+import java.net.URI;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -48,6 +53,7 @@ public class TeamTaskService {
 
     private final TeamTaskMapper taskMapper;
     private final TeamTaskCommentMapper commentMapper;
+    private final TeamTaskEventMapper eventMapper;
     private final TeamService teamService;
 
     // ==================== creation ====================
@@ -74,6 +80,10 @@ public class TeamTaskService {
             throw new IllegalArgumentException("assignee " + assignee + " is not a member of this team");
         }
 
+        // Dependency edges can only reference pre-existing tasks and blockedBy is
+        // immutable after creation, so the dependency graph is acyclic by
+        // construction — adding an edit path for blockedBy would break this
+        // invariant and require real cycle detection.
         List<Long> blockers = cmd.getBlockedBy() == null ? List.of() : cmd.getBlockedBy();
         for (Long blockerId : blockers) {
             TeamTaskEntity blocker = taskMapper.selectById(blockerId);
@@ -105,6 +115,12 @@ public class TeamTaskService {
         task.setChannel(cmd.getChannel());
         task.setMetadata(cmd.getMetadata());
         taskMapper.insert(task);
+        recordEvent(cmd.getTeamId(), task.getId(), TeamTaskEventEntity.CREATED,
+                cmd.getCreatedByAgentId() != null ? AUTHOR_AGENT
+                        : cmd.getUsername() != null ? AUTHOR_USER : AUTHOR_SYSTEM,
+                cmd.getCreatedByAgentId() != null ? String.valueOf(cmd.getCreatedByAgentId())
+                        : cmd.getUsername(),
+                "assignee: agent " + assignee);
         log.info("Team {} task #{} created ({}), assignee={} status={}",
                 cmd.getTeamId(), task.getTaskNumber(), task.getId(), assignee, task.getStatus());
         return task;
@@ -179,6 +195,10 @@ public class TeamTaskService {
             throw new IllegalStateException("task #" + task.getTaskNumber()
                     + " is " + task.getStatus() + " and cannot be completed");
         }
+        recordEvent(task.getTeamId(), taskId,
+                toReview ? TeamTaskEventEntity.IN_REVIEW : TeamTaskEventEntity.COMPLETED,
+                agentId != null ? AUTHOR_AGENT : AUTHOR_SYSTEM,
+                agentId != null ? String.valueOf(agentId) : null, null);
         return toReview ? List.of() : releaseDependents(task);
     }
 
@@ -213,13 +233,19 @@ public class TeamTaskService {
 
     /** Fail a task (blocker escalation, runner error, circuit breaker). Does NOT release dependents. */
     public boolean failTask(Long taskId, String reason) {
-        return taskMapper.update(null, Wrappers.<TeamTaskEntity>lambdaUpdate()
+        boolean failed = taskMapper.update(null, Wrappers.<TeamTaskEntity>lambdaUpdate()
                 .eq(TeamTaskEntity::getId, taskId)
                 .in(TeamTaskEntity::getStatus,
                         TeamTaskStatus.PENDING, TeamTaskStatus.IN_PROGRESS, TeamTaskStatus.STALE)
                 .set(TeamTaskEntity::getStatus, TeamTaskStatus.FAILED)
                 .set(TeamTaskEntity::getReason, reason)
                 .set(TeamTaskEntity::getLockExpiresAt, null)) == 1;
+        if (failed) {
+            TeamTaskEntity task = taskMapper.selectById(taskId);
+            recordEvent(task == null ? null : task.getTeamId(), taskId,
+                    TeamTaskEventEntity.FAILED, AUTHOR_SYSTEM, null, reason);
+        }
+        return failed;
     }
 
     /** Cancel a non-terminal task; releases dependents so siblings are not deadlocked. */
@@ -255,13 +281,21 @@ public class TeamTaskService {
 
     /** Update progress and renew the execution lease in one shot. */
     public boolean updateProgress(Long taskId, Long agentId, Integer percent, String step) {
-        return taskMapper.update(null, Wrappers.<TeamTaskEntity>lambdaUpdate()
+        boolean updated = taskMapper.update(null, Wrappers.<TeamTaskEntity>lambdaUpdate()
                 .eq(TeamTaskEntity::getId, taskId)
                 .eq(TeamTaskEntity::getStatus, TeamTaskStatus.IN_PROGRESS)
                 .eq(agentId != null, TeamTaskEntity::getOwnerAgentId, agentId)
                 .set(percent != null, TeamTaskEntity::getProgressPercent, percent)
                 .set(step != null, TeamTaskEntity::getProgressStep, step)
                 .set(TeamTaskEntity::getLockExpiresAt, newLease())) == 1;
+        if (updated) {
+            TeamTaskEntity task = taskMapper.selectById(taskId);
+            recordEvent(task == null ? null : task.getTeamId(), taskId,
+                    TeamTaskEventEntity.PROGRESS, AUTHOR_AGENT,
+                    agentId != null ? String.valueOf(agentId) : null,
+                    (percent != null ? percent + "%" : "") + (step != null ? " — " + step : ""));
+        }
+        return updated;
     }
 
     /** Extend the execution lease (runner heartbeat). */
@@ -291,6 +325,10 @@ public class TeamTaskService {
         comment.setCommentType(commentType == null ? COMMENT_NOTE : commentType);
         comment.setContent(content);
         commentMapper.insert(comment);
+        recordEvent(task.getTeamId(), taskId,
+                COMMENT_BLOCKER.equals(comment.getCommentType())
+                        ? TeamTaskEventEntity.BLOCKER : TeamTaskEventEntity.COMMENT,
+                authorType, authorId, content);
 
         if (COMMENT_BLOCKER.equals(comment.getCommentType())) {
             boolean failed = failTask(taskId, "blocked: " + content);
@@ -307,6 +345,146 @@ public class TeamTaskService {
         return commentMapper.selectList(Wrappers.<TeamTaskCommentEntity>lambdaQuery()
                 .eq(TeamTaskCommentEntity::getTaskId, taskId)
                 .orderByAsc(TeamTaskCommentEntity::getCreateTime));
+    }
+
+    // ==================== timeline events ====================
+
+    /** Timeline detail cap, matching the column width. */
+    static final int MAX_EVENT_DETAIL_CHARS = 1000;
+
+    /**
+     * Record a lifecycle moment on the task's timeline. Best-effort side
+     * channel: any failure is logged and swallowed — a missing timeline row
+     * is acceptable, a task transition broken by the audit trail is not.
+     */
+    public void recordEvent(Long teamId, Long taskId, String eventType,
+                            String actorType, String actorId, String detail) {
+        try {
+            TeamTaskEventEntity event = new TeamTaskEventEntity();
+            event.setTeamId(teamId);
+            event.setTaskId(taskId);
+            event.setEventType(eventType);
+            event.setActorType(actorType);
+            event.setActorId(actorId);
+            event.setDetail(detail == null || detail.length() <= MAX_EVENT_DETAIL_CHARS
+                    ? detail : detail.substring(0, MAX_EVENT_DETAIL_CHARS));
+            eventMapper.insert(event);
+        } catch (Exception e) {
+            log.warn("Team task {} timeline event '{}' not recorded: {}",
+                    taskId, eventType, e.getMessage());
+        }
+    }
+
+    /** The task's timeline, oldest first. */
+    public List<TeamTaskEventEntity> listEvents(Long taskId) {
+        return eventMapper.selectList(Wrappers.<TeamTaskEventEntity>lambdaQuery()
+                .eq(TeamTaskEventEntity::getTaskId, taskId)
+                .orderByAsc(TeamTaskEventEntity::getCreateTime)
+                .orderByAsc(TeamTaskEventEntity::getId));
+    }
+
+    // ==================== deliverables ====================
+
+    /** Maximum deliverables per task; the board is a summary surface, not a file store. */
+    static final int MAX_DELIVERABLES = 10;
+
+    /** Download-path prefix of the generated-file cache — the only accepted deliverable URL form. */
+    static final String GENERATED_FILE_PATH = "/api/v1/files/generated/";
+
+    /** A produced-file reference surfaced on the task card. */
+    public record Deliverable(String name, String url, String time) {
+    }
+
+    /**
+     * Attach a produced-file reference to the task, stored under the
+     * "deliverables" key of the task's metadata JSON.
+     *
+     * Single-writer assumption: only the task owner's run thread calls this
+     * (tool-side gating) and no other code path writes metadata, so a plain
+     * read-modify-write is safe. If a second metadata writer ever appears,
+     * switch to a SQL-level JSON merge or optimistic locking.
+     */
+    @Transactional
+    public void addDeliverable(Long taskId, Long agentId, String name, String url) {
+        TeamTaskEntity task = requireTask(taskId);
+        if (TeamTaskStatus.isTerminal(task.getStatus())) {
+            throw new IllegalStateException("task #" + task.getTaskNumber() + " is "
+                    + task.getStatus() + "; deliverables can only be attached while it is active");
+        }
+        if (agentId != null && task.getOwnerAgentId() != null
+                && !agentId.equals(task.getOwnerAgentId())) {
+            throw new IllegalStateException("task #" + task.getTaskNumber()
+                    + " is owned by another agent; only the owner can attach deliverables");
+        }
+        if (name == null || name.isBlank() || url == null || url.isBlank()) {
+            throw new IllegalArgumentException("both name and url are required for a deliverable");
+        }
+        String trimmedUrl = url.trim();
+        if (!isGeneratedFileUrl(trimmedUrl)) {
+            throw new IllegalArgumentException("url must be a " + GENERATED_FILE_PATH
+                    + " download link produced by a render tool; external links are not accepted");
+        }
+
+        JSONObject metadata = task.getMetadata() == null || task.getMetadata().isBlank()
+                ? new JSONObject()
+                : JSONUtil.parseObj(task.getMetadata());
+        JSONArray deliverables = metadata.getJSONArray("deliverables");
+        if (deliverables == null) {
+            deliverables = new JSONArray();
+        }
+        if (deliverables.size() >= MAX_DELIVERABLES) {
+            throw new IllegalStateException("task #" + task.getTaskNumber() + " already has "
+                    + MAX_DELIVERABLES + " deliverables; consolidate outputs instead of adding more");
+        }
+        deliverables.add(new JSONObject()
+                .set("name", name.trim())
+                .set("url", trimmedUrl)
+                .set("time", LocalDateTime.now().toString()));
+        metadata.set("deliverables", deliverables);
+        taskMapper.update(null, Wrappers.<TeamTaskEntity>lambdaUpdate()
+                .eq(TeamTaskEntity::getId, taskId)
+                .set(TeamTaskEntity::getMetadata, metadata.toString()));
+        recordEvent(task.getTeamId(), taskId, TeamTaskEventEntity.DELIVERABLE,
+                AUTHOR_AGENT, agentId != null ? String.valueOf(agentId) : null, name.trim());
+        log.info("Team task {} deliverable attached: {}", taskId, name.trim());
+    }
+
+    /** Parse the task's deliverable list; empty on missing/malformed metadata. */
+    public List<Deliverable> listDeliverables(TeamTaskEntity task) {
+        if (task == null || task.getMetadata() == null || task.getMetadata().isBlank()) {
+            return List.of();
+        }
+        try {
+            JSONArray arr = JSONUtil.parseObj(task.getMetadata())
+                    .getJSONArray("deliverables");
+            if (arr == null) {
+                return List.of();
+            }
+            List<Deliverable> result = new ArrayList<>();
+            for (Object entry : arr) {
+                JSONObject obj = (JSONObject) entry;
+                result.add(new Deliverable(obj.getStr("name"), obj.getStr("url"), obj.getStr("time")));
+            }
+            return result;
+        } catch (Exception e) {
+            return List.of();
+        }
+    }
+
+    /** Accept the cache's relative download path, or an absolute URL whose path is one. */
+    private static boolean isGeneratedFileUrl(String url) {
+        if (url.startsWith(GENERATED_FILE_PATH)) {
+            return true;
+        }
+        if (url.startsWith("http://") || url.startsWith("https://")) {
+            try {
+                String path = URI.create(url).getPath();
+                return path != null && path.startsWith(GENERATED_FILE_PATH);
+            } catch (Exception e) {
+                return false;
+            }
+        }
+        return false;
     }
 
     // ==================== dispatch support ====================
@@ -370,6 +548,8 @@ public class TeamTaskService {
                     .eq(TeamTaskEntity::getStatus, TeamTaskStatus.IN_PROGRESS)
                     .set(TeamTaskEntity::getStatus, TeamTaskStatus.STALE)
                     .set(TeamTaskEntity::getReason, "execution lease expired"));
+            recordEvent(task.getTeamId(), task.getId(), TeamTaskEventEntity.STALE,
+                    AUTHOR_SYSTEM, null, "execution lease expired");
         }
         if (!expired.isEmpty()) {
             log.warn("Marked {} team task(s) stale after lease expiry", expired.size());
@@ -381,6 +561,19 @@ public class TeamTaskService {
 
     public TeamTaskEntity getTask(Long taskId) {
         return taskMapper.selectById(taskId);
+    }
+
+    /**
+     * Tasks created from a delegated plan's steps, ordered by creation. The
+     * plan linkage lives in the task metadata JSON ({@code "planId"} written
+     * as a string), matched with a LIKE — team boards are small and the
+     * pattern includes the quoted key, so false positives are not a concern.
+     */
+    public List<TeamTaskEntity> listTasksByPlan(Long teamId, Long planId) {
+        return taskMapper.selectList(Wrappers.<TeamTaskEntity>lambdaQuery()
+                .eq(TeamTaskEntity::getTeamId, teamId)
+                .like(TeamTaskEntity::getMetadata, "\"planId\":\"" + planId + "\"")
+                .orderByAsc(TeamTaskEntity::getCreateTime));
     }
 
     public List<TeamTaskEntity> listTasks(Long teamId, List<String> statuses) {

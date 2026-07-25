@@ -11,6 +11,7 @@ import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.team.model.AgentTeamEntity;
 import vip.mate.team.model.TeamTaskEntity;
 import vip.mate.team.model.TeamTaskStatus;
+import vip.mate.workspace.conversation.ConversationService;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -65,10 +66,12 @@ public class TeamAnnounceService {
             Executors.newVirtualThreadPerTaskExecutor();
 
     private final TeamService teamService;
+    private final TeamTaskService taskService;
     private final AgentService agentService;
     private final AgentMapper agentMapper;
     private final RunningConversationRegistry runningConversations;
     private final ChatStreamTracker streamTracker;
+    private final ConversationService conversationService;
 
     /** Pending items per lead conversation; the first item arms the drain timer. */
     private final Map<String, List<AnnounceItem>> pending = new ConcurrentHashMap<>();
@@ -88,10 +91,18 @@ public class TeamAnnounceService {
         String detail = TeamTaskStatus.COMPLETED.equals(task.getStatus())
                 || TeamTaskStatus.IN_REVIEW.equals(task.getStatus())
                 ? task.getResult() : task.getReason();
+        StringBuilder detailWithFiles = new StringBuilder(detail == null ? "" : detail);
+        List<TeamTaskService.Deliverable> deliverables = taskService.listDeliverables(task);
+        if (!deliverables.isEmpty()) {
+            detailWithFiles.append("\nDeliverables (share these download links with the user):");
+            for (TeamTaskService.Deliverable file : deliverables) {
+                detailWithFiles.append("\n- ").append(file.name()).append(" → ").append(file.url());
+            }
+        }
         AnnounceItem item = new AnnounceItem(task.getTeamId(), task.getTaskNumber(),
                 task.getSubject(), task.getStatus(),
                 agentName(task.getAssigneeAgentId()),
-                detail == null ? "" : detail);
+                detailWithFiles.toString());
 
         String key = task.getLeadConversationId();
         List<AnnounceItem> drainNow = null;
@@ -158,12 +169,19 @@ public class TeamAnnounceService {
         try {
             streamTracker.broadcastObject(leadConversationId, "team_announce_start",
                     Map.of("teamId", String.valueOf(team.getId()), "tasks", taskCount));
+            // Persist the announce turn: message persistence is the caller's
+            // contract, and without it the lead's synthesized reply would
+            // vanish from the conversation history on the next reload.
+            conversationService.saveMessage(leadConversationId, "user", message);
             AgentService.ChatResult result = agentService.chatWithUsage(
                     team.getLeadAgentId(), message, leadConversationId);
+            String reply = result == null ? null : result.content();
+            if (reply != null && !reply.isBlank()) {
+                conversationService.saveMessage(leadConversationId, "assistant", reply);
+            }
             streamTracker.broadcastObject(leadConversationId, "team_announce_reply",
                     Map.of("teamId", String.valueOf(team.getId()),
-                            "content", result == null || result.content() == null
-                                    ? "" : result.content()));
+                            "content", reply == null ? "" : reply));
             log.info("Team {} lead woken with {} task result(s)", team.getId(), taskCount);
         } catch (Exception e) {
             log.warn("Team {} lead wake-up failed: {}", team.getId(), e.getMessage());

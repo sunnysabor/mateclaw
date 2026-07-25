@@ -3,6 +3,7 @@ package vip.mate.agent.graph.plan.edge;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.EdgeAction;
 import vip.mate.agent.graph.plan.state.PlanStateKeys;
+import vip.mate.agent.graph.state.MateClawStateKeys;
 
 /**
  * Routes the graph after the triage node.
@@ -22,6 +23,12 @@ public class PlanGenerationDispatcher implements EdgeAction {
 
     @Override
     public String apply(OverAllState state) {
+        // A board-delegated plan whose tasks all settled resumes straight into
+        // the summary — its step results were rebuilt from the team task board
+        // by the resume gate; the step loop has nothing left to execute.
+        if ("plan_delegated_settled".equals(state.value(MateClawStateKeys.CURRENT_PHASE, ""))) {
+            return PlanStateKeys.PLAN_SUMMARY_NODE;
+        }
         boolean needsPlanning = state.value(PlanStateKeys.NEEDS_PLANNING, false);
         if (!needsPlanning) {
             return PlanStateKeys.DIRECT_ANSWER_NODE;

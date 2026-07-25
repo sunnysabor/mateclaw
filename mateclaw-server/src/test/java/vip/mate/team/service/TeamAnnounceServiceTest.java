@@ -12,6 +12,7 @@ import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.team.model.AgentTeamEntity;
 import vip.mate.team.model.TeamTaskEntity;
 import vip.mate.team.model.TeamTaskStatus;
+import vip.mate.workspace.conversation.ConversationService;
 
 import java.util.List;
 
@@ -34,21 +35,25 @@ class TeamAnnounceServiceTest {
     private static final String LEAD_CONV = "lead-conv";
 
     private TeamService teamService;
+    private TeamTaskService taskService;
     private AgentService agentService;
     private AgentMapper agentMapper;
     private RunningConversationRegistry runningConversations;
     private ChatStreamTracker streamTracker;
+    private ConversationService conversationService;
     private TeamAnnounceService service;
 
     @BeforeEach
     void setUp() {
         teamService = mock(TeamService.class);
+        taskService = mock(TeamTaskService.class);
         agentService = mock(AgentService.class);
         agentMapper = mock(AgentMapper.class);
         runningConversations = mock(RunningConversationRegistry.class);
         streamTracker = mock(ChatStreamTracker.class);
-        service = new TeamAnnounceService(teamService, agentService, agentMapper,
-                runningConversations, streamTracker);
+        conversationService = mock(ConversationService.class);
+        service = new TeamAnnounceService(teamService, taskService, agentService, agentMapper,
+                runningConversations, streamTracker, conversationService);
 
         AgentTeamEntity team = new AgentTeamEntity();
         team.setId(TEAM_ID);
@@ -136,6 +141,12 @@ class TeamAnnounceServiceTest {
                 .broadcastObject(eq(LEAD_CONV), eq("team_announce_start"), any());
         verify(streamTracker, timeout(3000))
                 .broadcastObject(eq(LEAD_CONV), eq("team_announce_reply"), any());
+        // The announce turn persists, so the lead's reply survives a reload and
+        // stays in the lead's conversation window for later turns.
+        verify(conversationService, timeout(3000))
+                .saveMessage(eq(LEAD_CONV), eq("user"), anyString());
+        verify(conversationService, timeout(3000))
+                .saveMessage(eq(LEAD_CONV), eq("assistant"), eq("综合汇报"));
     }
 
     @Test

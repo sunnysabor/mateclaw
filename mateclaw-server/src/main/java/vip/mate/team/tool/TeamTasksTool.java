@@ -13,8 +13,10 @@ import vip.mate.team.model.AgentTeamEntity;
 import vip.mate.team.model.TeamTaskCommentEntity;
 import vip.mate.team.model.TeamTaskCreateCommand;
 import vip.mate.team.model.TeamTaskEntity;
+import vip.mate.team.model.TeamTaskEventEntity;
 import vip.mate.team.model.TeamTaskStatus;
 import vip.mate.team.service.TeamDispatchService;
+import vip.mate.team.service.TeamEventChannel;
 import vip.mate.team.service.TeamService;
 import vip.mate.team.service.TeamTaskService;
 import vip.mate.tool.builtin.ToolExecutionContext;
@@ -22,7 +24,9 @@ import vip.mate.workspace.conversation.ConversationService;
 import vip.mate.workspace.conversation.model.ConversationEntity;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -44,17 +48,21 @@ public class TeamTasksTool {
     private final TeamService teamService;
     private final TeamTaskService taskService;
     private final TeamDispatchService dispatchService;
+    private final TeamEventChannel eventChannel;
     private final ConversationService conversationService;
     private final AgentMapper agentMapper;
 
     @Tool(description = "Operate your team's shared task board. Actions: "
             + "'list' all tasks; 'get' one task with comments (taskId); "
             + "'create' a task (lead only; subject, description, assigneeAgentId required, "
-            + "optional blockedBy comma-separated prerequisite task ids, priority, higher first); "
+            + "optional blockedBy comma-separated prerequisite task ids, priority, higher first, "
+            + "requireApproval=true to park the finished task for human sign-off); "
             + "'complete' a task with its result summary (taskId, result); "
             + "'progress' to report execution progress (taskId, percent 0-100, step); "
             + "'comment' to leave a note, or type='blocker' when you are stuck and need the lead "
-            + "(taskId, text); 'cancel' (lead only; taskId, text as reason); "
+            + "(taskId, text); 'attach' to register a produced file on the task "
+            + "(taskId, name, url — the download link returned by a render tool); "
+            + "'cancel' (lead only; taskId, text as reason); "
             + "'retry' a failed/stale task back to pending (lead only; taskId). "
             + "Only usable when you belong to an agent team.")
     public String team_tasks(
@@ -72,6 +80,8 @@ public class TeamTasksTool {
             String blockedBy,
             @ToolParam(description = "create: priority, higher dispatches first (default 0)", required = false)
             Integer priority,
+            @ToolParam(description = "create: true to require human approval before the finished task counts as done", required = false)
+            Boolean requireApproval,
             @ToolParam(description = "complete: result summary reported back to the lead", required = false)
             String result,
             @ToolParam(description = "progress: completion percent 0-100", required = false)
@@ -82,6 +92,10 @@ public class TeamTasksTool {
             String text,
             @ToolParam(description = "comment: 'note' (default) or 'blocker' to escalate to the lead", required = false)
             String type,
+            @ToolParam(description = "attach: display file name of the deliverable, e.g. report.docx", required = false)
+            String name,
+            @ToolParam(description = "attach: the /api/v1/files/generated/... download link returned by the render tool", required = false)
+            String url,
             @Nullable ToolContext ctx) {
 
         String conversationId = ToolExecutionContext.conversationId(ctx);
@@ -105,14 +119,15 @@ public class TeamTasksTool {
                 case "list" -> renderBoard(team);
                 case "get" -> renderDetail(team, parseId(taskId, "taskId"));
                 case "create" -> createTask(team, agentId, isLead, subject, description,
-                        assigneeAgentId, blockedBy, priority, conversationId);
+                        assigneeAgentId, blockedBy, priority, requireApproval, conversationId);
                 case "complete" -> completeTask(team, agentId, parseId(taskId, "taskId"), result);
                 case "progress" -> progress(team, agentId, parseId(taskId, "taskId"), percent, step);
                 case "comment" -> comment(team, agentId, parseId(taskId, "taskId"), type, text);
-                case "cancel" -> cancel(team, isLead, parseId(taskId, "taskId"), text);
-                case "retry" -> retry(team, isLead, parseId(taskId, "taskId"));
+                case "attach" -> attach(team, agentId, parseId(taskId, "taskId"), name, url);
+                case "cancel" -> cancel(team, agentId, isLead, parseId(taskId, "taskId"), text);
+                case "retry" -> retry(team, agentId, isLead, parseId(taskId, "taskId"));
                 default -> "Error: unknown action '" + action
-                        + "'. Use one of: list, get, create, complete, progress, comment, cancel, retry.";
+                        + "'. Use one of: list, get, create, complete, progress, comment, attach, cancel, retry.";
             };
         } catch (IllegalArgumentException | IllegalStateException e) {
             return "Error: " + e.getMessage();
@@ -127,7 +142,8 @@ public class TeamTasksTool {
 
     private String createTask(AgentTeamEntity team, Long agentId, boolean isLead,
                               String subject, String description, String assigneeAgentId,
-                              String blockedBy, Integer priority, String conversationId) {
+                              String blockedBy, Integer priority, Boolean requireApproval,
+                              String conversationId) {
         if (!isLead) {
             return "Error: only the team lead can create tasks. Report blockers or ask the "
                     + "lead via a comment on your current task instead.";
@@ -140,8 +156,10 @@ public class TeamTasksTool {
                 .createdByAgentId(agentId)
                 .priority(priority)
                 .blockedBy(parseIdList(blockedBy))
+                .requireApproval(Boolean.TRUE.equals(requireApproval))
                 .leadConversationId(conversationId)
                 .build());
+        eventChannel.publishTaskEvent(task, "team_task_created", Map.of());
         if (TeamTaskStatus.PENDING.equals(task.getStatus())) {
             dispatchService.requestDispatch(team.getId());
         }
@@ -181,6 +199,16 @@ public class TeamTasksTool {
             return "Error: percent must be between 0 and 100.";
         }
         boolean ok = taskService.updateProgress(taskId, agentId, percent, step);
+        if (ok) {
+            Map<String, Object> extra = new HashMap<>();
+            if (percent != null) {
+                extra.put("progressPercent", percent);
+            }
+            if (step != null) {
+                extra.put("progressStep", step);
+            }
+            eventChannel.publishTaskEvent(taskService.getTask(taskId), "team_task_progress", extra);
+        }
         return ok ? "✓ Progress recorded."
                 : "Error: task is not in progress under your ownership; progress not recorded.";
     }
@@ -198,16 +226,32 @@ public class TeamTasksTool {
                 : "✓ Comment added.";
     }
 
-    private String cancel(AgentTeamEntity team, boolean isLead, Long taskId, String reason) {
+    private String attach(AgentTeamEntity team, Long agentId, Long taskId, String name, String url) {
+        requireTaskInTeam(team, taskId);
+        taskService.addDeliverable(taskId, agentId, name, url);
+        return "✓ Deliverable attached: " + name.trim()
+                + ". It now shows on the task card; keep your result a summary instead of pasting file contents.";
+    }
+
+    private String cancel(AgentTeamEntity team, Long agentId, boolean isLead,
+                          Long taskId, String reason) {
         if (!isLead) {
             return "Error: only the team lead can cancel tasks.";
         }
-        requireTaskInTeam(team, taskId);
-        taskService.cancelTask(taskId, reason);
+        TeamTaskEntity task = requireTaskInTeam(team, taskId);
+        List<Long> released = taskService.cancelTask(taskId, reason);
+        taskService.recordEvent(team.getId(), taskId, TeamTaskEventEntity.CANCELLED,
+                TeamTaskService.AUTHOR_AGENT, String.valueOf(agentId), reason);
+        eventChannel.publishTaskEvent(taskService.getTask(taskId), "team_task_cancelled", Map.of());
+        // Stop the member run mid-flight instead of letting it burn to the end.
+        dispatchService.interruptRun(task);
+        if (!released.isEmpty()) {
+            dispatchService.requestDispatch(team.getId());
+        }
         return "✓ Task cancelled.";
     }
 
-    private String retry(AgentTeamEntity team, boolean isLead, Long taskId) {
+    private String retry(AgentTeamEntity team, Long agentId, boolean isLead, Long taskId) {
         if (!isLead) {
             return "Error: only the team lead can retry tasks.";
         }
@@ -215,6 +259,9 @@ public class TeamTasksTool {
         if (!taskService.retryTask(taskId)) {
             return "Error: only failed or stale tasks can be retried.";
         }
+        taskService.recordEvent(team.getId(), taskId, TeamTaskEventEntity.RETRIED,
+                TeamTaskService.AUTHOR_AGENT, String.valueOf(agentId), null);
+        eventChannel.publishTaskEvent(taskService.getTask(taskId), "team_task_retried", Map.of());
         dispatchService.requestDispatch(team.getId());
         return "✓ Task reset to pending; it will be re-dispatched.";
     }

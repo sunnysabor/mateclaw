@@ -28,6 +28,8 @@ import vip.mate.goal.model.GoalCriterion;
 import vip.mate.goal.model.GoalEntity;
 import vip.mate.goal.service.GoalService;
 import vip.mate.planning.service.PlanningService;
+import vip.mate.team.model.AgentTeamEntity;
+import vip.mate.team.service.TeamPlanBridge;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -70,6 +72,17 @@ public class PlanGenerationNode implements NodeAction {
      *  resolve per-step assignments. Null disables per-step delegation (legacy/test). */
     private final AgentService agentService;
 
+    /**
+     * Optional — hands a team lead's plan off to the team task board and
+     * resumes parked plans on later messages. Null keeps the legacy serial
+     * pipeline (non-team deployments / tests).
+     */
+    private TeamPlanBridge teamPlanBridge;
+
+    public void setTeamPlanBridge(TeamPlanBridge teamPlanBridge) {
+        this.teamPlanBridge = teamPlanBridge;
+    }
+
     /** Plan steps below this size are trivial tool tasks, not goal-worthy. */
     private static final int MIN_STEPS_FOR_AUTO_GOAL = 2;
     /** Cap the auto-derived goal title; the full request rides in the description. */
@@ -88,7 +101,13 @@ public class PlanGenerationNode implements NodeAction {
             // order). An empty string / missing entry means "run with the parent
             // agent". Only populated when delegatable specialist agents are
             // advertised to the planner; absent for backward compatibility.
-            @JsonProperty("step_agents")    List<String> stepAgents
+            @JsonProperty("step_agents")    List<String> stepAgents,
+            // Optional per-step prerequisites, parallel to steps: each entry is
+            // a comma-separated list of earlier 1-based step numbers ("" = no
+            // prerequisite, may start immediately). Only requested when steps
+            // hand off to a team board, where independent steps run in
+            // parallel; anything invalid falls back to a sequential chain.
+            @JsonProperty("step_deps")      List<String> stepDeps
     ) {}
 
     private static final String PLANNING_PROMPT = """
@@ -332,6 +351,60 @@ public class PlanGenerationNode implements NodeAction {
     }
 
     /**
+     * Parse the planner's step_deps (1-based step numbers, comma separated)
+     * into 0-based prerequisite indices. Any irregularity — missing field,
+     * length mismatch, unparseable entry, self/forward reference — falls back
+     * to a sequential chain (step i depends on step i-1), which is exactly
+     * the serial semantics the plan pipeline has today: dependency info is a
+     * parallelism bonus, never a correctness requirement. Package-private for
+     * direct unit testing.
+     */
+    static List<List<Integer>> parseStepDeps(List<String> stepDeps, int stepCount) {
+        if (stepDeps == null || stepDeps.size() != stepCount) {
+            return sequentialChain(stepCount);
+        }
+        List<List<Integer>> parsed = new ArrayList<>();
+        for (int i = 0; i < stepCount; i++) {
+            List<Integer> deps = new ArrayList<>();
+            String raw = stepDeps.get(i);
+            if (raw != null && !raw.isBlank()) {
+                for (String part : raw.split("[,，]")) {
+                    if (part.isBlank()) {
+                        continue;
+                    }
+                    try {
+                        int depIndex = Integer.parseInt(part.trim()) - 1;
+                        if (depIndex < 0 || depIndex >= i) {
+                            return sequentialChain(stepCount);
+                        }
+                        deps.add(depIndex);
+                    } catch (NumberFormatException e) {
+                        return sequentialChain(stepCount);
+                    }
+                }
+            }
+            parsed.add(deps);
+        }
+        return parsed;
+    }
+
+    private static List<List<Integer>> sequentialChain(int stepCount) {
+        List<List<Integer>> chain = new ArrayList<>();
+        for (int i = 0; i < stepCount; i++) {
+            chain.add(i == 0 ? List.of() : List.of(i - 1));
+        }
+        return chain;
+    }
+
+    private static Long parseNumericAgentId(String agentId) {
+        try {
+            return Long.valueOf(agentId);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
      * Enabled agents in the given workspace, excluding the parent (plan) agent
      * itself — these are the agents a step can be delegated to. Empty when
      * delegation is unavailable (no {@link AgentService}) or no peers exist.
@@ -422,6 +495,45 @@ public class PlanGenerationNode implements NodeAction {
         List<GraphEventPublisher.GraphEvent> events = new ArrayList<>();
         events.add(GraphEventPublisher.phase("planning", Map.of("goal", persistGoal)));
 
+        // Delegated-plan resume gate: a plan parked on the team board resumes
+        // here on ANY inbound message (settle announcement or a user asking
+        // for status) — deterministic routing that never depends on how the
+        // triage LLM classifies the wake-up text. Mirrors the approval-replay
+        // pattern: park in the DB, resume from the DB.
+        if (teamPlanBridge != null) {
+            TeamPlanBridge.ParkedPlanState parked = teamPlanBridge.checkParkedPlan(conversationId);
+            if (parked instanceof TeamPlanBridge.Settled settled) {
+                log.info("[PlanGeneration] Delegated plan {} settled ({} results) — routing to summary",
+                        settled.planId(), settled.completedResults().size());
+                return PlanStateAccessor.output()
+                        .needsPlanning(true)
+                        .planId(settled.planId())
+                        .planSteps(settled.steps())
+                        .planValid(true)
+                        .currentStepIndex(settled.steps().size())
+                        // Summarize against the original plan goal, not the
+                        // wake-up message that happened to trigger the resume.
+                        .goal(settled.goal())
+                        .put(PlanStateKeys.COMPLETED_RESULTS, settled.completedResults())
+                        .currentPhase("plan_delegated_settled")
+                        .events(events)
+                        .build();
+            }
+            if (parked instanceof TeamPlanBridge.InFlight inFlight) {
+                log.info("[PlanGeneration] Delegated plan still in flight — answering with progress");
+                if (streamingHelper != null) {
+                    streamingHelper.broadcastContent(conversationId, inFlight.progressText());
+                }
+                return PlanStateAccessor.output()
+                        .needsPlanning(false)
+                        .directAnswer(inFlight.progressText())
+                        .currentPhase("direct_answer")
+                        .contentStreamed(true)
+                        .events(events)
+                        .build();
+            }
+        }
+
         // Replay path: plan is already in state (injected by chatWithReplayStream); skip LLM.
         Long existingPlanId = state.<Long>value(PlanStateKeys.PLAN_ID).orElse(null);
         if (existingPlanId != null) {
@@ -467,22 +579,42 @@ public class PlanGenerationNode implements NodeAction {
                                 + "\n单次工具调用应归为单步（B），不要拆成多步。"));
             }
 
-            // Advertise delegatable specialist agents so the planner can assign a
-            // multi-step plan's step to a dedicated agent (e.g. a test step to a
-            // QA agent, a UI step to a frontend agent). Only fills the step's
-            // step_agents slot; unassigned steps stay with the parent agent.
-            // Skipped entirely when no peer agents exist in the workspace.
-            List<AgentEntity> delegatable = listDelegatableAgents(chatOrigin.workspaceId(), agentId);
-            if (!delegatable.isEmpty()) {
-                String agentLines = delegatable.stream()
+            // Advertise delegatable agents. A team lead advertises its member
+            // roster with mandatory assignment (steps hand off to the team
+            // board and run in parallel there); everyone else advertises the
+            // workspace-wide specialist list with optional assignment.
+            AgentTeamEntity leadTeam = null;
+            if (teamPlanBridge != null) {
+                Long numericAgentId = parseNumericAgentId(agentId);
+                leadTeam = numericAgentId == null ? null
+                        : teamPlanBridge.leadTeam(numericAgentId).orElse(null);
+            }
+            if (leadTeam != null) {
+                String memberLines = teamPlanBridge.roster(leadTeam).stream()
                         .map(a -> "- " + a.getName()
                                 + (StringUtils.hasText(a.getDescription()) ? "：" + a.getDescription() : ""))
                         .collect(Collectors.joining("\n"));
                 promptMessages.add(new UserMessage(
-                        "可委派的专职 Agent（仅当某步骤明显属于其专长时才指派，否则该步骤留空、由你自己执行）：\n"
-                                + agentLines
-                                + "\n若要委派，在 step_agents 数组对应位置填写 Agent 名称（与 steps 同序、等长）；"
-                                + "不委派的步骤填空字符串。多数步骤通常不需要委派。"));
+                        "你是团队「" + leadTeam.getName() + "」的 lead。多步任务的每个步骤都将分派到团队任务板，"
+                                + "由成员并行执行。团队成员：\n" + memberLines
+                                + "\n要求：\n"
+                                + "1. 在 step_agents 数组为每个步骤填写一名成员名称（与 steps 同序、等长，不允许留空）。\n"
+                                + "2. 在 step_deps 数组标注每个步骤的前置步骤序号（1 起始，逗号分隔；无前置填空字符串）。"
+                                + "相互独立的步骤请不要标注前置，以便并行执行。\n"
+                                + "3. 每个步骤描述必须自包含——执行成员看不到本对话，把所需的输入与要求写进步骤里。"));
+            } else {
+                List<AgentEntity> delegatable = listDelegatableAgents(chatOrigin.workspaceId(), agentId);
+                if (!delegatable.isEmpty()) {
+                    String agentLines = delegatable.stream()
+                            .map(a -> "- " + a.getName()
+                                    + (StringUtils.hasText(a.getDescription()) ? "：" + a.getDescription() : ""))
+                            .collect(Collectors.joining("\n"));
+                    promptMessages.add(new UserMessage(
+                            "可委派的专职 Agent（仅当某步骤明显属于其专长时才指派，否则该步骤留空、由你自己执行）：\n"
+                                    + agentLines
+                                    + "\n若要委派，在 step_agents 数组对应位置填写 Agent 名称（与 steps 同序、等长）；"
+                                    + "不委派的步骤填空字符串。多数步骤通常不需要委派。"));
+                }
             }
 
             // Inject working context (rolling conversation summary) so triage respects
@@ -597,6 +729,39 @@ public class PlanGenerationNode implements NodeAction {
                 // direct_answer, which silently stripped tool capability.)
                 log.warn("[PlanGeneration] needs_planning=true with empty steps; falling back to single-step plan");
                 steps = List.of(persistGoal);
+            }
+
+            // Team hand-off: a lead whose every step resolved to a member
+            // parks the plan on the task board and ends the turn — execution
+            // continues through the board's dispatch/announce machinery, and
+            // any later message resumes via the delegated-plan gate above.
+            if (leadTeam != null) {
+                List<Long> memberIds = teamPlanBridge.resolveMembers(leadTeam, steps,
+                        triage != null ? triage.stepAgents() : null);
+                if (memberIds != null) {
+                    List<List<Integer>> stepDeps = parseStepDeps(
+                            triage != null ? triage.stepDeps() : null, steps.size());
+                    var delegatedPlan = planningService.createPlan(
+                            agentId, conversationId, persistGoal, steps, memberIds);
+                    events.add(GraphEventPublisher.planCreated(delegatedPlan.getId(), steps));
+                    String announcement = teamPlanBridge.delegatePlan(leadTeam,
+                            delegatedPlan.getId(), persistGoal, steps, stepDeps,
+                            memberIds, conversationId);
+                    streamingHelper.broadcastContent(conversationId, announcement);
+                    log.info("[PlanGeneration] Plan {} handed off to team {} board ({} steps)",
+                            delegatedPlan.getId(), leadTeam.getId(), steps.size());
+                    return PlanStateAccessor.output()
+                            .needsPlanning(false)
+                            .directAnswer(announcement)
+                            .currentPhase("direct_answer")
+                            .contentStreamed(true)
+                            .thinkingStreamed(!result.thinking().isEmpty())
+                            .mergeUsage(state, result)
+                            .events(events)
+                            .build();
+                }
+                log.info("[PlanGeneration] Lead plan not fully assigned to members; "
+                        + "falling back to the serial pipeline");
             }
 
             // Resolve any per-step agent delegation the planner asked for. Null

@@ -128,6 +128,35 @@ public class PlanningService {
     }
 
     /**
+     * Park a plan whose steps were handed off to a team task board. The plan
+     * stays in this status while board tasks execute; any later inbound
+     * message resumes it through the delegated-plan gate.
+     */
+    public void markPlanDelegated(Long planId) {
+        PlanEntity plan = planMapper.selectById(planId);
+        if (plan != null) {
+            plan.setStatus("delegated");
+            planMapper.updateById(plan);
+        }
+    }
+
+    /**
+     * Latest board-delegated plan parked on this conversation, or null. The
+     * counterpart of {@link #findAwaitingApprovalContext} for the team
+     * hand-off flow: park in the DB, resume from the DB.
+     */
+    public PlanEntity findDelegatedPlan(String conversationId) {
+        if (conversationId == null || conversationId.isBlank()) {
+            return null;
+        }
+        return planMapper.selectOne(new LambdaQueryWrapper<PlanEntity>()
+                .eq(PlanEntity::getConversationId, conversationId)
+                .eq(PlanEntity::getStatus, "delegated")
+                .orderByDesc(PlanEntity::getCreateTime)
+                .last("LIMIT 1"));
+    }
+
+    /**
      * 完成计划
      */
     public void completePlan(Long planId, String summary) {

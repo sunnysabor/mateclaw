@@ -224,6 +224,7 @@ public class TeamService {
         }
     }
 
+
     private void requireNotInAnyTeam(Long agentId) {
         // Membership check ignores team status on purpose: an agent parked in a
         // paused team must not silently join a second one.

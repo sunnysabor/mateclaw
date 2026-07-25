@@ -61,6 +61,7 @@ import vip.mate.workspace.conversation.ConversationService;
 import vip.mate.approval.ApprovalWorkflowService;
 import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.team.service.TeamContextBuilder;
+import vip.mate.team.service.TeamPlanBridge;
 import vip.mate.wiki.service.WikiContextService;
 
 import java.lang.reflect.Field;
@@ -104,6 +105,7 @@ public class AgentGraphBuilder {
     private boolean markdownNormalizeEnabled;
     private final ConversationService conversationService;
     private final TeamContextBuilder teamContextBuilder;
+    private final TeamPlanBridge teamPlanBridge;
     private final ModelConfigService modelConfigService;
     private final ModelProviderService modelProviderService;
     private final ModelContextWindowResolver contextWindowResolver;
@@ -644,6 +646,9 @@ public class AgentGraphBuilder {
                 executor.setAuditEventService(auditEventService);
             }
             PlanGenerationNode planGenerationNode = new PlanGenerationNode(chatModel, planningService, streamingHelper, conversationWindowManager, toolSet, goalService, goalProperties, agentService);
+            // Team hand-off: a lead-of-team plan agent parks multi-step plans on
+            // the team task board instead of the serial delegation pipeline.
+            planGenerationNode.setTeamPlanBridge(teamPlanBridge);
             StepExecutionNode stepExecutionNode = new StepExecutionNode(chatModel, toolSet, executor, planningService, streamTracker, reasoningEffort, streamingHelper, conversationWindowManager, skillCatalogRenderer);
             // Per-step delegation: route a step assigned to a specialist agent
             // through DelegateAgentTool (null when delegation deps aren't wired).
@@ -788,7 +793,10 @@ public class AgentGraphBuilder {
                             AsyncEdgeAction.edge_async(new PlanGenerationDispatcher()),
                             Map.of(
                                     PlanStateKeys.STEP_EXECUTION_NODE, PlanStateKeys.STEP_EXECUTION_NODE,
-                                    PlanStateKeys.DIRECT_ANSWER_NODE, PlanStateKeys.DIRECT_ANSWER_NODE))
+                                    PlanStateKeys.DIRECT_ANSWER_NODE, PlanStateKeys.DIRECT_ANSWER_NODE,
+                                    // Board-delegated plan settled: step results were
+                                    // rebuilt from team tasks — summarize directly.
+                                    PlanStateKeys.PLAN_SUMMARY_NODE, PlanStateKeys.PLAN_SUMMARY_NODE))
                     .addConditionalEdges(PlanStateKeys.STEP_EXECUTION_NODE,
                             AsyncEdgeAction.edge_async(new StepProgressDispatcher()),
                             Map.of(
@@ -963,6 +971,9 @@ public class AgentGraphBuilder {
             // C4: wire the environment-notification registry so ReasoningNode
             // can drain pending MCP/skill events and inject them as a SystemMessage.
             reasoningNode.setRunningConversationRegistry(runningConversationRegistry);
+            // Live team-board snapshot for leads, injected per turn as a meta
+            // user message; no-op for agents outside any team.
+            reasoningNode.setTeamContextBuilder(teamContextBuilder);
             ActionNode actionNode = new ActionNode(executor, streamTracker);
             // B2/B5: wire optional collaborators so ActionNode can pin skill
             // constraints and auto-record tool completions into ProgressLedger.
