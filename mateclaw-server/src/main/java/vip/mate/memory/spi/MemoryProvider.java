@@ -88,6 +88,24 @@ public interface MemoryProvider {
     }
 
     /**
+     * Owner-scoped post-turn sync. Providers that isolate memory per end-user
+     * override this to persist the turn under the same {@code ownerKey} that
+     * owner-scoped prefetch recalls by. Default delegates to
+     * {@link #syncTurn(Long, String, String, String)} for providers that are
+     * not owner-aware.
+     *
+     * @param agentId        the agent ID
+     * @param conversationId the conversation ID
+     * @param userMessage    user's message text
+     * @param assistantReply assistant's reply text
+     * @param ownerKey       resolved memory owner key (e.g. "user:42"); may be null
+     */
+    default void syncTurn(Long agentId, String conversationId,
+                          String userMessage, String assistantReply, String ownerKey) {
+        syncTurn(agentId, conversationId, userMessage, assistantReply);
+    }
+
+    /**
      * Spring AI @Tool beans this provider wants to expose to the agent.
      * These are collected by MemoryManager and added to the tool set.
      */

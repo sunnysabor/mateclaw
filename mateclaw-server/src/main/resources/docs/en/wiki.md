@@ -663,6 +663,12 @@ Extraction only runs when **entity extraction is enabled** in the KB configurati
 
 In `Wiki → Config → Entity Extraction`: toggling the switch on reveals a tag editor (multi-select, searchable, inline create). The six built-in types are suggested by default; you can type a custom type (e.g. `technology`, `law`) and press Enter to add it. Leaving the list empty falls back to the built-in six. The type list is stored in the KB's `configContent` JSON under the `entityTypes` key.
 
+### Relation schema: a closed triple whitelist (2.0.0+)
+
+Entity types constrain *what entities* get extracted, but the relation layer used to be open — the model could invent any predicate between any two entities, and fringe entities got persisted as important merely for "participating in some relation", diluting the few definite relations you actually care about.
+
+Each KB can now declare an optional **relation schema**: a closed whitelist of `subjectType → predicate → objectType` triples (e.g. `person → works_at → organization`). With it enabled, extraction **keeps only relations matching the schema and the entities participating in them** — no more free-form invention; the graph contains only the relation shapes you defined. Leave it empty to keep the original open extraction. The config lives in the KB's `configContent`; no migration needed.
+
 ### Exploring the graph
 
 The Wiki graph view toolbar gains a **Page graph / Entity graph** toggle. In entity graph mode:

@@ -167,6 +167,38 @@ class TeamTaskServiceTest {
     }
 
     @Test
+    @DisplayName("a non-assignee cannot auto-claim and complete a pending task")
+    void completePendingByNonAssigneeRejected() {
+        TeamTaskEntity t = task(5L, TeamTaskStatus.PENDING);
+        t.setAssigneeAgentId(MEMBER_ID);
+        when(taskMapper.selectById(5L)).thenReturn(t);
+
+        IllegalStateException e = assertThrows(IllegalStateException.class,
+                () -> service.completeTask(5L, 3L, "hijack"));
+        assertTrue(e.getMessage().contains("only the assignee"));
+        // Neither the claim nor the completion update may run.
+        verify(taskMapper, never()).update(isNull(), any());
+    }
+
+    @Test
+    @DisplayName("the assignee auto-claims a pending task when completing it directly")
+    void completePendingByAssigneeAutoClaims() {
+        TeamTaskEntity pending = task(5L, TeamTaskStatus.PENDING);
+        pending.setAssigneeAgentId(MEMBER_ID);
+        TeamTaskEntity claimed = task(5L, TeamTaskStatus.IN_PROGRESS);
+        claimed.setAssigneeAgentId(MEMBER_ID);
+        claimed.setOwnerAgentId(MEMBER_ID);
+        // First read sees pending, the re-read after the atomic claim sees in_progress.
+        when(taskMapper.selectById(5L)).thenReturn(pending).thenReturn(claimed);
+        when(taskMapper.update(isNull(), any())).thenReturn(1);
+        when(taskMapper.selectList(any())).thenReturn(List.of());
+
+        assertTrue(service.completeTask(5L, MEMBER_ID, "done").isEmpty());
+        // Claim update plus completion update.
+        verify(taskMapper, times(2)).update(isNull(), any());
+    }
+
+    @Test
     @DisplayName("completing a terminal task fails with a state error")
     void completeTerminalRejected() {
         when(taskMapper.selectById(5L)).thenReturn(task(5L, TeamTaskStatus.CANCELLED));

@@ -61,7 +61,7 @@ public class MemoryLifecycleMediator {
     public void afterLlmCall(TurnContext ctx, String assistantReply) {
         try {
             memoryManager.syncAll(ctx.agentId(), ctx.conversationId(),
-                    ctx.userQuery(), assistantReply);
+                    ctx.userQuery(), assistantReply, ctx.ownerKey());
             events.publishEvent(new TurnCompletedEvent(ctx, assistantReply));
             log.debug("[Memory] afterLlmCall: agent={}, conv={}, replyLen={}", ctx.agentId(),
                     ctx.conversationId(), assistantReply != null ? assistantReply.length() : 0);

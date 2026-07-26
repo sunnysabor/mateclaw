@@ -23,6 +23,9 @@ features:
   - icon: 🧑‍💼
     title: Digital employees, not chatbots
     details: You hire coworkers, not a chat box. Each one has a role, a goal, a backstory, a pixel-art avatar, and a color of their own — five career templates ship ready to use. ReAct + Plan-and-Execute, parallel delegation between employees.
+  - icon: 🤝
+    title: Teams, not lone wolves
+    details: Build a team — the lead breaks a goal into tasks on a shared board, members execute in parallel, dependencies orchestrate themselves, prerequisite results hand off automatically, and settled work announces back for synthesis. Leases, cancel-interrupt, approval gates, deliverables and timelines — as of 2.0.0, a crew works around one board.
   - icon: 🧩
     title: Skills are the skeleton, not a plugin
     details: One SKILL.md plus one LESSONS.md that grows with use. Eight starter templates, a five-step creation wizard, pre-flight checks before install. MCP and ACP bridges — even Claude Code and Codex show up as employees.

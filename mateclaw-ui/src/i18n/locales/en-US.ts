@@ -52,6 +52,7 @@ export default {
     deliverables: 'Deliverables',
     viewRun: 'View execution',
     timeline: 'Timeline',
+    loadMore: 'Load more ({loaded}/{total})',
     eventType: {
       created: 'Created',
       dispatched: 'Dispatched',

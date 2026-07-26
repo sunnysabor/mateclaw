@@ -650,7 +650,34 @@ IM channels (WeCom, WeChat, DingTalk) support voice input. Transcription via Das
 
 ## Per-conversation model selection (all IM channels)
 
-As of 1.4.0, IM channel conversations **remember a per-conversation model**, just like web. Each IM conversation seeds a conversation-level model when it's created, and later replies respect that choice rather than always falling back to the agent's default model. See [Chat & Messaging](./chat) for the web-side switching detail.
+As of 1.4.0, IM channel conversations **remember a per-conversation model**, just like web. Each IM conversation seeds a conversation-level model when it's created, and later replies respect that choice rather than always falling back to the agent's default model. See [Chat & Messaging](./chat) for the web-side switching detail. As of 2.0.0 you can also switch right inside the IM with the `/model` magic command (next section).
+
+---
+
+## Channel magic commands (2.0.0+)
+
+In any IM channel, a message that is entirely a `/`-prefixed command is intercepted by a unified dispatcher **before it reaches the LLM** — commands register once and work on every channel, burn no tokens, and respond instantly:
+
+| Command | What it does |
+|------|--------|
+| `/new` | Start a fresh conversation (current context is archived) |
+| `/clear` | Clear the current conversation's context (the conversation itself survives; the 1.8-era clear command folds into this framework) |
+| `/status` | Show the conversation's state — bound employee, model, whether a task is running |
+| `/stop` | Stop the running task — intercepted at the enqueue gate, so it preempts a long task mid-flight |
+| `/model` | With no argument, list available models (current pin marked); `/model <name>` or `/model <provider>:<name>` switches **this conversation's** model, effective from the next message; `/model reset` restores the default. Fuzzy names get suggestion lists |
+| `/help` | List all commands with descriptions |
+
+Every command carries Chinese and English aliases (e.g. `清空` / `新会话` / `状态`) and is case-insensitive. Matching is two-layered: **bare aliases match only as the entire message** ("help me write a report" is a normal prompt, not `/help`); **the slash form matches on the first token with arguments passed through** (which is how `/model qwen-max` carries its argument). A normal message that merely contains `/stop` mid-sentence never misfires. Command confirmations go through the channel's normal render-and-send path, so an already-posted "thinking…" placeholder bubble is properly consumed instead of spinning forever.
+
+---
+
+## Per-stage progress narration on sync IM channels (2.0.0+)
+
+The worst part of long tasks in IM is the "message dropped into a void" feeling. As of 2.0.0, IM channels on the synchronous path (WeCom, WeChat, …) no longer reply with only the final answer:
+
+- each **stage narration** of the agent's run (what it's doing, which tool it called) arrives as a standalone message — you see the task's footsteps on your phone;
+- WeCom goes further with an **event-driven progress bubble** that updates in place — thinking state, live tool trace and elapsed time roll in real time, and the bubble morphs into the final answer when it arrives (details and tuning in [WeCom Deep Tuning](./wecom-tuning));
+- the web SSE and sync IM paths share one **per-turn stream accumulator**, so both sides see identical execution metadata (tool calls, token usage).
 
 ---
 
@@ -659,6 +686,7 @@ As of 1.4.0, IM channel conversations **remember a per-conversation model**, jus
 - **Webhook mode needs HTTPS.** Production deployments should front HHAIOS with Nginx + SSL.
 - **Long-connection modes need no public IP.** Telegram Long-Polling, DingTalk Stream, Feishu WebSocket, Discord Gateway, Slack Socket mode, WeCom Long connection — all run behind NAT.
 - **One channel, one agent.** Different channels can point at different agents.
+- **Conversation ids are channel-scoped (2.0.0).** Conversation id generation now encodes the channel identity — two same-type channels created in different workspaces keep separate conversations even for the same external user, so two workspaces' chats can never bleed into one conversation row.
 - **Credentials are encrypted at rest** in `mate_channel`.
 - **China networks** often need `http_proxy` configured for Telegram and Discord.
 

@@ -216,6 +216,21 @@ Files live at `data/chat-uploads/{conversationId}/` by default, but when the con
 
 ---
 
+## The progress bubble: long tasks no longer look frozen (2.0.0+)
+
+Before 2.0.0, WeCom replied with one static "🤔 Thinking..." bubble that **never changed** until the final answer — a 30-second-to-3-minute task routinely read as a hang. The placeholder bubble is now **event-driven**:
+
+- **Live tool trace**: the bubble rolls with the agent's run — thinking state, the tool being called, completed calls with elapsed time, appended line by line;
+- **Per-stage rolling**: each new stage (a new reasoning round, a new tool call) refreshes the bubble in place with the current stage narration — you can see exactly how far the task has advanced;
+- **Morphs into the answer**: when the first real content chunk arrives, keepalive is cancelled and the **same stream slot is reused** — the progress bubble becomes the answer in place, leaving no orphan bubble;
+- **Overwrite throttling**: refreshes carry a minimum interval plus a skip-if-previous-flush-pending guard, so WeCom's rate limits are never tripped.
+
+Whether thinking content and the tool trace are shown is still governed by the channel's "message filtering" switches — and as of 2.0.0 those switches genuinely control "should process messages be sent", not merely strip inline tags from the final answer.
+
+Alongside it, **streaming reply management is hardened**: stream slot lifecycles are centrally managed — keepalive, forced finish and context invalidation each in their place — so "the answer landed but the bubble keeps spinning" and "a dangling slot blocks the next message" pathologies are gone. Generated files (images, documents) are also actually delivered through the WeChat channel rather than left as a local-only link.
+
+---
+
 ## Model behavior: faking tool calls
 
 Observation: **qwen3.6-plus** sometimes "lazes out" in long-context, tool-call-heavy scenarios — it produces a Markdown code block that **mimics** a tool call, but `toolCallCount=0`:

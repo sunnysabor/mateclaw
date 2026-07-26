@@ -45,10 +45,15 @@ public class RetryableMemoryProvider extends MemoryProviderDecorator {
 
     @Override
     public void syncTurn(Long agentId, String conversationId, String userMessage, String assistantReply) {
+        syncTurn(agentId, conversationId, userMessage, assistantReply, null);
+    }
+
+    @Override
+    public void syncTurn(Long agentId, String conversationId, String userMessage, String assistantReply, String ownerKey) {
         Exception lastException = null;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
-                delegate.syncTurn(agentId, conversationId, userMessage, assistantReply);
+                delegate.syncTurn(agentId, conversationId, userMessage, assistantReply, ownerKey);
                 return;
             } catch (Exception e) {
                 lastException = e;

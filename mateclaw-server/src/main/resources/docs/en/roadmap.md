@@ -136,36 +136,39 @@ The employee turns **outward and finishes a whole job** — from a one-sentence 
 
 Full story: [v1.8.0 release notes](./releases/1.8.0.md).
 
+### v2.0 — It leads a team ✅ Released (2026-07-26)
+
+From "one person who gets things done" to "a team that collaborates" — **Agent Teams** become a standing roster around a shared task board.
+
+- **Team entity and roles**: a team = name + lead + members + reviewers — persisted, reusable; the roster and collaboration playbook inject into member prompts
+- **Shared task board**: eight-status kanban, `blockedBy` dependency orchestration, member-level parallel dispatch, automatic prerequisite hand-off, settled results waking the lead
+- **Lead dispatch**: the lead decomposes, assigns, reviews; a Plan-Execute lead hands its **whole plan over to the board** — steps become tasks, dependencies become parallelism
+- **Execution hardening**: lease heartbeats against double execution, cancel-interrupt, `in_review` human approval gates, retry for failed/stale
+- **Deliverables and full observability**: output files register on tasks, task timelines, a team SSE live board, and jump-in access to any member's word-by-word run
+- Plus: workspace isolation fully sealed, channel magic commands + the WeCom progress bubble, conversation rewind/regenerate, explainable auto-approval, policy-driven LLM error recovery, in-chat attachment preview, single-source SKILL.md, the Mem0 plugin provider
+
+Full story: [v2.0.0 release notes](./releases/2.0.0.md); user guide: [Agent Teams](./teams).
+
 ---
 
-## Next: Agent Team & Agent Loop
+## Next: Agent Loop & Team follow-through
 
 > "Great things in business are never done by one person. They're done by a team of people."
 
-Look back along the line: v1.2 gave employees an identity, v1.3 made flows orchestratable, v1.4 made employees follow goals and spin up delegation trees, v1.5 made autonomy verifiable, v1.7 made long tasks visible.
+Look back along the line: v1.2 gave employees an identity, v1.3 made flows orchestratable, v1.4 made employees follow goals and spin up delegation trees, v1.7 made long tasks visible, and **v2.0 made teams a standing roster**.
 
-But today's MateClaw still has two "stops":
+One "stop" remains: **employees are reactive.** Goal auto-followup only lives **within a single run**; cron and triggers can wake an employee up, but every wake-up is an isolated response. No employee is truly **on duty** — continuously watching its area of responsibility and deciding for itself when to act.
 
-**Collaboration is one-shot.** The v1.4 delegation tree is powerful, but it's **task-scoped** — parent delegates child, the task ends, the tree dissolves. The next task starts from zero. Teams have no name, no roster, no accumulated experience — like hiring a fresh batch of temps for every project.
+### Agent Team follow-through — the roster exists; now it grows skills
 
-**Employees are reactive.** Goal auto-followup only lives **within a single run**; cron and triggers can wake an employee up, but every wake-up is an isolated response. No employee is truly **on duty** — continuously watching its area of responsibility and deciding for itself when to act.
+2.0 delivered the team entity, the task board, lead dispatch and the hardened execution chain (above). Still on the team track:
 
-v1.9 turns both stops into continuity.
-
-### Agent Team — from "temp hires" to "standing roster"
-
-A team is no longer a tree that sprouts at delegation time and vanishes when the task ends. It becomes a **persistent organizational unit**:
-
-- [ ] **Team entity**: a team = name + leader + member roster + charter — persisted, reusable, exportable and shareable
-- [ ] **Team charter (TEAM.md)**: division of labor, collaboration rules, escalation paths — shapes the team the way AGENTS.md shapes an individual
-- [ ] **Leader dispatch**: tasks come in, the leader decomposes, assigns to the best-fit member, and reviews the result; what it can't handle gets escalated instead of improvised
-- [ ] **Peer review**: critical deliverables can require another member's sign-off before shipping
-- [ ] **Shared team memory**: built on v1.5's TEAM scope — members share team memory and a team file space while personal memories stay isolated
-- [ ] **Team-level goals**: one goal decomposes into member sub-goals; the checklist aggregates across members — hover the leader's avatar to see what the whole team still owes
-- [ ] **Team-to-channel binding**: bind a Feishu / DingTalk group to a team; @ the team in the group, the leader decides who takes it
+- [ ] **Peer review**: critical deliverables can require another member's sign-off before shipping (2.0's `in_review` is human approval; member peer review is the next step)
+- [ ] **Team-level goals**: one goal decomposes into member sub-goals; the checklist aggregates across members — hover the lead's avatar to see what the whole team still owes
+- [ ] **Team-to-channel binding**: bind a Feishu / DingTalk group to a team; @ the team in the group, the lead decides who takes it
 - [ ] **Team retrospectives**: task wrap-up auto-generates a retrospective into the team's LESSONS.md — this team does better next time
-- [ ] **Employee Builder upgrade**: v1.4 builds a batch of employees from one sentence; v1.9 makes it emit a **standing team with a charter**
-- [ ] **Run Overview becomes a team view**: each member on-duty / busy / idle at a glance; click through to see what it's working on
+- [ ] **Collaboration DAG / swimlane view**: draw task dependencies and member swimlanes on top of the timeline data
+- [ ] **Employee Builder upgrade**: one sentence emits a **standing team with a roster**
 
 ### Agent Loop — from "answers then stops" to "on duty"
 
@@ -226,8 +229,9 @@ A leader on a loop, members summoned on demand — that's a **self-running digit
 | **v1.5** | It's verifiable | Goal checklists + self-maintaining Wiki + owner-aware memory | ✅ Released |
 | **v1.6** | It meets you where you are | Domestic databases + persistent vision + code execution + identity shaping | ✅ Released |
 | **v1.7** | It's ready for production | Approval paths closed + Run Overview & cost visibility + context/token budgeting + open API/Deep Research + desktop remote/LAN + operational export | ✅ Released |
-| **v1.8** | **It does a whole job** | **Content Studio — one sentence to a publishable 公众号 / 小红书 post + browser ref interaction** | ✅ Released |
-| **v1.9** | **It's on duty** | **Agent Team standing rosters + Agent Loop resident cycles = a department that runs itself** | 📋 Planned |
+| **v1.8** | It does a whole job | Content Studio — one sentence to a publishable 公众号 / 小红书 post + browser ref interaction | ✅ Released |
+| **v2.0** | **It leads a team** | **Agent Teams + a shared task board — the lead decomposes and dispatches, members run in parallel, deliverables and full observability** | ✅ Released |
+| **Next** | **It's on duty** | **Agent Loop resident cycles + team follow-through (peer review / team goals / group binding / retrospectives) = a department that runs itself** | 📋 Planned |
 
 ---
 

@@ -57,7 +57,7 @@ class LifecycleFlagGuardTest {
         }
 
         verify(memoryManager, never()).prefetchAll(any(), any(), any());
-        verify(memoryManager, never()).syncAll(any(), any(), any(), any());
+        verify(memoryManager, never()).syncAll(any(), any(), any(), any(), any());
         verify(memoryManager, never()).onSessionEnd(any(), any());
     }
 
@@ -99,7 +99,7 @@ class LifecycleFlagGuardTest {
             mediator.afterLlmCall(new TurnContext(1L, "c1", "s1", i, "hello"), "reply-" + i);
         }
 
-        verify(memoryManager, times(10)).syncAll(eq(1L), eq("c1"), eq("hello"), anyString());
+        verify(memoryManager, times(10)).syncAll(eq(1L), eq("c1"), eq("hello"), anyString(), any());
     }
 
     @Test
@@ -143,7 +143,7 @@ class LifecycleFlagGuardTest {
     @DisplayName("Provider exception in syncAll degrades gracefully (no throw)")
     void syncException_graceful() {
         org.mockito.Mockito.doThrow(new RuntimeException("boom"))
-                .when(memoryManager).syncAll(any(), any(), any(), any());
+                .when(memoryManager).syncAll(any(), any(), any(), any(), any());
 
         // Should not throw
         mediator.afterLlmCall(new TurnContext(1L, "c1", "s1", 1, "q"), "reply");

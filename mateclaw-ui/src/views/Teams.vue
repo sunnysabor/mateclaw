@@ -120,7 +120,7 @@
               <div class="board-col__head">
                 <span class="board-col__dot" :class="`dot--${col.key}`"></span>
                 <span class="board-col__label">{{ col.label }}</span>
-                <span class="board-col__count">{{ col.tasks.length }}</span>
+                <span class="board-col__count">{{ col.total }}</span>
               </div>
               <div class="board-col__body">
                 <div
@@ -142,6 +142,11 @@
                     <div class="task-card__progress-bar" :style="{ width: vo.task.progressPercent + '%' }"></div>
                   </div>
                 </div>
+                <button
+                  v-if="col.hasMore"
+                  class="board-col__more"
+                  @click="loadMoreColumn(col.key)"
+                >{{ t('teams.loadMore', { loaded: col.tasks.length, total: col.total }) }}</button>
               </div>
             </div>
           </div>
@@ -514,20 +519,42 @@ const activeTab = ref('board')
 // ==================== board columns ====================
 
 const COLUMN_DEFS = [
-  { key: 'todo', statuses: ['pending', 'blocked'] },
-  { key: 'in_progress', statuses: ['in_progress'] },
-  { key: 'in_review', statuses: ['in_review'] },
-  { key: 'completed', statuses: ['completed'] },
-  { key: 'closed', statuses: ['failed', 'cancelled', 'stale'] },
+  { key: 'todo', statuses: ['pending', 'blocked'], terminal: false },
+  { key: 'in_progress', statuses: ['in_progress'], terminal: false },
+  { key: 'in_review', statuses: ['in_review'], terminal: false },
+  { key: 'completed', statuses: ['completed'], terminal: true },
+  { key: 'closed', statuses: ['failed', 'cancelled', 'stale'], terminal: true },
 ] as const
 
 const boardColumns = computed(() =>
-  COLUMN_DEFS.map((col) => ({
-    key: col.key,
-    label: t(`teams.column.${col.key}`),
-    tasks: store.tasks.filter((vo) => (col.statuses as readonly string[]).includes(vo.task.status)),
-  })),
+  COLUMN_DEFS.map((col) => {
+    const colTasks = store.tasks.filter((vo) =>
+      (col.statuses as readonly string[]).includes(vo.task.status),
+    )
+    // Terminal columns are windowed: the header shows the true database
+    // total and the column body ends with a load-more control.
+    const total = col.key === 'completed' ? store.completedTotal
+      : col.key === 'closed' ? store.closedTotal
+      : colTasks.length
+    const hasMore = col.key === 'completed' ? store.completedHasMore
+      : col.key === 'closed' ? store.closedHasMore
+      : false
+    return {
+      key: col.key,
+      label: t(`teams.column.${col.key}`),
+      tasks: colTasks,
+      total,
+      hasMore,
+    }
+  }),
 )
+
+async function loadMoreColumn(key: string) {
+  if (!store.currentTeam) return
+  const teamId = store.currentTeam.team.id
+  if (key === 'completed') await store.loadMoreCompleted(teamId)
+  else if (key === 'closed') await store.loadMoreClosed(teamId)
+}
 
 function statusLabel(status?: string) {
   return status ? t(`teams.status.${status}`, status) : ''
@@ -1669,6 +1696,22 @@ async function cancelTask() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.board-col__more {
+  width: 100%;
+  padding: 8px 0;
+  margin-top: 2px;
+  border: 1px dashed var(--mc-border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--mc-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.board-col__more:hover {
+  border-color: var(--mc-primary);
+  color: var(--mc-primary);
 }
 .deliverable-list {
   display: flex;

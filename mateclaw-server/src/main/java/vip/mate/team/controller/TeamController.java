@@ -26,7 +26,6 @@ import java.security.Principal;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
-import java.util.stream.Collectors;
 
 /**
  * Admin REST surface for agent teams: team/membership CRUD, the shared task
@@ -131,8 +130,11 @@ public class TeamController {
     @Operation(summary = "任务板列表")
     @GetMapping("/{id}/tasks")
     public R<List<TaskVO>> listTasks(@PathVariable Long id,
-                                     @RequestParam(required = false) List<String> status) {
-        return R.ok(taskService.listTasks(id, status).stream().map(this::toTaskVO).toList());
+                                     @RequestParam(required = false) List<String> status,
+                                     @RequestParam(required = false) Integer limit,
+                                     @RequestParam(required = false) Integer offset) {
+        return R.ok(taskService.listTasks(id, status, limit, offset).stream()
+                .map(this::toTaskVO).toList());
     }
 
     @Operation(summary = "任务详情（含评论）")
@@ -253,7 +255,11 @@ public class TeamController {
     public SseEmitter events(@PathVariable Long id,
                              @RequestHeader(value = "Last-Event-ID", required = false) Long lastEventId) {
         SseEmitter emitter = new SseEmitter(0L);
-        eventChannel.attach(id, emitter, lastEventId == null ? 0L : lastEventId);
+        // A fresh subscription is an activity ticker, not a transcript: skip
+        // the ring-buffer replay (stale events would render as breaking news)
+        // and deliver live events only. A reconnect carrying Last-Event-ID
+        // keeps the resume-from-where-I-left semantics.
+        eventChannel.attach(id, emitter, lastEventId == null ? Long.MAX_VALUE : lastEventId);
         return emitter;
     }
 
@@ -283,8 +289,7 @@ public class TeamController {
     @Operation(summary = "任务状态统计（看板列头）")
     @GetMapping("/{id}/tasks/stats")
     public R<Map<String, Long>> taskStats(@PathVariable Long id) {
-        return R.ok(taskService.listTasks(id, null).stream()
-                .collect(Collectors.groupingBy(TeamTaskEntity::getStatus, Collectors.counting())));
+        return R.ok(taskService.countByStatus(id));
     }
 
     // ==================== helpers / DTOs ====================

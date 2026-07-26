@@ -217,8 +217,8 @@ Think of it as "Maven Local Repository, but for skills" — except the local rep
 
 Two sync passes run at boot, so every node has the latest bundle:
 
-1. `SkillWorkspaceBootstrapRunner` → `BundledSkillSyncer` scans the classpath `skills/` directory and syncs **bundled skills** into the workspace root. **Only syncs when the target directory doesn't exist**, so it never clobbers local modifications.
-2. `SkillFileSyncer` diffs `mate_skill_file` (DB) against the local workspace (FS) by `sha256` and materializes anything missing or stale.
+1. `SkillWorkspaceBootstrapRunner` → `BundledSkillSyncer` scans the classpath `skills/` directory, syncs **bundled skills** into the workspace root, and persists their `scripts/` and `references/` into `mate_skill_file`. Local modifications are normally left alone; but if the on-disk `scripts/` directory has vanished entirely (2.0.0 hardening), it is force-restored from the classpath — a built-in skill's scripts can't stay permanently maimed by one accidental delete.
+2. `SkillFileSyncer` diffs `mate_skill_file` (DB) against the local workspace (FS) by `sha256` and materializes anything missing or stale; for built-in skills with script files in neither DB nor disk, it backfills from the classpath (2.0.0 self-heal path).
 
 **Why this matters for multi-instance deployments**: one node accepts the upload, the DB row + file rows are written, every other node either restarts or hits `POST /api/v1/skills/{id}/sync-files` to receive the full bundle. No NFS, no scp loop, even desktop clients can hand a skill off across machines.
 
@@ -231,6 +231,7 @@ Third-party packagers package weirdly — some put `setup.sh` at the zip root, s
 - **Two-pass extraction** — the entire archive is buffered in memory first (cap-protected, 50 MB by default via `mateclaw.skill.upload.max-total-size-mb`), `SKILL.md` is located and the wrapper-dir prefix computed, then entries are classified. **Zip entry order no longer affects the result.**
 - **Root-level extension fallback** — files sitting next to `SKILL.md` that aren't already under a known bucket get classified by extension: `.sh / .py / .js / .rb / ...` → `scripts/`, `.md / .json / .yaml / .csv / ...` → `references/`. Unknown extensions are dropped with a `WARN` line so packaging mistakes surface instead of vanishing.
 - **Write-then-prune + empty-bundle guard** — reinstalls **write new files first, then prune anything in the bucket that's not in the new bundle**. If the new bundle has zero entries for a bucket (`scripts/` or `references/`), the disk copies for that bucket are **left alone** — a malformed re-extract can no longer wipe your scripts. Pass `forcePrune=true` if you really want to clear a bucket via an intentionally empty bundle.
+- **No more mojibake in CJK file names** (2.0.0) — zip entry names and file content have their encodings **detected independently**: an archive built by a Windows packer with GBK entry names and UTF-8 content decodes each side correctly, so you no longer get "garbled names but readable content" (or the reverse) after install.
 
 > Real failure this catches: the official tencent-meeting-mcp zip puts `setup.sh` at the package root (not under `scripts/`). The old extractor silently dropped it; the new one auto-classifies it as `scripts/setup.sh` and the skill installs ready to run.
 
@@ -245,6 +246,27 @@ mateclaw:
       delete-policy: archive                 # `archive` or `ignore`
       bundled-skills-path: skills
 ```
+
+---
+
+## Single-source SKILL.md (2.0.0+)
+
+Before 2.0.0 there was a hidden fork: the runtime read SKILL.md from the workspace directory while the admin console read the database column. An employee editing the file with shell tools in a chat session changed runtime behavior invisibly to the console; conversely, one failed export left agents executing stale content the console claimed was current.
+
+Now the two sides run a **three-way reconcile**, anchored on a sidecar recording the hash at last sync: file-side edits ingest into the DB, DB-side edits materialize to the file, and a two-sided conflict resolves **DB-wins** with the file side kept as a `SKILL.md.bak` backup. A blank file never overwrites non-blank DB content; a blank DB backfills from the file. The reconcile runs on every convention-path resolve, and opening a skill's detail in the console performs a read-time reconcile too — **what you see in the console is what the employee executes.**
+
+(Skills with an explicit `skillDir` stay file-authoritative, mirroring their content into the DB column for display.)
+
+---
+
+## Bundle file management: scripts, references and templates editable from the console (2.0.0+)
+
+The detail drawer used to show and edit only SKILL.md; `scripts/` and `references/` had no console surface at all, and `templates/` wasn't even in the canonical store's bucket set. Now:
+
+- **`/api/v1/skills/{id}/files` admin endpoints**: list / read / upsert / delete a skill's bundle files. Writes land on the canonical `mate_skill_file` row, materialize the workspace cache, and re-resolve the skill immediately — **the employee's next call runs the new script**.
+- **`templates/` becomes a first-class bucket**: DB-persisted like `scripts/` and `references/`, included in sync and backfill, protected by the empty-bundle prune guard.
+- **Path envelope**: only the three convention buckets are allowed and traversal is blocked; built-in skill files stay read-only (restored from the shipped bundle on upgrade); virtual MCP / ACP skills own no files.
+- **Agent-side writes persist too**: when a skill edits its own bundle files via `write_file` in a session, the change mirrors into the canonical store — console and runtime never disagree again.
 
 ---
 
@@ -339,9 +361,17 @@ Generate a standup update by analyzing recent git activity.
 
 ---
 
-## Workspace isolation
+## Workspace isolation (fully sealed in 2.0.0)
 
-Each workspace gets its own copy of skills. When you enable a skill for a workspace, its files are staged under that workspace's directory, the skill's tools are scoped to that workspace, and any file the skill writes stays inside the workspace boundary. As of v1.4 the skill **catalog and runtime are scoped per workspace** too, so each workspace sees and runs only its own skills. See [Workspaces](./workspaces).
+Each workspace gets its own copy of skills. When you enable a skill for a workspace, its files are staged under that workspace's directory, the skill's tools are scoped to that workspace, and any file the skill writes stays inside the workspace boundary.
+
+2.0.0 seals the isolation through **every layer of storage and execution**:
+
+- **Same-named skills coexist across workspaces.** Install dedup, name uniqueness, and reinstall/uninstall lookups all filter by workspace — workspace A's "book-meeting" skill no longer blocks workspace B from installing its own.
+- **Filesystem paths encode the workspace.** The skill directory scheme includes the workspaceId, so two same-named skills own separate directories — no more sharing one directory, overwriting each other, or scripts landing in the neighbor's house.
+- **Runtime resolution is scoped to the conversation's workspace.** `load_skill`, skill file reads, script runs and auto-redirect all resolve only within "this conversation's workspace + builtin + global virtual" — an employee in one workspace cannot read or execute another workspace's same-named skill.
+
+See [Workspaces](./workspaces).
 
 ---
 

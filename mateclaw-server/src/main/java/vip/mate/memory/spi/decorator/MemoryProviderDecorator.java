@@ -28,6 +28,9 @@ public abstract class MemoryProviderDecorator implements MemoryProvider {
     @Override public void syncTurn(Long agentId, String conversationId, String userMessage, String assistantReply) {
         delegate.syncTurn(agentId, conversationId, userMessage, assistantReply);
     }
+    @Override public void syncTurn(Long agentId, String conversationId, String userMessage, String assistantReply, String ownerKey) {
+        delegate.syncTurn(agentId, conversationId, userMessage, assistantReply, ownerKey);
+    }
     @Override public List<Object> getToolBeans() { return delegate.getToolBeans(); }
     @Override public void onSessionEnd(Long agentId, String conversationId) { delegate.onSessionEnd(agentId, conversationId); }
     @Override public String onPreCompress(Long agentId, List<?> messages) { return delegate.onPreCompress(agentId, messages); }

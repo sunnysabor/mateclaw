@@ -23,6 +23,9 @@ features:
   - icon: 🧑‍💼
     title: 数字员工，不是聊天机器人
     details: 你雇佣同事，不是开聊天框。每位有角色 / 目标 / 背景故事、像素艺术头像、专属配色——5 个职业模板开箱可用。ReAct + Plan-and-Execute 双模式，员工之间并行委派。
+  - icon: 🤝
+    title: 团队，不是单打独斗
+    details: 建一个团队：Lead 把目标拆成任务落到共享任务板，成员并行执行，依赖自动编排、前置结果自动传递、结果自动通报汇总。执行租约、取消即中断、审批卡点、交付物与任务时间线——2.0.0 起，一支队伍围着一块看板干活。
   - icon: 🧩
     title: 技能是骨架，不是插件
     details: 一份 SKILL.md + 一份 LESSONS.md（用得越多越聪明）。8 个起步模板，向导 5 步出包，安装前自动 Pre-flight 检查。MCP / ACP 双桥接，连 Claude Code、Codex 都能进来当员工。

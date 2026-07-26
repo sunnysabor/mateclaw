@@ -66,7 +66,7 @@ public class TeamTasksTool {
             + "'retry' a failed/stale task back to pending (lead only; taskId). "
             + "Only usable when you belong to an agent team.")
     public String team_tasks(
-            @ToolParam(description = "One of: list, get, create, complete, progress, comment, cancel, retry")
+            @ToolParam(description = "One of: list, get, create, complete, progress, comment, attach, cancel, retry")
             String action,
             @ToolParam(description = "Task id (string form is fine) — required by every action except list/create", required = false)
             String taskId,

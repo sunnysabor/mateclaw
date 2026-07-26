@@ -940,8 +940,15 @@ export const teamApi = {
   addMember: (id: string, agentId: string, role: string) =>
     http.post(`/teams/${id}/members`, { agentId, role }),
   removeMember: (id: string, agentId: string) => http.delete(`/teams/${id}/members/${agentId}`),
-  listTasks: (id: string, status?: string[]) =>
-    http.get(`/teams/${id}/tasks`, { params: status?.length ? { status: status.join(',') } : {} }),
+  listTasks: (id: string, status?: string[], opts?: { limit?: number; offset?: number }) =>
+    http.get(`/teams/${id}/tasks`, {
+      params: {
+        ...(status?.length ? { status: status.join(',') } : {}),
+        ...(opts?.limit != null ? { limit: opts.limit } : {}),
+        ...(opts?.offset != null ? { offset: opts.offset } : {}),
+      },
+    }),
+  taskStats: (id: string) => http.get(`/teams/${id}/tasks/stats`),
   getTask: (id: string, taskId: string) => http.get(`/teams/${id}/tasks/${taskId}`),
   createTask: (
     id: string,

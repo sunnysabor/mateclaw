@@ -52,6 +52,7 @@ export default {
     deliverables: '交付物',
     viewRun: '查看执行过程',
     timeline: '时间线',
+    loadMore: '加载更多（{loaded}/{total}）',
     eventType: {
       created: '创建',
       dispatched: '派发',

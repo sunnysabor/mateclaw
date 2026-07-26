@@ -1388,14 +1388,16 @@ public class WebChatController {
     }
 
     /**
-     * 重新生成最后一条助手回复。
+     * Regenerate the last assistant reply.
      * <p>
-     * 语义:找到会话最后一条 {@code role=user} 消息 → stop 当前流(如有)→ 删除最后一条
-     * {@code role=assistant} 消息 → 用 last user message 重新启动 agent turn。
-     * 实际启动复用 {@link #chatStream},它会重新 saveMessage user(新消息 id,内容相同)。
-     * 这样不重复 100 行 SSE 代码,代价是用户消息多一条(语义上等同"重发")。
+     * Semantics: stop any in-flight stream, rewind the conversation to the last
+     * {@code role=user} message (removing the trailing assistant reply), then
+     * re-run the agent turn from that message. The restart reuses
+     * {@link #chatStream} with {@code internalSkipUserPersist} set, so the
+     * existing user row is used as the seed and no duplicate user message is
+     * inserted.
      * <p>
-     * 没有任何 user 消息时返回 400(无内容可重新生成)。
+     * Returns an error when the conversation has no user message to regenerate from.
      */
     @Operation(summary = "重新生成最后一条助手回复")
     @PostMapping(value = "/sessions/regenerate", produces = MediaType.TEXT_EVENT_STREAM_VALUE)

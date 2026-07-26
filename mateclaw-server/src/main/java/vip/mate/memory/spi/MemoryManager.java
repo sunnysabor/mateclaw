@@ -189,9 +189,19 @@ public class MemoryManager {
      */
     public void syncAll(Long agentId, String conversationId,
                         String userMessage, String assistantReply) {
+        syncAll(agentId, conversationId, userMessage, assistantReply, null);
+    }
+
+    /**
+     * Owner-scoped post-turn sync. Passes the same resolved memory
+     * {@code ownerKey} that prefetch used, so owner-aware providers persist
+     * the turn under the identifier their recall path queries by.
+     */
+    public void syncAll(Long agentId, String conversationId,
+                        String userMessage, String assistantReply, String ownerKey) {
         for (MemoryProvider provider : providers) {
             try {
-                provider.syncTurn(agentId, conversationId, userMessage, assistantReply);
+                provider.syncTurn(agentId, conversationId, userMessage, assistantReply, ownerKey);
             } catch (Exception e) {
                 log.warn("[MemoryManager] Provider '{}' syncTurn failed: {}",
                         provider.id(), e.getMessage());

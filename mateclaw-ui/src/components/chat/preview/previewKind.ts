@@ -7,7 +7,8 @@ import type { ChatAttachment } from '@/types'
  * - 'docx'   — rendered client-side with docx-preview
  * - 'sheet'  — xlsx/csv parsed client-side with exceljs
  * - 'text'   — markdown / code / plain text, reuses the chat markdown renderer
- * - 'html'   — rendered inside a fully sandboxed iframe (no scripts, no origin)
+ * - 'html'   — rendered inside a sandboxed iframe (scripts allowed, opaque
+ *              origin — no same-origin access)
  * - 'office' — needs server-side conversion to PDF (soffice); the frontend
  *              requests `{url}/preview` and renders the result as 'pdf'.
  *              Falls back to download when the server has no converter (501).

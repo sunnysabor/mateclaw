@@ -308,6 +308,17 @@ curl http://localhost:18088/api/v1/approval/grants \
   -H "Authorization: Bearer <token>"
 ```
 
+### Auto-approval: hits visible, misses explainable (2.0.0+)
+
+The most maddening pre-2.0 scenario: you configured an auto-approval grant exactly as intuition suggested, and tool calls **still** went to human review — the grants page said "enabled", the audit log said only "needs approval", and nothing anywhere told you why the grant didn't fire. 2.0.0 makes the whole chain transparent:
+
+- **Miss reasons are classified.** The resolver no longer lumps every miss into "no grant": **a grant exists but its severity ceiling is too low** (e.g. a LOW ceiling blocking a HIGH call — the most common trap), no candidate grant at all, workspace mismatch, CRITICAL forced to human review… each gets its own reason code.
+- **The outcome lands on the audit row.** Every guard audit row records the auto-approval outcome and reason — auto-approved calls no longer misleadingly show "needs approval", and calls that went to review show *why* at a glance. Audit rows also carry the real pending-approval id, so you can jump from audit straight to that approval.
+- **One-click grant creation from the audit page.** When you see a "severity ceiling too low" miss, a **create grant** shortcut sits right on the audit row, pre-filled with the tool name, scope, and suggested ceiling — no re-configuring from memory.
+- **Anti-footgun forms.** Scope IDs switch from free text to **scope-typed pickers** (pick an agent for AGENT scope, a conversation for CONVERSATION, a workspace for WORKSPACE), eradicating type-mismatched dead grants at the source; the severity ceiling carries semantic hints ("LOW only auto-approves low-severity calls"); and **cross-workspace dead configurations are rejected at creation** — a grant that could never fire is called out on the spot instead of leaving you guessing in the audit log.
+
+The hard floors are unchanged: CRITICAL always goes to a human, and safety-floor blocks stay non-negotiable.
+
 ---
 
 ## File Guard

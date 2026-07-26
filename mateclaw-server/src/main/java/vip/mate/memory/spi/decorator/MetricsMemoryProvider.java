@@ -58,9 +58,14 @@ public class MetricsMemoryProvider extends MemoryProviderDecorator {
 
     @Override
     public void syncTurn(Long agentId, String conversationId, String userMessage, String assistantReply) {
+        syncTurn(agentId, conversationId, userMessage, assistantReply, null);
+    }
+
+    @Override
+    public void syncTurn(Long agentId, String conversationId, String userMessage, String assistantReply, String ownerKey) {
         syncTimer.record(() -> {
             try {
-                delegate.syncTurn(agentId, conversationId, userMessage, assistantReply);
+                delegate.syncTurn(agentId, conversationId, userMessage, assistantReply, ownerKey);
             } catch (Exception e) {
                 meterRegistry.counter("memory.sync.failures",
                         "provider", delegate.id()).increment();

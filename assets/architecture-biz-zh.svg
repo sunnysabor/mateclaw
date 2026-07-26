@@ -105,10 +105,10 @@
   <line x1="640" y1="400" x2="508" y2="340" stroke="#d96d46" stroke-width="1.5" stroke-dasharray="4,3" opacity="0.4"/>
   <polygon points="513,344 504,342 511,336" fill="#d96d46" opacity="0.5"/>
 
-  <!-- ===== Orchestration tier (NEW 1.3.0): Workflow + Trigger ===== -->
-  <rect x="350" y="358" width="260" height="36" rx="10" fill="url(#primary)" filter="url(#shadow)"/>
-  <text x="480" y="376" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">业务编排 · 工作流 + 触发器</text>
-  <text x="480" y="389" text-anchor="middle" font-size="9" fill="#fde7dd">事件触发 → 多员工协作 → 审批 / 分发 / 写记忆</text>
+  <!-- ===== Orchestration tier: Team board + Workflow + Trigger ===== -->
+  <rect x="310" y="358" width="340" height="36" rx="10" fill="url(#primary)" filter="url(#shadow)"/>
+  <text x="480" y="376" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">业务编排 · 团队任务板（2.0.0+）+ 工作流 + 触发器</text>
+  <text x="480" y="389" text-anchor="middle" font-size="9" fill="#fde7dd">Lead 拆解派发 → 成员并行执行 → 审批 / 交付物 / 分发 / 写记忆</text>
 
   <!-- ===== Bottom Center: Models + Failover ===== -->
   <rect x="370" y="420" width="220" height="64" rx="12" fill="url(#accent)" filter="url(#shadow)"/>

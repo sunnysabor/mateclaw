@@ -72,7 +72,7 @@ class MemoryLifecycleMediatorTest {
         TurnContext ctx = new TurnContext(1L, "c1", "s1", 1, "hello");
         mediator.afterLlmCall(ctx, "reply text");
 
-        verify(memoryManager).syncAll(1L, "c1", "hello", "reply text");
+        verify(memoryManager).syncAll(1L, "c1", "hello", "reply text", null);
 
         ArgumentCaptor<Object> eventCaptor = ArgumentCaptor.forClass(Object.class);
         verify(eventPublisher).publishEvent(eventCaptor.capture());
@@ -107,7 +107,7 @@ class MemoryLifecycleMediatorTest {
     @DisplayName("afterLlmCall swallows syncAll exceptions")
     void afterLlmCall_exceptionSwallowed() {
         doThrow(new RuntimeException("sync failed"))
-                .when(memoryManager).syncAll(any(), any(), any(), any());
+                .when(memoryManager).syncAll(any(), any(), any(), any(), any());
 
         // Should not throw
         mediator.afterLlmCall(new TurnContext(1L, "c1", "s1", 1, "q"), "reply");
@@ -150,6 +150,6 @@ class MemoryLifecycleMediatorTest {
         }
 
         verify(memoryManager, times(5)).prefetchAll(eq(1L), any(), any());
-        verify(memoryManager, times(5)).syncAll(eq(1L), eq("c1"), any(), any());
+        verify(memoryManager, times(5)).syncAll(eq(1L), eq("c1"), any(), any(), any());
     }
 }

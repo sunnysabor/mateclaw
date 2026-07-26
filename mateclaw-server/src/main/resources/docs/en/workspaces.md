@@ -186,6 +186,12 @@ Workspace memory files (PROFILE.md, MEMORY.md, daily notes) live under `workspac
 
 Each channel binds to exactly one agent, so transitively to exactly one workspace. A DingTalk bot configured in workspace A is completely separate from a DingTalk bot configured in workspace B, even if they're configured to connect to the same DingTalk application (you probably don't want that, but it's technically allowed).
 
+As of 2.0.0, **conversation id generation encodes the channel identity** — two same-type channels created in different workspaces keep separate conversation rows even for the same external user; two workspaces' chats can no longer land in one conversation.
+
+### Skills (2.0.0)
+
+Same-named skills coexist independently across workspaces: install dedup filters by workspace, disk directories encode the workspaceId, and runtime load / file reads / script runs resolve only within the conversation's workspace (+ builtin + global virtual). An employee in one workspace can neither read nor execute another workspace's same-named skill. See [Skills](./skills).
+
 ---
 
 ## What isolation does NOT cover
@@ -194,6 +200,15 @@ Each channel binds to exactly one agent, so transitively to exactly one workspac
 - **Audit log cross-workspace access** — security admins with the right permissions can query audit events across all workspaces. This is intentional — you want to see suspicious activity regardless of which workspace it happened in.
 - **Token usage reporting** — aggregated globally, broken down per-workspace, per-agent, per-model in the Dashboard.
 - **Model provider costs** — one billing relationship per provider at the global level; per-workspace quotas are on the [Roadmap](./roadmap).
+
+---
+
+## Default storage root and desktop local-tools whitelist (2.0.0+)
+
+Two items landed from issue #512:
+
+- **The default workspace storage root is configurable in the UI.** Each workspace's `base_path` could always be set individually in Security → Workspaces, but the global fallback sandbox root (`mateclaw.workspace.sandbox.root`, default `data/workspace`) used to require an env var or yml edit. It is now a **"default workspace storage path"** setting in the console: files for newly created conversations and workspaces live under it; changing it affects only future creations and **never migrates existing data**.
+- **The desktop local-tools whitelist supports per-entry removal.** The whitelist of directories local tools may access on desktop used to be managed through a native dialog offering only "add" and "disable" — the delete API was dead code. Whitelisted directories are now **listed and individually removable** in the UI.
 
 ---
 

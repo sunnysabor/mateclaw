@@ -46,9 +46,24 @@ public class PluginMemoryBridge implements MemoryProvider {
     }
 
     @Override
+    public String prefetch(Long agentId, String userQuery, String ownerKey) {
+        // Forward ownerKey to the plugin provider; plugins that don't override the
+        // three-arg variant fall back to the two-arg default (ownerKey dropped).
+        return delegate.prefetch(agentId, userQuery, ownerKey);
+    }
+
+    @Override
     public void syncTurn(Long agentId, String conversationId,
                          String userMessage, String assistantReply) {
         delegate.syncTurn(agentId, conversationId, userMessage, assistantReply);
+    }
+
+    @Override
+    public void syncTurn(Long agentId, String conversationId,
+                         String userMessage, String assistantReply, String ownerKey) {
+        // Forward ownerKey to the plugin provider; plugins that don't override the
+        // five-arg variant fall back to the four-arg default (ownerKey dropped).
+        delegate.syncTurn(agentId, conversationId, userMessage, assistantReply, ownerKey);
     }
 
     @Override

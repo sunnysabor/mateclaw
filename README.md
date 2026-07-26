@@ -81,6 +81,9 @@ Same brain. Same memory. Same tools. Different doors.
 ### Digital employees, not chatbots
 You hire coworkers, not chat boxes. Each one has a **Role**, a **Goal**, a **Backstory**, a pixel-art avatar, and a color of their own — five career templates ship ready (Product Researcher · Customer Support · Knowledge Curator · Data Analyst · Executive Assistant). **ReAct** drives iterative reasoning, **Plan-and-Execute** decomposes complex multi-step work, employees can delegate to one another in parallel. Dynamic context pruning, smart truncation, stale-stream cleanup — the boring stuff that makes long conversations actually work.
 
+### Agent Teams (2.0.0+)
+One lead, a crew of employees, one **shared task board**. Tell the lead a goal and it breaks the goal into tasks on the board (`blockedBy` declares dependencies); the dispatch engine hands tasks to members in parallel, prerequisite results hand off to downstream tasks automatically, and settled results are announced back to the lead for synthesis. Execution leases + heartbeats eliminate double execution, **cancel actually interrupts** a running member session, and sensitive tasks park at `in_review` for a human. Deliverables (docx / pptx / xlsx / pdf) register on tasks for download, timelines record everything, and you can jump into any member's child conversation to watch it execute word by word. A Plan-Execute lead hands its **whole plan over to the board** — a lead that can plan turns planning into orchestration.
+
 ### Knowledge & memory
 - **LLM Wiki** — raw materials digest into linked pages with citations; the **hot cache** auto-injects into every employee's system prompt. **Transformations engine** (1.3.0+) turns the Wiki from a search index into a processing pipeline
 - **Workspace memory** — `AGENTS.md`, `SOUL.md`, `PROFILE.md`, `MEMORY.md`, daily notes
@@ -229,7 +232,7 @@ Desktop binaries ship via [GitHub Releases](https://github.com/mateaix/mateclaw/
 | Layer | Technology |
 |---|---|
 | Backend | Spring Boot 3.5 · Spring AI Alibaba 1.1 · MyBatis Plus · Flyway |
-| Digital Employee Runtime | StateGraph · ReAct + Plan-Execute · Role / Goal / Backstory · LESSONS self-evolution |
+| Digital Employee Runtime | StateGraph · ReAct + Plan-Execute · Role / Goal / Backstory · LESSONS self-evolution · Team task board (2.0.0+) |
 | Orchestration | Workflow (7 step modes · Pebble DSL) · Triggers (6 pattern types · event governance) · Wiki Transformations (1.3.0+) |
 | Capability Extension | SKILL.md packages · MCP (stdio / SSE / HTTP · per-agent binding) · ACP bridge (Claude Code / Codex) |
 | Database | H2 (dev) · MySQL 8.0+ (prod) |
@@ -245,6 +248,19 @@ Desktop binaries ship via [GitHub Releases](https://github.com/mateaix/mateclaw/
 Full docs at **[claw.mate.vip/docs](https://claw.mate.vip/docs)** — setup, architecture, each subsystem, API reference.
 
 ## Roadmap
+
+**v2.0.0 (shipped 2026-07-26)** — from "one person who gets things done" to "a team that collaborates": **Agent Teams** become a standing roster around a shared task board:
+
+- **Agent teams and a shared task board** — teams / roles (lead · member · reviewer), an eight-status kanban, `blockedBy` dependency orchestration, member-level parallel dispatch, automatic prerequisite hand-off, settled results waking the lead; the Teams page ships an event-driven live board + activity banner + task timelines + deliverable downloads + manual task creation
+- **An execution chain hardened for long tasks** — execution leases + runtime heartbeats against double execution, cancel that actually interrupts, `in_review` approval gates, retry for failed/stale
+- **Plan-Execute plans hand over to the board** — steps become tasks, dependencies become parallelism, a parked-plan resume gate synthesizes deterministically
+- **Workspace isolation fully sealed** — channel-scoped conversation ids; same-named skills coexist per workspace with conversation-scoped runtime resolution
+- **Channel experience** — magic commands on every channel (`/new` `/clear` `/status` `/stop` `/model` `/help`), WeCom's event-driven progress bubble (live tool trace + per-stage rolling narration)
+- **Server-side rewind / regenerate** · **explainable auto-approval misses** (reason codes on audit rows + one-click grant creation) · **policy-driven LLM error recovery** (overload vs rate-limit split · `Retry-After`-aware backoff · provider TTL readmission)
+
+Plus: in-chat attachment preview (pdf / docx / xlsx / html / text), single-source SKILL.md + console bundle-file management, the optional Mem0 plugin memory provider, and the knowledge-graph relation schema whitelist.
+
+Full story in the [v2.0.0 release notes](https://claw.mate.vip/docs/en/releases/2.0.0).
 
 **v1.8.0 (shipped 2026-07-12)** — the employee turns *outward and does a whole job*: **Content Studio**, the first flagship scene built end-to-end on MateClaw's own primitives:
 
