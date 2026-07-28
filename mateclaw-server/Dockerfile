@@ -42,12 +42,19 @@ ARG MAVEN_FLAGS=""
 COPY mateclaw-server/settings.xml /root/.m2/settings.xml
 
 # Copy the root parent plus module POMs first for Docker layer caching.
+#
+# This list MUST mirror <modules> in the root pom.xml, even for modules this
+# image never builds. Maven fails while constructing the reactor if a declared
+# module directory is missing ("Child module /build/<name> does not exist"),
+# so `-pl mateclaw-server -am` aborts before it ever gets to dependency
+# resolution. When a module is added to the root POM, add its pom.xml here too.
 WORKDIR /build
 COPY pom.xml ./pom.xml
 COPY mateclaw-plugin-api/pom.xml mateclaw-plugin-api/pom.xml
 COPY mateclaw-server/pom.xml mateclaw-server/pom.xml
 COPY mateclaw-plugin-sample/pom.xml mateclaw-plugin-sample/pom.xml
 COPY mateclaw-plugin-search-sample/pom.xml mateclaw-plugin-search-sample/pom.xml
+COPY mateclaw-plugin-mem0/pom.xml mateclaw-plugin-mem0/pom.xml
 
 # Pre-fetch backend dependencies through the reactor so the parent POM,
 # dependencyManagement, and internal module versions all resolve consistently.

@@ -2635,8 +2635,12 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                     .blockLast(Duration.ofMinutes(5));
 
             String finalContent = accumulator.toString();
-            if (finalContent.isBlank()) {
-                finalContent = "（无回复内容）";
+            // Card streaming never touches renderAndSend, so the channel's
+            // message-filter config has to be applied here — otherwise
+            // filter_thinking / filter_tool_messages are inert on this path.
+            String cardContent = filterOutboundContent(finalContent);
+            if (cardContent.isBlank()) {
+                cardContent = "（无回复内容）";
             }
             // Strip any /api/v1/files/generated/{id} URLs out of the card
             // text (replacing each with a "📎 filename" marker) AND send
@@ -2645,11 +2649,11 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             // the user sees a broken-looking download link instead of the
             // actual file. Cache-miss URLs fall back to the user-facing
             // retry hint that GeneratedFileScrubber emits.
-            String renderedContent = scrubAndSendAttachments(receiveId, finalContent);
+            String renderedContent = scrubAndSendAttachments(receiveId, cardContent);
             streamingCardManager.finishCard(sessionKey, renderedContent);
             log.info("[feishu-stream] Card streaming completed: sessionKey={}, contentLen={}",
                     sessionKey, renderedContent.length());
-            return finalContent;
+            return finalContent.isBlank() ? cardContent : finalContent;
 
         } catch (Exception e) {
             log.error("[feishu-stream] Card streaming failed: sessionKey={}, err={}",
@@ -2686,7 +2690,11 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                 })
                 .blockLast(Duration.ofMinutes(5));
         String finalContent = accumulator.toString();
-        if (!finalContent.isBlank()) {
+        // sendMessage is called directly (rather than renderAndSend) because
+        // Feishu does its own card/text split and chunking, so the channel's
+        // message-filter config is applied explicitly here.
+        String outbound = filterOutboundContent(finalContent);
+        if (!outbound.isBlank()) {
             String replyTarget = message.getReplyToken() != null
                     ? message.getReplyToken()
                     : (message.getChatId() != null ? message.getChatId() : message.getSenderId());
@@ -2694,7 +2702,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                 // Same scrub-and-upload hop as the streaming card finish path —
                 // a generated-file URL in plain text would otherwise reach the
                 // user as a markdown link that opens to nothing useful in IM.
-                String renderedContent = scrubAndSendAttachments(replyTarget, finalContent);
+                String renderedContent = scrubAndSendAttachments(replyTarget, outbound);
                 sendMessage(replyTarget, renderedContent);
             }
         }

@@ -361,15 +361,21 @@ public class DingTalkChannelAdapter extends AbstractChannelAdapter implements St
                     .blockLast(Duration.ofMinutes(5));
 
             // Step 3: 完成
-            String finalContent = contentAccumulator.toString();
-            if (finalContent.isBlank()) {
-                finalContent = "（无回复内容）";
+            // The AI Card path never touches renderAndSend, so the channel's
+            // message-filter config has to be applied here — otherwise
+            // filter_thinking / filter_tool_messages are inert whenever AI
+            // Card mode is on. The unfiltered text is still what we return,
+            // so persistence keeps the model's original answer.
+            String rawContent = contentAccumulator.toString();
+            String cardContent = filterOutboundContent(rawContent);
+            if (cardContent.isBlank()) {
+                cardContent = "（无回复内容）";
             }
-            aiCardManager.finishCard(outTrackId, finalContent);
+            aiCardManager.finishCard(outTrackId, cardContent);
 
             log.info("[dingtalk] AI Card streaming completed: outTrackId={}, contentLen={}",
-                    outTrackId, finalContent.length());
-            return finalContent;
+                    outTrackId, cardContent.length());
+            return rawContent.isBlank() ? cardContent : rawContent;
 
         } catch (Exception e) {
             log.error("[dingtalk] AI Card streaming failed: outTrackId={}, error={}",
