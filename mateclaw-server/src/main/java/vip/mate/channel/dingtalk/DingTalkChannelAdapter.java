@@ -27,6 +27,8 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * 钉钉渠道适配器
@@ -61,6 +63,12 @@ public class DingTalkChannelAdapter extends AbstractChannelAdapter implements St
 
     /** AI Card 管理器（message_type=card 时初始化） */
     private DingTalkAICardManager aiCardManager;
+
+    /**
+     * Off-callback worker for inbound parsing, so the Stream frame is acked
+     * immediately. See {@link #dispatchInbound}.
+     */
+    private volatile ExecutorService inboundExecutor;
 
     /** 钉钉媒体上传器（doStart 时初始化） */
     private DingTalkMediaUploader mediaUploader;
@@ -118,6 +126,11 @@ public class DingTalkChannelAdapter extends AbstractChannelAdapter implements St
 
         // 启动 Stream 模式或 Webhook 模式
         if (isStreamMode()) {
+            this.inboundExecutor = Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "dingtalk-inbound-" + channelEntity.getId());
+                t.setDaemon(true);
+                return t;
+            });
             startStreamMode(clientId, clientSecret);
         } else {
             log.info("[dingtalk] Webhook mode: waiting for callbacks at /api/v1/channels/webhook/dingtalk");
@@ -234,10 +247,42 @@ public class DingTalkChannelAdapter extends AbstractChannelAdapter implements St
                 return;
             }
 
-            handleWebhook(payload);
+            dispatchInbound(payload);
         } catch (Exception e) {
             log.error("[dingtalk-stream] Failed to parse stream message: {}", e.getMessage(), e);
         }
+    }
+
+    /**
+     * Hand the parsed payload to a worker and return, so the SDK can ack the
+     * Stream frame immediately.
+     *
+     * <p>{@link #handleWebhook} resolves media inline — each attachment costs a
+     * download-URL call plus a byte fetch against DingTalk. Running that on the
+     * callback thread delays the ack by however long the downloads take, and a
+     * late ack makes DingTalk redeliver the message: the user gets the same
+     * answer once per redelivery. Acking first removes the cause; the router's
+     * inbound claim is the second line of defence for redeliveries we can't
+     * prevent.
+     *
+     * <p>Single-threaded on purpose — the agent turn itself already runs on the
+     * router's queue, so this thread only parses, and keeping it serial
+     * preserves the arrival order of a sender's messages.
+     */
+    private void dispatchInbound(Map<String, Object> payload) {
+        ExecutorService executor = inboundExecutor;
+        if (executor == null || executor.isShutdown()) {
+            // Channel stopped mid-flight — process inline rather than drop.
+            handleWebhook(payload);
+            return;
+        }
+        executor.execute(() -> {
+            try {
+                handleWebhook(payload);
+            } catch (Exception e) {
+                log.error("[dingtalk-stream] Inbound dispatch failed: {}", e.getMessage(), e);
+            }
+        });
     }
 
     @Override
@@ -251,6 +296,10 @@ public class DingTalkChannelAdapter extends AbstractChannelAdapter implements St
                 log.warn("[dingtalk-stream] Error stopping stream client: {}", e.getMessage());
             }
             streamClient = null;
+        }
+        if (inboundExecutor != null) {
+            inboundExecutor.shutdownNow();
+            inboundExecutor = null;
         }
         if (aiCardManager != null) {
             aiCardManager.cleanup();

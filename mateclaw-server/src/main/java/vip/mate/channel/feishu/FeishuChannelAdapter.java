@@ -84,9 +84,6 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
     /** 定时 Token 刷新任务 */
     private ScheduledFuture<?> tokenRefreshFuture;
 
-    /** 消息去重：最近处理过的 message_id */
-    private final Set<String> processedMessageIds = ConcurrentHashMap.newKeySet();
-
     /**
      * 群内 bot 别名缓存：chatId → 学到的别名集合（openId / unionId / userId / name）。
      * <p>飞书 SDK 投递的 mention 里，bot 的标识可能是群内自定义别名（{@code ou_357e...} / 自定义名称），
@@ -460,7 +457,6 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             this.botName = null;
             this.botOpenIdLastFailureMs = 0L;
         }
-        this.processedMessageIds.clear();
         this.chatBotAliases.clear();
         this.mentionTracker.clear();
         this.nicknameCache.clear();
@@ -1233,12 +1229,14 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             log.warn("[feishu] require_mention=true but bot open_id unavailable; allowing messageId={}", messageId);
         }
 
-        // 消息去重
-        if (messageId != null && !processedMessageIds.add(messageId)) {
+        // Early duplicate gate. The authoritative claim happens once, in
+        // ChannelMessageRouter.enqueue; this peek only spares a redelivery the
+        // side effects below (the "received" reaction, media downloads) that
+        // would otherwise fire again before the router ever sees the message.
+        if (messageRouter.isDuplicateInbound(channelEntity.getId(), messageId)) {
             log.debug("[feishu] Duplicate message_id: {}, skipping", messageId);
             return;
         }
-        cleanupProcessedIds();
 
         // 添加消息反应（非阻塞，表示"已收到"）
         if (messageId != null && getConfigBoolean("enable_reaction", true)) {
@@ -1297,21 +1295,6 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         // replyToken ��留完整 chatId（��送消息需要完整 ID）
         channelMessage.setReplyToken(chatId);
         onMessage(channelMessage);
-    }
-
-    /**
-     * 清理旧的去重记录：超过 1000 条时保留最近添加的（移除最早的一半）
-     */
-    private void cleanupProcessedIds() {
-        if (processedMessageIds.size() > 1000) {
-            int toRemove = processedMessageIds.size() / 2;
-            var iterator = processedMessageIds.iterator();
-            while (iterator.hasNext() && toRemove > 0) {
-                iterator.next();
-                iterator.remove();
-                toRemove--;
-            }
-        }
     }
 
     // ==================== 消息反应 ====================
