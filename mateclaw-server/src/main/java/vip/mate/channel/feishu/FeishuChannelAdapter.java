@@ -2605,7 +2605,10 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         StringBuilder accumulator = new StringBuilder();
         try {
             stream.doOnNext(delta -> {
-                        if (delta.content() != null) {
+                        // segmentOnly narration is skipped: appending every
+                        // ReAct iteration's "我来查一下…" into the card text is
+                        // what makes the answer read as if it were sent twice.
+                        if (StreamingChannelAdapter.contributesToFinalContent(delta)) {
                             accumulator.append(delta.content());
                             streamingCardManager.appendContent(sessionKey, delta.content(), false);
                         }
@@ -2667,7 +2670,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
     private String processStreamAsText(Flux<StreamDelta> stream, ChannelMessage message) {
         StringBuilder accumulator = new StringBuilder();
         stream.doOnNext(delta -> {
-                    if (delta.content() != null) {
+                    if (StreamingChannelAdapter.contributesToFinalContent(delta)) {
                         accumulator.append(delta.content());
                     }
                 })

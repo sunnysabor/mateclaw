@@ -397,7 +397,10 @@ public class DingTalkChannelAdapter extends AbstractChannelAdapter implements St
         StringBuilder contentAccumulator = new StringBuilder();
         try {
             stream.doOnNext(delta -> {
-                        if (delta.content() != null) {
+                        // segmentOnly narration is skipped: appending every
+                        // ReAct iteration's "我来查一下…" into the card text is
+                        // what makes the answer read as if it were sent twice.
+                        if (StreamingChannelAdapter.contributesToFinalContent(delta)) {
                             contentAccumulator.append(delta.content());
                             aiCardManager.appendContent(outTrackId, delta.content(), false);
                         }
@@ -453,7 +456,7 @@ public class DingTalkChannelAdapter extends AbstractChannelAdapter implements St
         StringBuilder contentAccumulator = new StringBuilder();
 
         stream.doOnNext(delta -> {
-                    if (delta.content() != null) {
+                    if (StreamingChannelAdapter.contributesToFinalContent(delta)) {
                         contentAccumulator.append(delta.content());
                     }
                 })
