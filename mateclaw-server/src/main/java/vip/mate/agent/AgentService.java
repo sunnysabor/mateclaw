@@ -13,6 +13,7 @@ import vip.mate.agent.context.ChatOrigin;
 import vip.mate.agent.context.ChatOriginHolder;
 import vip.mate.agent.event.AgentLifecycleEvent;
 import vip.mate.agent.model.AgentEntity;
+import vip.mate.agent.progress.ProgressLedgerService;
 import vip.mate.agent.repository.AgentMapper;
 import vip.mate.exception.MateClawException;
 import vip.mate.llm.chatmodel.ThinkingLevelHolder;
@@ -72,6 +73,14 @@ public class AgentService {
      */
     @Autowired(required = false)
     private vip.mate.agent.runtime.RunningConversationRegistry runningConversationRegistry;
+
+    /**
+     * Optional — clears leftover auto-recorded ledger entries when a new
+     * user turn starts. Field-injected so existing test constructors of
+     * {@code AgentService} don't need to supply it.
+     */
+    @Autowired(required = false)
+    private ProgressLedgerService progressLedgerService;
 
     /**
      * Runtime Agent instance cache. Keyed first by agentId, then by a model
@@ -296,6 +305,32 @@ public class AgentService {
 
     // ==================== 运行时入口 ====================
 
+    /**
+     * New-user-turn housekeeping: drop auto-recorded ledger entries left
+     * over from the previous turn. They mark past tool calls as DONE, and
+     * the ledger snapshot's "已完成的步骤不要重复执行" instruction would
+     * otherwise stop the agent from re-running status-query tools when the
+     * user repeats a question that needs fresh data.
+     *
+     * <p>Only the fresh-turn entries ({@code chat} / {@code chatStream} /
+     * {@code chatStructuredStream} / {@code execute}) call this. The
+     * approval-replay entries ({@code chatWithReplay*}) resume the SAME
+     * logical turn after a tool approval and must keep the safety net for
+     * work already done before the pause.
+     */
+    private void clearAutoRecordedForNewTurn(String conversationId) {
+        if (progressLedgerService == null || conversationId == null || conversationId.isBlank()) {
+            return;
+        }
+        try {
+            progressLedgerService.clearAutoRecorded(conversationId);
+        } catch (Exception e) {
+            // Ledger housekeeping must never block the chat itself.
+            log.warn("Failed to clear auto-recorded ledger entries for {}: {}",
+                    conversationId, e.getMessage());
+        }
+    }
+
     public String chat(Long agentId, String message, String conversationId) {
         return chat(agentId, message, conversationId, ChatOrigin.EMPTY);
     }
@@ -306,12 +341,8 @@ public class AgentService {
      * down to {@code @Tool} methods via Spring AI {@link org.springframework.ai.chat.model.ToolContext}.
      */
     public String chat(Long agentId, String message, String conversationId, ChatOrigin origin) {
-        AgentEntity entity = getAgent(agentId);
-        if (acpAgentRuntimeService.isAcpAgent(entity)) {
-            return acpAgentRuntimeService.chat(entity, message, conversationId);
-        }
-        ChatOrigin captured = origin != null ? origin : ChatOrigin.EMPTY;
-        memoryRecallTracker.trackRecalls(agentId, message, memoryOwnerResolver.resolve(captured));
+        clearAutoRecordedForNewTurn(conversationId);
+        memoryRecallTracker.trackRecalls(agentId, message);
         BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
         ChatOriginHolder.set(captured);
         try {
@@ -351,15 +382,8 @@ public class AgentService {
     }
 
     public Flux<String> chatStream(Long agentId, String message, String conversationId, ChatOrigin origin) {
-        AgentEntity entity = getAgent(agentId);
-        if (acpAgentRuntimeService.isAcpAgent(entity)) {
-            return acpAgentRuntimeService.chatStructuredStream(entity, message, conversationId)
-                    .map(StreamDelta::content)
-                    .filter(java.util.Objects::nonNull)
-                    .filter(StringUtils::hasText);
-        }
-        ChatOrigin captured = origin != null ? origin : ChatOrigin.EMPTY;
-        memoryRecallTracker.trackRecalls(agentId, message, memoryOwnerResolver.resolve(captured));
+        clearAutoRecordedForNewTurn(conversationId);
+        memoryRecallTracker.trackRecalls(agentId, message);
         BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
         // Capture the origin into a request-scoped holder; cleared on Flux
         // termination so the next reactive subscriber doesn't inherit stale state.
@@ -394,12 +418,8 @@ public class AgentService {
     public Flux<StreamDelta> chatStructuredStream(Long agentId, String message, String conversationId,
                                                    String requesterId, String thinkingLevel,
                                                    ChatOrigin origin) {
-        AgentEntity entity = getAgent(agentId);
-        if (acpAgentRuntimeService.isAcpAgent(entity)) {
-            return acpAgentRuntimeService.chatStructuredStream(entity, message, conversationId);
-        }
-        ChatOrigin captured = origin != null ? origin : ChatOrigin.EMPTY;
-        memoryRecallTracker.trackRecalls(agentId, message, memoryOwnerResolver.resolve(captured));
+        clearAutoRecordedForNewTurn(conversationId);
+        memoryRecallTracker.trackRecalls(agentId, message);
         BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
 
         // 设置请求级思考深度（通过 ThreadLocal 传递到 StateGraph 执行）
@@ -443,12 +463,8 @@ public class AgentService {
     }
 
     public String execute(Long agentId, String goal, String conversationId, ChatOrigin origin) {
-        AgentEntity entity = getAgent(agentId);
-        if (acpAgentRuntimeService.isAcpAgent(entity)) {
-            return acpAgentRuntimeService.chat(entity, goal, conversationId);
-        }
-        ChatOrigin captured = origin != null ? origin : ChatOrigin.EMPTY;
-        memoryRecallTracker.trackRecalls(agentId, goal, memoryOwnerResolver.resolve(captured));
+        clearAutoRecordedForNewTurn(conversationId);
+        memoryRecallTracker.trackRecalls(agentId, goal);
         BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
         ChatOriginHolder.set(captured);
         try {
