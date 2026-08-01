@@ -580,6 +580,10 @@ export const planApi = {
 // ==================== Model ====================
 export const modelApi = {
   listProviders: () => http.get('/models'),
+  // Provider id + name only. /models carries connection settings and is
+  // admin-only, so anything a workspace member can reach (the agent's
+  // preferred-provider picker) has to read the choices from here.
+  listProviderOptions: () => http.get('/models/options'),
   listEnabled: () => http.get('/models/enabled'),
   get: (id: string | number) => http.get(`/models/${id}`),
   getDefault: () => http.get('/models/default'),
