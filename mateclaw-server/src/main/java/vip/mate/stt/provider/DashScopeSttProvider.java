@@ -11,6 +11,7 @@ import vip.mate.llm.service.ModelProviderService;
 import vip.mate.stt.AudioMimeTypes;
 import vip.mate.stt.SttProvider;
 import vip.mate.stt.SttRequest;
+import vip.mate.stt.SttResponseDiagnostics;
 import vip.mate.stt.SttResult;
 import vip.mate.stt.WavPcmExtractor;
 import vip.mate.system.model.SystemSettingsDTO;
@@ -152,14 +153,33 @@ public class DashScopeSttProvider implements SttProvider {
                     .timeout(HTTP_TIMEOUT_MS)
                     .execute();
 
+            String responseBody = response.body();
             if (response.getStatus() != 200) {
-                String error = parseErrorMessage(response.body());
+                String error = parseErrorMessage(responseBody);
+                if (error.isEmpty()) {
+                    // Non-JSON error body (HTML gateway page etc.) — surface
+                    // an excerpt so the failure stays diagnosable.
+                    error = SttResponseDiagnostics.snippet(responseBody);
+                }
                 log.warn("[DashScope STT] HTTP {} — {}", response.getStatus(), error);
                 return SttResult.failure("DashScope STT 失败: HTTP " + response.getStatus()
                         + (error.isEmpty() ? "" : " — " + error));
             }
 
-            String text = parseTranscript(response.body());
+            if (!SttResponseDiagnostics.looksLikeJson(responseBody)) {
+                // A 200 with a non-JSON body never comes from DashScope itself
+                // (the endpoint is hardcoded HTTPS) — it means a proxy or
+                // gateway on the way answered instead. Report that precisely
+                // rather than letting Jackson throw an opaque parse error.
+                String contentType = response.header("Content-Type");
+                log.warn("[DashScope STT] HTTP 200 with non-JSON body (Content-Type: {}) — {}",
+                        contentType, SttResponseDiagnostics.snippet(responseBody));
+                return SttResult.failure("DashScope 返回了非 JSON 响应（HTTP 200，Content-Type: "
+                        + contentType + "）—— 通常是本机代理或网关拦截了请求，请检查代理/防火墙设置。响应片段: "
+                        + SttResponseDiagnostics.snippet(responseBody));
+            }
+
+            String text = parseTranscript(responseBody);
             log.info("[DashScope STT] Transcribed {} chars (model={}, format={}, audioBytes={})",
                     text.length(), model, format, audio.length);
             return SttResult.success(text);
