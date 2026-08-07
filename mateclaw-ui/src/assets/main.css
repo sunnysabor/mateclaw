@@ -39,6 +39,12 @@
   --mc-bg-elevated: #ffffff;
   --mc-bg-sunken: #ebe3db;
   --mc-bg-muted: #f1e8df;
+  /* Hover wash for icon buttons and list rows. Consumers write
+     `background: var(--mc-bg-hover)` with no literal fallback, and an
+     undefined custom property makes the whole declaration compute to the
+     property's initial value — transparent — so a missing definition here
+     silently erases the element's background instead of leaving it alone. */
+  --mc-bg-hover: #ebe3db;
   --mc-surface-strong: #fdfaf6;
   --mc-surface-overlay: rgba(255, 255, 255, 0.72);
   --mc-panel-top: rgba(255, 255, 255, 0.94);
@@ -166,6 +172,7 @@ html.dark {
   --mc-bg-elevated: #221a16;
   --mc-bg-sunken: #2a211c;
   --mc-bg-muted: #201813;
+  --mc-bg-hover: #2a211c;
   --mc-surface-strong: #2a201a;
   --mc-surface-overlay: rgba(34, 26, 22, 0.78);
   --mc-panel-top: rgba(36, 28, 24, 0.96);
