@@ -668,7 +668,9 @@ export const CHANNEL_FIELD_DEFS: Record<string, ChannelFieldDef[]> = {
     { key: 'enable_reaction', label: '消息反应', placeholder: '', type: 'switch', defaultValue: true, tooltip: '收到消息后自动添加 👍 表情反应，让用户知道消息已收到' },
     { key: 'enable_nickname_cache', label: '昵称获取', placeholder: '', type: 'switch', defaultValue: true, tooltip: '通过联系人 API 获取用户真实昵称（需要 contact:user.base:readonly 权限）' },
     { key: 'enable_quoted_context', label: '引用消息上下文', placeholder: '', type: 'switch', defaultValue: true, tooltip: '用户引用某条消息回复时，自动拉取被引用消息内容注入到 prompt，agent 才能理解"解释一下"这种缺主语的引用' },
-    { key: 'media_download_enabled', label: '媒体下载', placeholder: '', type: 'switch', defaultValue: false, tooltip: '下载消息中的图片和文件到本地媒体目录，便于视觉模型读取。' },
+    { key: 'media_download_enabled', label: '媒体下载', placeholder: '', type: 'switch', defaultValue: false, tooltip: '下载消息中的图片和文件到本地（保存至 ~/.mateclaw/media/feishu/）' },
+    { key: 'card_streaming_enabled', label: '流式卡片', placeholder: '', type: 'switch', defaultValue: true, tooltip: '使用 CardKit 实时更新回复；需要 cardkit:card:write 权限' },
+    { key: 'stream_progress', label: '执行轨迹', placeholder: '', type: 'switch', defaultValue: true, tooltip: '在流式卡片中展示思考状态、计划步骤、工具进度与阶段旁白；原始思考和工具名称仍受下方过滤开关控制' },
   ],
   telegram: [
     { key: 'bot_token', label: 'Bot Token', placeholder: '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11', required: true, sensitive: true, type: 'password', tooltip: '从 @BotFather 获取的 Bot Token' },
