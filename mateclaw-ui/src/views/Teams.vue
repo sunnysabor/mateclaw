@@ -64,7 +64,7 @@
         <template v-else>
           <div class="detail-header">
             <div class="detail-header__left">
-              <button class="btn-secondary" @click="store.closeTeam()">← {{ t('teams.back') }}</button>
+              <button class="btn-secondary" @click="closeTeam">← {{ t('teams.back') }}</button>
               <h1 class="detail-header__title">{{ store.currentTeam.team.name }}</h1>
               <span class="lead-chip">
                 <span
@@ -83,13 +83,18 @@
               <div class="view-switch">
                 <button
                   class="view-seg"
+                  :class="{ 'is-active': activeTab === 'runs' }"
+                  @click="setActiveTab('runs')"
+                >{{ t('teams.runs') }}</button>
+                <button
+                  class="view-seg"
                   :class="{ 'is-active': activeTab === 'board' }"
-                  @click="activeTab = 'board'"
+                  @click="setActiveTab('board')"
                 >{{ t('teams.board') }}</button>
                 <button
                   class="view-seg"
                   :class="{ 'is-active': activeTab === 'members' }"
-                  @click="activeTab = 'members'"
+                  @click="setActiveTab('members')"
                 >{{ t('teams.members') }}</button>
               </div>
               <button
@@ -97,7 +102,7 @@
                 class="btn-primary"
                 @click="openTaskCreateDialog"
               >+ {{ t('teams.createTask') }}</button>
-              <button class="btn-secondary" @click="refreshBoard">{{ t('common.refresh') }}</button>
+              <button class="btn-secondary" @click="refreshCurrentView">{{ t('common.refresh') }}</button>
               <button class="btn-danger" @click="removeTeam">{{ t('common.delete') }}</button>
             </div>
           </div>
@@ -114,8 +119,18 @@
             </div>
           </transition-group>
 
+          <TeamRunsPanel
+            v-if="activeTab === 'runs'"
+            :runs="runHistory.runs.value"
+            :loading="runHistory.loading.value"
+            :error="runHistory.error.value"
+            :selected-run-id="runHistory.selectedRunId.value"
+            @refresh="runHistory.refresh"
+            @select-run="selectRun"
+          />
+
           <!-- Kanban board -->
-          <div v-if="activeTab === 'board'" class="board-grid">
+          <div v-else-if="activeTab === 'board'" class="board-grid">
             <div v-for="col in boardColumns" :key="col.key" class="board-col">
               <div class="board-col__head">
                 <span class="board-col__dot" :class="`dot--${col.key}`"></span>
@@ -181,6 +196,17 @@
         </template>
       </div>
     </div>
+
+    <TeamRunDrawer
+      :open="Boolean(runHistory.selectedRun.value)"
+      :run="runHistory.selectedRun.value"
+      :selected-task-id="runHistory.selectedTaskId.value"
+      can-cancel
+      @close="closeRun"
+      @cancel="cancelRun"
+      @select-task="openRunTask"
+      @navigate="router.push"
+    />
 
     <!-- ==================== Create team dialog ==================== -->
     <Teleport to="body">
@@ -378,7 +404,7 @@
 
     <!-- ==================== Task detail dialog ==================== -->
     <Teleport to="body">
-      <div v-if="taskDialogVisible && currentTask" class="modal-overlay" @click.self="taskDialogVisible = false">
+      <div v-if="taskDialogVisible && currentTask" class="modal-overlay" @click.self="closeTaskDetail">
         <div class="modal modal--wide">
           <div class="modal-header">
             <div class="task-dialog__head">
@@ -389,7 +415,7 @@
                 {{ statusLabel(currentTask.task.status) }}
               </span>
             </div>
-            <button class="modal-close" @click="taskDialogVisible = false">&times;</button>
+            <button class="modal-close" @click="closeTaskDetail">&times;</button>
           </div>
           <div class="modal-body task-detail">
             <div class="task-detail__meta">
@@ -499,22 +525,43 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { teamApi } from '@/api/index'
-import type { TeamMemberVO, TeamTaskComment, TeamTaskDeliverable, TeamTaskEvent, TeamTaskVO } from '@/api/index'
+import { teamApi, teamRunApi } from '@/api/index'
+import type { TeamMemberVO, TeamRun, TeamRunTask, TeamTaskComment, TeamTaskDeliverable, TeamTaskEvent, TeamTaskVO } from '@/api/index'
 import { subscribeTeamEvents } from '@/composables/useTeamEvents'
+import {
+  buildTeamsRouteQuery,
+  clearTeamsRunSelection,
+  parseTeamsRouteQuery,
+  reconcileTeamsRoute,
+  type TeamsDetailView,
+  type TeamsRouteState,
+} from '@/composables/teamsRouteState'
+import { useTeamRunHistory } from '@/composables/useTeamRunHistory'
+import { buildWorkerChatRoute } from '@/components/team-run/teamRunPresentation'
+import TeamRunDrawer from '@/components/team-run/TeamRunDrawer.vue'
+import TeamRunsPanel from '@/components/team-run/TeamRunsPanel.vue'
 import SkillIcon from '@/components/common/SkillIcon.vue'
 import { agentIconColor } from '@/utils/agentIconColor'
 import { useAgentStore } from '@/stores/useAgentStore'
 import { useTeamStore } from '@/stores/useTeamStore'
 
 const { t } = useI18n()
+const route = useRoute()
 const router = useRouter()
 const store = useTeamStore()
 const agentStore = useAgentStore()
+const runHistory = useTeamRunHistory()
 
-const activeTab = ref('board')
+const activeTab = ref<TeamsDetailView>('runs')
+const taskDialogVisible = ref(false)
+const currentTask = ref<TeamTaskVO | null>(null)
+const comments = ref<TeamTaskComment[]>([])
+const newComment = ref('')
+const taskEvents = ref<TeamTaskEvent[]>([])
+let previousRouteState: TeamsRouteState | null = null
+let routeReconciliationRevision = 0
 
 // ==================== board columns ====================
 
@@ -651,6 +698,66 @@ watch(
   },
 )
 
+watch(
+  () => route.query,
+  async (query) => {
+    const reconciliationRevision = ++routeReconciliationRevision
+    const routeIsCurrent = () => reconciliationRevision === routeReconciliationRevision
+    const state = parseTeamsRouteQuery(query)
+    const reconciliation = reconcileTeamsRoute(previousRouteState, state)
+    previousRouteState = state
+    if (!state.teamId) {
+      dismissTaskDetail()
+      if (store.currentTeam) store.closeTeam()
+      runHistory.close()
+      activeTab.value = 'runs'
+      return
+    }
+    try {
+      if (String(store.currentTeam?.team.id ?? '') !== state.teamId) {
+        await store.openTeam(state.teamId)
+        if (!routeIsCurrent()) return
+        await runHistory.open(state.teamId)
+        if (!routeIsCurrent()) return
+      }
+      activeTab.value = state.view ?? 'runs'
+      runHistory.select(reconciliation.selectedRunId, reconciliation.selectedTaskId)
+      if (reconciliation.selectedRunId && !runHistory.selectedRun.value) {
+        const loaded = await runHistory.refreshRun(reconciliation.selectedRunId, state.teamId)
+        if (!routeIsCurrent()) return
+        if (!loaded) {
+          dismissTaskDetail()
+          runHistory.select(null)
+          await router.replace({
+            path: '/teams',
+            query: clearTeamsRunSelection(state),
+          })
+          return
+        }
+      }
+      if (reconciliation.taskAction === 'close') dismissTaskDetail()
+      if (reconciliation.taskAction === 'load'
+        && reconciliation.selectedTaskId
+        && currentTask.value?.task.id !== reconciliation.selectedTaskId) {
+        const task = runHistory.selectedRun.value?.tasks.find(item => item.id === reconciliation.selectedTaskId)
+        if (task) {
+          await openRunTask(task, false, routeIsCurrent)
+        } else {
+          dismissTaskDetail()
+          runHistory.select(reconciliation.selectedRunId, null)
+          await router.replace({
+            path: '/teams',
+            query: buildTeamsRouteQuery(state.teamId, 'runs', reconciliation.selectedRunId),
+          })
+        }
+      }
+    } catch (e: any) {
+      if (routeIsCurrent()) ElMessage.error(e?.message || 'failed')
+    }
+  },
+  { immediate: true, deep: true },
+)
+
 onMounted(() => {
   store.fetchTeams()
   if (agentStore.agents.length === 0) {
@@ -668,16 +775,64 @@ onBeforeUnmount(() => {
 async function openTeam(teamId: string) {
   try {
     await store.openTeam(teamId)
-    activeTab.value = 'board'
+    await runHistory.open(teamId)
+    activeTab.value = 'runs'
+    runHistory.select(null)
+    await router.push({ path: '/teams', query: buildTeamsRouteQuery(teamId) })
   } catch (e: any) {
     ElMessage.error(e?.message || 'failed')
   }
 }
 
+async function closeTeam() {
+  store.closeTeam()
+  runHistory.close()
+  await router.push({ path: '/teams', query: {} })
+}
+
+async function setActiveTab(view: TeamsDetailView) {
+  if (!store.currentTeam) return
+  activeTab.value = view
+  if (view !== 'runs') runHistory.select(null)
+  await router.push({
+    path: '/teams',
+    query: buildTeamsRouteQuery(String(store.currentTeam.team.id), view),
+  })
+}
+
+async function selectRun(run: TeamRun) {
+  runHistory.select(run.id)
+  await router.push({ path: '/teams', query: buildTeamsRouteQuery(run.teamId, 'runs', run.id) })
+}
+
+async function closeRun() {
+  if (!store.currentTeam) return
+  runHistory.select(null)
+  await router.push({
+    path: '/teams',
+    query: buildTeamsRouteQuery(String(store.currentTeam.team.id), 'runs'),
+  })
+}
+
+async function cancelRun(runId: string) {
+  try {
+    await ElMessageBox.confirm(t('teamRuns.cancelConfirm'), { type: 'warning' })
+  } catch {
+    return
+  }
+  await teamRunApi.cancel(runId)
+  await Promise.all([runHistory.refreshRun(runId), refreshBoard()])
+}
+
 function refreshBoard() {
   if (store.currentTeam) {
-    store.fetchTasks(store.currentTeam.team.id)
+    return store.fetchTasks(store.currentTeam.team.id)
   }
+  return Promise.resolve()
+}
+
+function refreshCurrentView() {
+  return activeTab.value === 'runs' ? runHistory.refresh() : refreshBoard()
 }
 
 async function removeTeam() {
@@ -806,7 +961,7 @@ async function submitTaskCreate() {
     })
     taskCreateDialogVisible.value = false
     ElMessage.success(t('common.success'))
-    refreshBoard()
+    await Promise.all([refreshBoard(), runHistory.refresh()])
   } catch (e: any) {
     ElMessage.error(e?.message || 'failed')
   } finally {
@@ -848,11 +1003,6 @@ async function removeMember(row: TeamMemberVO) {
 
 // ==================== task detail ====================
 
-const taskDialogVisible = ref(false)
-const currentTask = ref<TeamTaskVO | null>(null)
-const comments = ref<TeamTaskComment[]>([])
-const newComment = ref('')
-
 /** Deliverables live under the "deliverables" key of the task's metadata JSON. */
 const currentDeliverables = computed<TeamTaskDeliverable[]>(() => {
   const raw = currentTask.value?.task.metadata
@@ -867,20 +1017,56 @@ const currentDeliverables = computed<TeamTaskDeliverable[]>(() => {
 
 /** Open the member's execution transcript (its child conversation) in the chat console. */
 function openTaskRun() {
-  const task = currentTask.value?.task
+  const taskVO = currentTask.value
+  const task = taskVO?.task
   if (!task?.conversationId) return
-  router.push({
-    path: '/chat',
-    query: { agentId: task.assigneeAgentId ?? undefined, conversationId: task.conversationId },
-  })
+  router.push(buildWorkerChatRoute({
+    conversationId: task.conversationId,
+    agentId: task.assigneeAgentId,
+    runId: task.runId ?? taskVO?.runId,
+    taskId: task.id,
+    teamId: task.teamId,
+    leadConversationId: task.leadConversationId,
+  }))
 }
 
-const taskEvents = ref<TeamTaskEvent[]>([])
+function taskVoFromRun(task: TeamRunTask): TeamTaskVO {
+  const { createTime, updateTime, ...taskFields } = task
+  return {
+    task: {
+      ...taskFields,
+      ...(createTime ? { createTime } : {}),
+      ...(updateTime ? { updateTime } : {}),
+      dispatchCount: 0,
+      leadConversationId: runHistory.selectedRun.value?.leadConversationId ?? null,
+    },
+    assigneeName: store.members.find(member => member.agentId === task.assigneeAgentId)?.name ?? null,
+    ownerName: null,
+    runId: task.runId,
+  }
+}
 
-async function openTask(vo: TeamTaskVO) {
+async function openRunTask(
+  task: TeamRunTask,
+  updateRoute = true,
+  shouldApply: () => boolean = () => true,
+) {
+  runHistory.select(task.runId, task.id)
+  await openTask(taskVoFromRun(task), shouldApply)
+  if (!shouldApply()) return
+  if (updateRoute) {
+    await router.push({
+      path: '/teams',
+      query: buildTeamsRouteQuery(task.teamId, 'runs', task.runId, task.id),
+    })
+  }
+}
+
+async function openTask(vo: TeamTaskVO, shouldApply: () => boolean = () => true) {
   if (!store.currentTeam) return
   try {
     const res: any = await teamApi.getTask(store.currentTeam.team.id, vo.task.id)
+    if (!shouldApply()) return
     currentTask.value = res.data?.task || vo
     comments.value = res.data?.comments || []
     taskDialogVisible.value = true
@@ -888,10 +1074,13 @@ async function openTask(vo: TeamTaskVO) {
     taskEvents.value = []
     teamApi.listTaskEvents(store.currentTeam.team.id, vo.task.id)
       .then((eventsRes: any) => {
-        taskEvents.value = eventsRes.data || []
+        if (shouldApply() && currentTask.value?.task.id === vo.task.id) {
+          taskEvents.value = eventsRes.data || []
+        }
       })
       .catch(() => {})
   } catch (e: any) {
+    if (!shouldApply()) return
     ElMessage.error(e?.message || 'failed')
   }
 }
@@ -900,8 +1089,33 @@ async function reloadTask() {
   if (currentTask.value) {
     const vo = currentTask.value
     await openTask(vo)
-    refreshBoard()
+    await Promise.all([
+      refreshBoard(),
+      vo.task.runId ? runHistory.refreshRun(vo.task.runId) : Promise.resolve(),
+    ])
   }
+}
+
+async function closeTaskDetail() {
+  dismissTaskDetail()
+  if (!store.currentTeam || activeTab.value !== 'runs') return
+  runHistory.select(runHistory.selectedRunId.value, null)
+  await router.push({
+    path: '/teams',
+    query: buildTeamsRouteQuery(
+      String(store.currentTeam.team.id),
+      'runs',
+      runHistory.selectedRunId.value,
+    ),
+  })
+}
+
+function dismissTaskDetail() {
+  taskDialogVisible.value = false
+  currentTask.value = null
+  comments.value = []
+  taskEvents.value = []
+  newComment.value = ''
 }
 
 async function submitComment() {

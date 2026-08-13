@@ -21,6 +21,7 @@ import vip.mate.team.model.TeamTaskStatus;
 import vip.mate.team.service.TeamAnnounceService;
 import vip.mate.team.service.TeamDispatchService;
 import vip.mate.team.service.TeamEventChannel;
+import vip.mate.team.service.TeamManualTaskService;
 import vip.mate.team.service.TeamService;
 import vip.mate.team.service.TeamTaskService;
 import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
@@ -48,6 +49,7 @@ public class TeamController {
 
     private final TeamService teamService;
     private final TeamTaskService taskService;
+    private final TeamManualTaskService manualTaskService;
     private final TeamDispatchService dispatchService;
     private final TeamAnnounceService announceService;
     private final TeamEventChannel eventChannel;
@@ -162,9 +164,10 @@ public class TeamController {
     public R<TaskVO> createTask(@PathVariable Long id, @RequestBody CreateTaskRequest req,
                                 Principal principal) {
         return guarded(() -> {
-            requireTeam(id);
-            TeamTaskEntity task = taskService.createTask(TeamTaskCreateCommand.builder()
+            AgentTeamEntity team = requireTeam(id);
+            TeamTaskEntity task = manualTaskService.createTask(team, TeamTaskCreateCommand.builder()
                     .teamId(id)
+                    .runId(req.getRunId())
                     .subject(req.getSubject())
                     .description(req.getDescription())
                     .assigneeAgentId(req.getAssigneeAgentId())
@@ -175,9 +178,6 @@ public class TeamController {
                     .channel("dashboard")
                     .build());
             eventChannel.publishTaskEvent(task, "team_task_created", Map.of());
-            if (TeamTaskStatus.PENDING.equals(task.getStatus())) {
-                dispatchService.requestDispatch(id);
-            }
             return R.ok(toTaskVO(task));
         });
     }
@@ -398,7 +398,8 @@ public class TeamController {
     private TaskVO toTaskVO(TeamTaskEntity task) {
         return new TaskVO(task,
                 agentName(task.getAssigneeAgentId()),
-                task.getOwnerAgentId() == null ? null : agentName(task.getOwnerAgentId()));
+                task.getOwnerAgentId() == null ? null : agentName(task.getOwnerAgentId()),
+                task.getRunId());
     }
 
     private String agentName(Long agentId) {
@@ -418,7 +419,7 @@ public class TeamController {
     public record MemberVO(Long agentId, String name, String role, String icon) {
     }
 
-    public record TaskVO(TeamTaskEntity task, String assigneeName, String ownerName) {
+    public record TaskVO(TeamTaskEntity task, String assigneeName, String ownerName, Long runId) {
     }
 
     public record TaskDetailVO(TaskVO task, List<TeamTaskCommentEntity> comments) {
@@ -447,6 +448,7 @@ public class TeamController {
 
     @Data
     public static class CreateTaskRequest {
+        private Long runId;
         private String subject;
         private String description;
         private Long assigneeAgentId;

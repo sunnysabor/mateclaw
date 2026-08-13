@@ -927,6 +927,7 @@ export interface TeamMemberVO {
 export interface TeamTask {
   id: string
   teamId: string
+  runId?: string | null
   taskNumber: number
   subject: string
   description: string | null
@@ -958,6 +959,7 @@ export interface TeamTaskVO {
   task: TeamTask
   assigneeName: string | null
   ownerName: string | null
+  runId?: string | null
 }
 
 export interface TeamTaskComment {
@@ -1011,6 +1013,7 @@ export const teamApi = {
     data: {
       subject: string
       description?: string
+      runId?: string
       assigneeAgentId: string
       priority?: number
       blockedBy?: string[]
@@ -1026,6 +1029,78 @@ export const teamApi = {
     http.post(`/teams/${id}/tasks/${taskId}/cancel`, { reason }),
   commentTask: (id: string, taskId: string, content: string) =>
     http.post(`/teams/${id}/tasks/${taskId}/comments`, { content }),
+}
+
+export type TeamRunStatus =
+  | 'planning'
+  | 'running'
+  | 'awaiting_review'
+  | 'finalizing'
+  | 'completed'
+  | 'partial'
+  | 'failed'
+  | 'cancelled'
+
+export interface TeamRunProgress {
+  total: number
+  done: number
+  failed: number
+  inReview: number
+  percent: number
+}
+
+export interface TeamRunTask {
+  id: string
+  teamId: string
+  runId: string
+  taskNumber: number
+  subject: string
+  description: string | null
+  status: string
+  priority: number
+  taskType: string
+  assigneeAgentId: string
+  ownerAgentId: string | null
+  blockedBy: string | null
+  requireApproval: boolean | null
+  progressPercent: number | null
+  progressStep: string | null
+  result: string | null
+  reason: string | null
+  conversationId: string | null
+  metadata: string | null
+  createTime: string | null
+  updateTime: string | null
+}
+
+export interface TeamRun {
+  id: string
+  teamId: string
+  workspaceId: string
+  leadAgentId: string
+  leadConversationId: string
+  originMessageId: string | null
+  title: string
+  objective: string
+  status: TeamRunStatus
+  finalSummary: string | null
+  stopReason: string | null
+  metadata: string | null
+  startedAt: string | null
+  completedAt: string | null
+  createTime: string | null
+  updateTime: string | null
+  progress: TeamRunProgress
+  tasks: TeamRunTask[]
+}
+
+export const teamRunApi = {
+  get: (runId: string) => http.get(`/team-runs/${runId}`),
+  listByTeam: (teamId: string) => http.get(`/teams/${teamId}/runs`),
+  listByConversation: (conversationId: string) =>
+    http.get(`/conversations/${encId(conversationId)}/team-runs`),
+  cancel: (runId: string, reason?: string) =>
+    http.post(`/team-runs/${runId}/cancel`, { reason }),
 }
 
 // ==================== Wiki Knowledge Base ====================

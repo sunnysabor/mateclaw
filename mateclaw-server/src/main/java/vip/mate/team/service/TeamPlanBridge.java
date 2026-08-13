@@ -6,6 +6,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 import vip.mate.agent.model.AgentEntity;
 import vip.mate.agent.repository.AgentMapper;
 import vip.mate.planning.model.PlanEntity;
@@ -15,6 +16,9 @@ import vip.mate.team.model.AgentTeamEntity;
 import vip.mate.team.model.AgentTeamMemberEntity;
 import vip.mate.team.model.TeamRole;
 import vip.mate.team.model.TeamTaskCreateCommand;
+import vip.mate.team.model.TeamRunCreateCommand;
+import vip.mate.team.model.TeamRunEntity;
+import vip.mate.team.model.TeamRunStatus;
 import vip.mate.team.model.TeamTaskEntity;
 import vip.mate.team.model.TeamTaskStatus;
 
@@ -50,6 +54,7 @@ public class TeamPlanBridge {
 
     private final TeamService teamService;
     private final TeamTaskService taskService;
+    private final TeamRunService runService;
     private final PlanningService planningService;
     private final AgentMapper agentMapper;
     private final ApplicationEventPublisher eventPublisher;
@@ -121,9 +126,30 @@ public class TeamPlanBridge {
      *                 referencing an earlier step); the caller guarantees
      *                 validity via its sequential-chain fallback
      */
+    @Transactional
     public String delegatePlan(AgentTeamEntity team, Long planId, String goal,
                                List<String> steps, List<List<Integer>> stepDeps,
                                List<Long> memberIds, String leadConversationId) {
+        TeamRunEntity run = runService.startRun(TeamRunCreateCommand.builder()
+                .teamId(team.getId())
+                .workspaceId(team.getWorkspaceId())
+                .leadAgentId(team.getLeadAgentId())
+                .leadConversationId(leadConversationId)
+                .originMessageId(-Math.abs(planId))
+                .title(goal)
+                .objective(goal)
+                .metadata(new JSONObject().set("planId", String.valueOf(planId)).toString())
+                .build());
+        List<TeamTaskEntity> existing = taskService.listTasksByRun(run.getId());
+        if (!existing.isEmpty()) {
+            if (TeamRunStatus.PLANNING.equals(run.getStatus())) {
+                sealAndPublish(team, planId, run);
+            }
+            return buildAnnouncement(existing, stepDeps);
+        }
+        if (!TeamRunStatus.PLANNING.equals(run.getStatus())) {
+            throw new IllegalStateException("sealed team run has no tasks: " + run.getId());
+        }
         List<TeamTaskEntity> created = new ArrayList<>();
         for (int i = 0; i < steps.size(); i++) {
             String step = steps.get(i);
@@ -133,6 +159,7 @@ public class TeamPlanBridge {
             }
             TeamTaskEntity task = taskService.createTask(TeamTaskCreateCommand.builder()
                     .teamId(team.getId())
+                    .runId(run.getId())
                     .subject(subjectOf(step))
                     .description(step + "\n\n[Plan context]\nOverall request: " + goal)
                     .assigneeAgentId(memberIds.get(i))
@@ -147,11 +174,19 @@ public class TeamPlanBridge {
                     .build());
             created.add(task);
         }
-        planningService.markPlanDelegated(planId);
-        eventPublisher.publishEvent(new TeamTasksDelegatedEvent(team.getId()));
+        sealAndPublish(team, planId, run);
         log.info("Plan {} delegated to team {} board as {} task(s)", planId, team.getId(),
                 created.size());
         return buildAnnouncement(created, stepDeps);
+    }
+
+    private void sealAndPublish(AgentTeamEntity team, Long planId, TeamRunEntity run) {
+        TeamRunService.SealResult seal = runService.sealRunWithResult(
+                run.getId(), team.getWorkspaceId());
+        planningService.markPlanDelegated(planId);
+        if (seal.transitioned()) {
+            eventPublisher.publishEvent(new TeamTasksDelegatedEvent(team.getId()));
+        }
     }
 
     // ==================== resume gate ====================
