@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import vip.mate.common.result.R;
 import vip.mate.team.model.TeamRunView;
@@ -43,8 +44,9 @@ public class TeamRunController {
     @RequireWorkspaceRole("viewer")
     public R<List<TeamRunView>> listTeamRuns(
             @PathVariable Long teamId,
+            @RequestParam(value = "activeOnly", defaultValue = "false") boolean activeOnly,
             @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
-        return guarded(() -> R.ok(runService.listTeamRuns(teamId, workspaceId(workspaceId))));
+        return guarded(() -> R.ok(runService.listTeamRuns(teamId, workspaceId(workspaceId), activeOnly)));
     }
 
     @Operation(summary = "List conversation team runs")

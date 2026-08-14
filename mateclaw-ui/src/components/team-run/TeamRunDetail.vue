@@ -6,6 +6,7 @@ import type { TeamRun, TeamRunTask } from '@/api'
 import TeamRunProgress from './TeamRunProgress.vue'
 import TeamRunTaskList from './TeamRunTaskList.vue'
 import { buildTeamRunRoute, extractRunDeliverables } from './teamRunPresentation'
+import { useMarkdownRenderer } from '@/composables/useMarkdownRenderer'
 
 const props = withDefaults(defineProps<{
   run: TeamRun
@@ -23,11 +24,15 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const { renderMarkdown } = useMarkdownRenderer()
 const localTaskId = ref<string | null>(props.selectedTaskId)
 watch(() => props.selectedTaskId, value => { localTaskId.value = value })
 const selectedTask = computed(() => props.run.tasks.find(task => task.id === localTaskId.value) ?? null)
 const deliverables = computed(() => extractRunDeliverables(props.run))
 const terminal = computed(() => ['completed', 'partial', 'failed', 'cancelled'].includes(props.run.status))
+const renderedSummary = computed(() => renderMarkdown(props.run.finalSummary || ''))
+const renderedTaskDescription = computed(() => renderMarkdown(selectedTask.value?.description || ''))
+const renderedTaskResult = computed(() => renderMarkdown(selectedTask.value?.result || ''))
 
 function selectTask(task: TeamRunTask) {
   localTaskId.value = task.id
@@ -40,7 +45,8 @@ function selectTask(task: TeamRunTask) {
     <section class="run-detail__summary">
       <div class="run-detail__summary-copy">
         <h4>{{ t('teamRuns.summary') }}</h4>
-        <p>{{ run.finalSummary || t('teamRuns.noSummary') }}</p>
+        <div v-if="run.finalSummary" class="run-detail__markdown markdown-body" v-html="renderedSummary" />
+        <p v-else>{{ t('teamRuns.noSummary') }}</p>
         <dl>
           <div>
             <dt>{{ t('teamRuns.objective') }}</dt>
@@ -92,7 +98,7 @@ function selectTask(task: TeamRunTask) {
           @click="emit('navigate', buildTeamRunRoute(run.teamId, run.id, selectedTask.id))"
         >{{ t('teamRuns.openTask') }}</button>
       </div>
-      <p v-if="selectedTask.description">{{ selectedTask.description }}</p>
+      <div v-if="selectedTask.description" class="run-detail__markdown markdown-body" v-html="renderedTaskDescription" />
       <dl>
         <div>
           <dt>{{ t('teamRuns.assignee') }}</dt>
@@ -100,7 +106,8 @@ function selectTask(task: TeamRunTask) {
         </div>
         <div>
           <dt>{{ t('teamRuns.result') }}</dt>
-          <dd class="run-detail__result">{{ selectedTask.result || t('teamRuns.noResult') }}</dd>
+          <dd v-if="selectedTask.result" class="run-detail__result run-detail__markdown markdown-body" v-html="renderedTaskResult" />
+          <dd v-else class="run-detail__result">{{ t('teamRuns.noResult') }}</dd>
         </div>
       </dl>
     </section>
@@ -118,6 +125,22 @@ function selectTask(task: TeamRunTask) {
 .run-detail { border-top: 1px solid var(--mc-border-light, #e7ebef); letter-spacing: 0; }
 .run-detail h4 { margin: 0; color: var(--mc-text-primary, #1f2937); font-size: 12px; font-weight: 700; }
 .run-detail p { margin: 6px 0 0; color: var(--mc-text-secondary, #475569); font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
+.run-detail__markdown { margin-top: 6px; color: var(--mc-text-secondary, #475569); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.run-detail__markdown :deep(p) { margin: 0 0 8px; }
+.run-detail__markdown :deep(p:last-child) { margin-bottom: 0; }
+.run-detail__markdown :deep(h1), .run-detail__markdown :deep(h2), .run-detail__markdown :deep(h3), .run-detail__markdown :deep(h4) { margin: 12px 0 6px; color: var(--mc-text-primary, #1f2937); line-height: 1.3; }
+.run-detail__markdown :deep(h1) { font-size: 18px; }
+.run-detail__markdown :deep(h2) { font-size: 15px; }
+.run-detail__markdown :deep(h3), .run-detail__markdown :deep(h4) { font-size: 13px; }
+.run-detail__markdown :deep(ul), .run-detail__markdown :deep(ol) { margin: 6px 0 8px; padding-left: 20px; }
+.run-detail__markdown :deep(li) { margin: 3px 0; }
+.run-detail__markdown :deep(blockquote) { margin: 8px 0; padding: 6px 10px; border-left: 3px solid #9bcdbb; background: rgba(27, 143, 104, 0.05); }
+.run-detail__markdown :deep(table) { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 8px 0; }
+.run-detail__markdown :deep(th), .run-detail__markdown :deep(td) { padding: 5px 8px; border: 1px solid var(--mc-border-light, #e7ebef); text-align: left; white-space: nowrap; }
+.run-detail__markdown :deep(th) { background: rgba(71, 85, 105, 0.06); color: var(--mc-text-primary, #1f2937); }
+.run-detail__markdown :deep(code) { padding: 1px 4px; border-radius: 3px; background: rgba(71, 85, 105, 0.09); font-family: var(--mc-font-mono, ui-monospace, monospace); font-size: .92em; }
+.run-detail__markdown :deep(pre) { max-width: 100%; overflow-x: auto; padding: 9px 10px; border-radius: 6px; background: var(--mc-code-bg, #faf6f1); }
+.run-detail__markdown :deep(a) { color: #16795a; }
 .run-detail__summary { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 14px 16px; background: rgba(71, 85, 105, 0.035); }
 .run-detail__summary-copy { min-width: 0; flex: 1; }
 .run-detail__section, .run-detail__task-detail { padding: 14px 16px; border-top: 1px solid var(--mc-border-light, #e7ebef); }

@@ -19,7 +19,9 @@ export function useLiveSnapshot({ load, refreshRuns }: Dependencies) {
       if (request !== sequence) return false
       snapshot.value = response?.data ?? response as LiveSnapshot
       error.value = null
-      await refreshRuns()
+      // Team history is supplementary. It must not hold the live snapshot
+      // behind a slow or oversized team-run response.
+      void refreshRuns().catch(() => undefined)
       return request === sequence
     } catch (cause) {
       if (request === sequence) error.value = cause

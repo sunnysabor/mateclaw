@@ -53,12 +53,16 @@ const { t } = useI18n()
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 8px 12px 0;
-  padding: 9px 12px;
+  flex: none;
+  position: relative;
+  z-index: 2;
+  margin: 10px 12px 0;
+  padding: 10px 14px;
   border: 1px solid var(--mc-border, #d9e1e7);
   border-left: 3px solid #b96c08;
-  border-radius: 6px;
+  border-radius: 10px;
   background: var(--mc-panel, #fff);
+  box-shadow: 0 2px 8px rgba(41, 37, 36, 0.06);
   color: var(--mc-text-primary, #1f2937);
   letter-spacing: 0;
 }
@@ -66,8 +70,8 @@ const { t } = useI18n()
 .worker-banner__copy { display: grid; min-width: 0; gap: 2px; font-size: 12px; }
 .worker-banner__copy strong { font-size: 13px; }
 .worker-banner__copy span { color: var(--mc-text-secondary, #64748b); }
-.worker-banner__actions { display: flex; flex: none; gap: 6px; margin-left: auto; }
-.worker-banner__actions button { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; padding: 4px 8px; border: 1px solid var(--mc-border, #d9e1e7); border-radius: 5px; background: transparent; color: inherit; cursor: pointer; letter-spacing: 0; }
+.worker-banner__actions { display: flex; flex: none; gap: 5px; margin-left: auto; }
+.worker-banner__actions button { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 3px 8px; border: 1px solid var(--mc-border, #d9e1e7); border-radius: 7px; background: var(--mc-panel, #fff); color: inherit; cursor: pointer; font-size: 13px; line-height: 1.2; letter-spacing: 0; white-space: nowrap; }
 .worker-banner__actions button:hover { border-color: #1b8f68; color: #167454; }
 .worker-banner__actions button:focus-visible { outline: 2px solid #1b8f68; outline-offset: 1px; }
 @media (max-width: 720px) {

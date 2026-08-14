@@ -60,6 +60,21 @@ describe('useLiveSnapshot', () => {
     expect(reconcile).toHaveBeenCalledOnce()
     expect(live.snapshot.value).toBeNull()
   })
+
+  it('stops blocking the initial view when the team run history is slow', async () => {
+    const history = deferred<void>()
+    const refreshRuns = vi.fn().mockReturnValue(history.promise)
+    const live = useLiveSnapshot({ load: vi.fn().mockResolvedValue({ data: snapshot('live') }), refreshRuns })
+
+    const request = live.refresh()
+    await Promise.resolve()
+
+    expect(live.snapshot.value?.runs[0].conversationId).toBe('live')
+    expect(live.loading.value).toBe(false)
+    expect(await request).toBe(true)
+
+    history.resolve()
+  })
 })
 
 function deferred<T>() {

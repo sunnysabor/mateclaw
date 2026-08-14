@@ -112,4 +112,18 @@ describe('TeamRunDetail', () => {
     await nextTick()
     expect(cancelled).toBe(1)
   })
+
+  it('renders markdown in the run summary instead of one flattened paragraph', async () => {
+    const host = mount(TeamRunDetail, {
+      run: sampleRun({
+        status: 'completed',
+        finalSummary: '## 结论\n\n| 项目 | 状态 |\n| --- | --- |\n| 任务 | **完成** |',
+      }),
+    })
+    await nextTick()
+
+    expect(host.querySelector('.run-detail__markdown h2')?.textContent).toBe('结论')
+    expect(host.querySelector('.run-detail__markdown table')).not.toBeNull()
+    expect(host.querySelector('.run-detail__markdown strong')?.textContent).toBe('完成')
+  })
 })

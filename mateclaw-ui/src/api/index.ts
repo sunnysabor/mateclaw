@@ -1096,7 +1096,8 @@ export interface TeamRun {
 
 export const teamRunApi = {
   get: (runId: string) => http.get(`/team-runs/${runId}`),
-  listByTeam: (teamId: string) => http.get(`/teams/${teamId}/runs`),
+  listByTeam: (teamId: string, activeOnly = false) =>
+    http.get(`/teams/${teamId}/runs${activeOnly ? '?activeOnly=true' : ''}`),
   listByConversation: (conversationId: string) =>
     http.get(`/conversations/${encId(conversationId)}/team-runs`),
   cancel: (runId: string, reason?: string) =>

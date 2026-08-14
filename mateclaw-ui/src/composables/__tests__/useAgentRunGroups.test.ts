@@ -65,11 +65,11 @@ describe('projectAgentRunGroups', () => {
     })
   })
 
-  it.each([
-    ['finalizing', 'finalizing'],
-    ['cancelled', 'cancelled'],
-  ] as const)('projects %s run state as %s', (status, expected) => {
-    expect(projectAgentRunGroups(snapshot([]), [run(status, [])]).groups[0].state).toBe(expected)
+  it('projects finalizing runs but excludes cancelled runs from the live view', () => {
+    expect(projectAgentRunGroups(snapshot([]), [run('finalizing', []), run('cancelled', [])]).groups)
+      .toHaveLength(1)
+    expect(projectAgentRunGroups(snapshot([]), [run('finalizing', []), run('cancelled', [])]).groups[0].state)
+      .toBe('finalizing')
   })
 })
 
@@ -92,6 +92,17 @@ describe('useAgentRunGroups hydration priority', () => {
     await routeLoad
 
     expect(groups.runs.value.map(item => item.id)).toContain('historical')
+  })
+})
+
+describe('useAgentRunGroups live scope', () => {
+  it('does not place terminal runs in the live team groups', () => {
+    const result = projectAgentRunGroups(snapshot([]), [
+      run('completed', []),
+      run('running', []),
+    ])
+
+    expect(result.groups.map(group => group.run.status)).toEqual(['running'])
   })
 })
 

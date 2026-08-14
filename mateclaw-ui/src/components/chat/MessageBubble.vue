@@ -191,7 +191,7 @@
           -->
           <UserMessageContent v-if="role === 'user'" :content="displayContent" />
           <template v-else>
-            <div class="markdown-body" v-html="renderedContent"></div>
+            <div class="markdown-body compact-markdown" v-html="renderedContent"></div>
             <TypingCursor v-if="showCursor" :typing="isGenerating" />
           </template>
         </div>
@@ -1764,6 +1764,58 @@ watch(isGenerating, (generating) => {
   border-radius: 0;
   padding: 4px 0;
   color: var(--mc-assistant-bubble-color, #1e293b);
+}
+
+/* Keep long delegated results readable without letting one response become a
+   full-width wall of text. The message column remains responsive on narrow
+   screens, while desktop reading stays close to a comfortable line length. */
+.assistant-bubble .markdown-body {
+  max-width: 980px;
+  overflow-wrap: anywhere;
+}
+.assistant-bubble .markdown-body :deep(p) {
+  max-width: 920px;
+  margin: 0 0 6px !important;
+  line-height: 1.5;
+}
+.assistant-bubble .markdown-body :deep(p:empty) {
+  display: none;
+}
+.assistant-bubble .markdown-body :deep(p:has(br:only-child)) {
+  display: none;
+}
+.assistant-bubble .markdown-body :deep(> *) {
+  margin-block-start: 0;
+  margin-block-end: 6px;
+}
+.assistant-bubble .markdown-body :deep(> *:last-child) {
+  margin-block-end: 0;
+}
+.assistant-bubble .markdown-body :deep(h1),
+.assistant-bubble .markdown-body :deep(h2),
+.assistant-bubble .markdown-body :deep(h3) {
+  margin-top: 12px !important;
+  margin-bottom: 6px !important;
+  line-height: 1.35;
+}
+.assistant-bubble .markdown-body :deep(h2:first-child),
+.assistant-bubble .markdown-body :deep(h3:first-child) {
+  margin-top: 4px;
+}
+.assistant-bubble .markdown-body :deep(ul),
+.assistant-bubble .markdown-body :deep(ol) {
+  margin: 6px 0 !important;
+}
+.assistant-bubble .markdown-body :deep(li) {
+  margin: 2px 0;
+  line-height: 1.5;
+}
+.assistant-bubble .markdown-body :deep(li > p) {
+  margin: 0 !important;
+}
+.assistant-bubble .markdown-body :deep(hr) {
+  max-width: 920px;
+  margin: 12px 0;
 }
 
 .user-bubble {

@@ -3,8 +3,10 @@ package vip.mate.team.service;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.transaction.annotation.Transactional;
 import vip.mate.team.model.AgentTeamEntity;
 import vip.mate.team.model.TeamRunCreateCommand;
@@ -12,6 +14,7 @@ import vip.mate.team.model.TeamRunEntity;
 import vip.mate.team.model.TeamRunStatus;
 import vip.mate.team.model.TeamRunView;
 import vip.mate.team.model.TeamTaskEntity;
+import vip.mate.team.model.TeamTaskStatus;
 import vip.mate.team.repository.TeamRunMapper;
 import vip.mate.team.repository.TeamTaskMapper;
 
@@ -23,6 +26,7 @@ import java.util.stream.Collectors;
 
 /** Owns team run creation, lifecycle transitions, authorization, and reads. */
 @Service
+@Slf4j
 public class TeamRunService {
 
     public record SealResult(TeamRunEntity run, boolean transitioned) {
@@ -100,11 +104,56 @@ public class TeamRunService {
         return buildView(requireRun(runId, workspaceId));
     }
 
+    /** Reconciles runs stranded after the optional LLM summary step failed. */
+    @Scheduled(fixedDelayString = "${mateclaw.team.finalizing-reconcile-ms:30000}", initialDelay = 30000)
+    @Transactional
+    public void reconcileFinalizingRuns() {
+        List<TeamRunEntity> runs = runMapper.selectList(Wrappers.<TeamRunEntity>lambdaQuery()
+                .eq(TeamRunEntity::getStatus, TeamRunStatus.FINALIZING));
+        for (TeamRunEntity run : runs) {
+            List<TeamTaskEntity> tasks = tasksForRun(run.getId());
+            if (tasks.isEmpty() || tasks.stream().anyMatch(task -> !TeamTaskStatus.isTerminal(task.getStatus()))) {
+                continue;
+            }
+            String outcome = tasks.stream().allMatch(task -> TeamTaskStatus.COMPLETED.equals(task.getStatus()))
+                    ? TeamRunStatus.COMPLETED
+                    : tasks.stream().anyMatch(task -> TeamTaskStatus.COMPLETED.equals(task.getStatus()))
+                    ? TeamRunStatus.PARTIAL : TeamRunStatus.FAILED;
+            String fallback = "执行摘要（汇总模型不可用，以下为步骤原始结果）：\n"
+                    + tasks.stream().map(task -> {
+                        String result = TeamTaskStatus.COMPLETED.equals(task.getStatus())
+                                ? task.getResult() : task.getReason();
+                        return "- #" + task.getTaskNumber() + " " + (result == null ? task.getStatus() : result);
+                    }).collect(Collectors.joining("\n"));
+            finalizeWithoutSummary(run, outcome, fallback);
+        }
+    }
+
+    private void finalizeWithoutSummary(TeamRunEntity run, String outcome, String summary) {
+        LocalDateTime completedAt = LocalDateTime.now();
+        runMapper.update(null, Wrappers.<TeamRunEntity>lambdaUpdate()
+                .eq(TeamRunEntity::getId, run.getId())
+                .eq(TeamRunEntity::getStatus, TeamRunStatus.FINALIZING)
+                .set(TeamRunEntity::getStatus, outcome)
+                .set(TeamRunEntity::getFinalSummary, summary)
+                .set(TeamRunEntity::getCompletedAt, completedAt));
+        log.warn("Reconciled stranded team run {} from finalizing to {}", run.getId(), outcome);
+    }
+
     public List<TeamRunView> listTeamRuns(Long teamId, Long workspaceId) {
-        return runMapper.selectList(Wrappers.<TeamRunEntity>lambdaQuery()
+        return listTeamRuns(teamId, workspaceId, false);
+    }
+
+    public List<TeamRunView> listTeamRuns(Long teamId, Long workspaceId, boolean activeOnly) {
+        var query = Wrappers.<TeamRunEntity>lambdaQuery()
                         .eq(TeamRunEntity::getTeamId, teamId)
                         .eq(TeamRunEntity::getWorkspaceId, workspaceId)
-                        .orderByDesc(TeamRunEntity::getCreateTime))
+                        .orderByDesc(TeamRunEntity::getCreateTime);
+        if (activeOnly) {
+            query.in(TeamRunEntity::getStatus, TeamRunStatus.PLANNING, TeamRunStatus.RUNNING,
+                    TeamRunStatus.AWAITING_REVIEW, TeamRunStatus.FINALIZING);
+        }
+        return runMapper.selectList(query)
                 .stream().map(this::buildView).toList();
     }
 

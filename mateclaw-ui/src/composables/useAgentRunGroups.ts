@@ -60,7 +60,8 @@ export function projectAgentRunGroups(snapshot: LiveSnapshot | null, runs: reado
   const liveRuns = snapshot?.runs ?? []
   const liveByConversation = new Map(liveRuns.map(run => [run.conversationId, run]))
   const claimed = new Set<string>()
-  const groups = runs.map((run) => {
+  const activeStatuses = new Set<TeamRun['status']>(['planning', 'running', 'awaiting_review', 'finalizing'])
+  const groups = runs.filter(run => activeStatuses.has(run.status)).map((run) => {
     const leadRuntime = liveByConversation.get(run.leadConversationId) ?? null
     if (leadRuntime) claimed.add(leadRuntime.conversationId)
     const workers = run.tasks.map((task) => {
@@ -76,10 +77,7 @@ export function projectAgentRunGroups(snapshot: LiveSnapshot | null, runs: reado
 function relevantRuns(runs: TeamRun[], snapshot: LiveSnapshot | null): TeamRun[] {
   const liveIds = new Set((snapshot?.runs ?? []).map(run => run.conversationId))
   const activeStatuses = new Set(['planning', 'running', 'awaiting_review', 'finalizing'])
-  const terminalStatuses = new Set(['completed', 'partial', 'failed', 'cancelled'])
-  const recentCutoff = Date.now() - 86_400_000
   return runs.filter(run => activeStatuses.has(run.status)
-    || (terminalStatuses.has(run.status) && Date.parse(run.updateTime ?? run.createTime ?? '') >= recentCutoff)
     || liveIds.has(run.leadConversationId)
     || run.tasks.some(task => task.conversationId != null && liveIds.has(task.conversationId)))
 }
@@ -99,7 +97,9 @@ export function useAgentRunGroups(snapshot: Ref<LiveSnapshot | null>) {
     try {
       const teamsResponse: any = await teamApi.list()
       const teams = teamsResponse?.data ?? []
-      const responses: any[] = await Promise.all(teams.map((entry: any) => teamRunApi.listByTeam(String(entry.team.id))))
+      const responses: any[] = await Promise.all(
+        teams.map((entry: any) => teamRunApi.listByTeam(String(entry.team.id), true)),
+      )
       if (closed || request !== listSequence) return
       const allRuns = responses.flatMap(response => response?.data ?? []) as TeamRun[]
       listedRuns.value = relevantRuns(allRuns, snapshot.value)

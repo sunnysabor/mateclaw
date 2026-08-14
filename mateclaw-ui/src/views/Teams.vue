@@ -426,11 +426,14 @@
             </div>
             <div v-if="currentTask.task.description" class="task-detail__block">
               <div class="task-detail__label">{{ t('teams.taskDescription') }}</div>
-              <div class="task-detail__text">{{ currentTask.task.description }}</div>
+              <div class="task-detail__text task-detail__markdown markdown-body" v-html="renderedCurrentTaskDescription" />
             </div>
             <div v-if="currentTask.task.result" class="task-detail__block">
               <div class="task-detail__label">{{ t('teams.result') }}</div>
-              <div class="task-detail__text task-detail__text--boxed">{{ currentTask.task.result }}</div>
+              <div
+                class="task-detail__text task-detail__text--boxed task-detail__markdown markdown-body"
+                v-html="renderedCurrentTaskResult"
+              />
             </div>
             <div v-if="currentTask.task.reason" class="task-detail__reason">
               {{ currentTask.task.reason }}
@@ -462,7 +465,11 @@
                     {{ agentStore.agents.find(a => String(a.id) === String(ev.actorId))?.name || ev.actorId }}
                   </span>
                   <span v-else-if="ev.actorId" class="timeline-row__actor">{{ ev.actorId }}</span>
-                  <span v-if="ev.detail" class="timeline-row__detail">{{ ev.detail }}</span>
+                  <div
+                    v-if="ev.detail"
+                    class="timeline-row__detail timeline-row__markdown markdown-body"
+                    v-html="renderTaskMarkdown(ev.detail)"
+                  />
                 </div>
               </div>
             </div>
@@ -539,6 +546,7 @@ import {
   type TeamsRouteState,
 } from '@/composables/teamsRouteState'
 import { useTeamRunHistory } from '@/composables/useTeamRunHistory'
+import { useMarkdownRenderer } from '@/composables/useMarkdownRenderer'
 import { buildWorkerChatRoute } from '@/components/team-run/teamRunPresentation'
 import TeamRunDrawer from '@/components/team-run/TeamRunDrawer.vue'
 import TeamRunsPanel from '@/components/team-run/TeamRunsPanel.vue'
@@ -553,6 +561,7 @@ const router = useRouter()
 const store = useTeamStore()
 const agentStore = useAgentStore()
 const runHistory = useTeamRunHistory()
+const { renderMarkdown } = useMarkdownRenderer()
 
 const activeTab = ref<TeamsDetailView>('runs')
 const taskDialogVisible = ref(false)
@@ -560,6 +569,12 @@ const currentTask = ref<TeamTaskVO | null>(null)
 const comments = ref<TeamTaskComment[]>([])
 const newComment = ref('')
 const taskEvents = ref<TeamTaskEvent[]>([])
+const renderedCurrentTaskDescription = computed(() => renderMarkdown(currentTask.value?.task.description || ''))
+const renderedCurrentTaskResult = computed(() => renderMarkdown(currentTask.value?.task.result || ''))
+
+function renderTaskMarkdown(value: string | null | undefined): string {
+  return value ? renderMarkdown(value) : ''
+}
 let previousRouteState: TeamsRouteState | null = null
 let routeReconciliationRevision = 0
 
@@ -1672,6 +1687,76 @@ async function cancelTask() {
   border: 1px solid var(--mc-border-light);
   padding: 10px 12px;
 }
+.task-detail__markdown {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.task-detail__markdown :deep(p),
+.timeline-row__markdown :deep(p) {
+  margin: 0 0 8px;
+}
+.task-detail__markdown :deep(p:last-child),
+.timeline-row__markdown :deep(p:last-child) {
+  margin-bottom: 0;
+}
+.task-detail__markdown :deep(h1),
+.task-detail__markdown :deep(h2),
+.task-detail__markdown :deep(h3),
+.timeline-row__markdown :deep(h1),
+.timeline-row__markdown :deep(h2),
+.timeline-row__markdown :deep(h3) {
+  margin: 10px 0 6px;
+  color: var(--mc-text-primary);
+  line-height: 1.35;
+}
+.task-detail__markdown :deep(ul),
+.task-detail__markdown :deep(ol),
+.timeline-row__markdown :deep(ul),
+.timeline-row__markdown :deep(ol) {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+.task-detail__markdown :deep(table),
+.timeline-row__markdown :deep(table) {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 8px 0;
+}
+.task-detail__markdown :deep(th),
+.task-detail__markdown :deep(td),
+.timeline-row__markdown :deep(th),
+.timeline-row__markdown :deep(td) {
+  border: 1px solid var(--mc-border);
+  padding: 5px 8px;
+  text-align: left;
+  white-space: nowrap;
+}
+.task-detail__markdown :deep(th),
+.timeline-row__markdown :deep(th) {
+  background: var(--mc-bg-subtle, rgba(0, 0, 0, 0.04));
+  color: var(--mc-text-primary);
+}
+.task-detail__markdown :deep(blockquote),
+.timeline-row__markdown :deep(blockquote) {
+  margin: 8px 0;
+  padding-left: 10px;
+  border-left: 3px solid var(--mc-primary);
+  color: var(--mc-text-secondary);
+}
+.task-detail__markdown :deep(pre),
+.timeline-row__markdown :deep(pre) {
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--mc-bg-subtle, rgba(0, 0, 0, 0.05));
+}
+.task-detail__markdown :deep(code),
+.timeline-row__markdown :deep(code) {
+  overflow-wrap: anywhere;
+}
 .task-detail__reason {
   border-radius: 12px;
   border: 1px solid rgba(217, 119, 6, 0.3);
@@ -1907,9 +1992,13 @@ async function cancelTask() {
   flex-shrink: 0;
 }
 .timeline-row__detail {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+  color: var(--mc-text-secondary);
+  overflow-wrap: anywhere;
+}
+.timeline-row__markdown {
+  white-space: normal;
 }
 .board-col__more {
   width: 100%;
