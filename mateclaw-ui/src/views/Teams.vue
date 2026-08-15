@@ -102,8 +102,24 @@
                 class="btn-primary"
                 @click="openTaskCreateDialog"
               >+ {{ t('teams.createTask') }}</button>
-              <button class="btn-secondary" @click="refreshCurrentView">{{ t('common.refresh') }}</button>
-              <button class="btn-danger" @click="removeTeam">{{ t('common.delete') }}</button>
+              <button
+                class="btn-secondary detail-action"
+                :aria-label="t('common.refresh')"
+                :title="t('common.refresh')"
+                @click="refreshCurrentView"
+              >
+                <RefreshIcon class="detail-action-icon" />
+                <span class="detail-action-label">{{ t('common.refresh') }}</span>
+              </button>
+              <button
+                class="btn-danger detail-action"
+                :aria-label="t('common.delete')"
+                :title="t('common.delete')"
+                @click="removeTeam"
+              >
+                <DeleteIcon class="detail-action-icon" />
+                <span class="detail-action-label">{{ t('common.delete') }}</span>
+              </button>
             </div>
           </div>
 
@@ -125,7 +141,10 @@
             :loading="runHistory.loading.value"
             :error="runHistory.error.value"
             :selected-run-id="runHistory.selectedRunId.value"
+            :has-more="Boolean(runHistory.nextCursor.value)"
+            :loading-more="runHistory.loadingMore.value"
             @refresh="runHistory.refresh"
+            @load-more="runHistory.loadMore"
             @select-run="selectRun"
           />
 
@@ -201,11 +220,19 @@
       :open="Boolean(runHistory.selectedRun.value)"
       :run="runHistory.selectedRun.value"
       :selected-task-id="runHistory.selectedTaskId.value"
+      :detail-loading="runHistory.detailLoading.value"
+      :detail-error="runHistory.detailError.value"
       can-cancel
+      :management-actions="canManageSelectedRun"
+      :pending-actions="attentionPendingActions"
       @close="closeRun"
       @cancel="cancelRun"
       @select-task="openRunTask"
       @navigate="router.push"
+      @view-task="openAttentionTask"
+      @retry-task="retryAttentionTask"
+      @approve-task="approveAttentionTask"
+      @retry-detail="runHistory.ensureSelectedRunDetail(runHistory.selectedRunId.value!, runHistory.selectedTaskId.value)"
     />
 
     <!-- ==================== Create team dialog ==================== -->
@@ -438,6 +465,10 @@
             <div v-if="currentTask.task.reason" class="task-detail__reason">
               {{ currentTask.task.reason }}
             </div>
+            <div v-if="currentTask.task.blockedBy" class="task-detail__block">
+              <div class="task-detail__label">{{ t('teamRuns.dependencies') }}</div>
+              <div class="task-detail__text">{{ currentTask.task.blockedBy }}</div>
+            </div>
             <div v-if="currentDeliverables.length > 0" class="task-detail__block">
               <div class="task-detail__label">{{ t('teams.deliverables') }}</div>
               <div class="deliverable-list">
@@ -534,9 +565,11 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Delete as DeleteIcon, Refresh as RefreshIcon } from '@element-plus/icons-vue'
 import { teamApi, teamRunApi } from '@/api/index'
 import type { TeamMemberVO, TeamRun, TeamRunTask, TeamTaskComment, TeamTaskDeliverable, TeamTaskEvent, TeamTaskVO } from '@/api/index'
 import { subscribeTeamEvents } from '@/composables/useTeamEvents'
+import { discoveredTeamTaskKey, shouldShowInGlobalTeamFeed } from '@/composables/chat/teamEventOwnership'
 import {
   buildTeamsRouteQuery,
   clearTeamsRunSelection,
@@ -550,16 +583,25 @@ import { useMarkdownRenderer } from '@/composables/useMarkdownRenderer'
 import { buildWorkerChatRoute } from '@/components/team-run/teamRunPresentation'
 import TeamRunDrawer from '@/components/team-run/TeamRunDrawer.vue'
 import TeamRunsPanel from '@/components/team-run/TeamRunsPanel.vue'
+import {
+  canManageTeamRunAttention,
+  refreshAttentionTaskContext,
+  runAttentionTaskAction,
+  type TeamAttentionAction,
+  type TeamAttentionActionContext,
+} from '@/components/team-run/teamRunAttentionHandlers'
 import SkillIcon from '@/components/common/SkillIcon.vue'
 import { agentIconColor } from '@/utils/agentIconColor'
 import { useAgentStore } from '@/stores/useAgentStore'
 import { useTeamStore } from '@/stores/useTeamStore'
+import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const store = useTeamStore()
 const agentStore = useAgentStore()
+const workspaceStore = useWorkspaceStore()
 const runHistory = useTeamRunHistory()
 const { renderMarkdown } = useMarkdownRenderer()
 
@@ -571,6 +613,22 @@ const newComment = ref('')
 const taskEvents = ref<TeamTaskEvent[]>([])
 const renderedCurrentTaskDescription = computed(() => renderMarkdown(currentTask.value?.task.description || ''))
 const renderedCurrentTaskResult = computed(() => renderMarkdown(currentTask.value?.task.result || ''))
+const pendingAttentionActions = reactive(new Set<string>())
+const canManageSelectedRun = computed(() => workspaceStore.accessLoaded
+  && canManageTeamRunAttention(
+    workspaceStore.currentRole,
+    workspaceStore.currentWorkspaceId,
+    runHistory.selectedRun.value?.workspaceId ?? null,
+  ))
+const attentionPendingActions = computed(() => {
+  const run = runHistory.selectedRun.value
+  const team = store.currentTeam
+  if (!run || !team) return []
+  const prefix = `${team.team.id}:${run.id}:`
+  return [...pendingAttentionActions]
+    .filter(key => key.startsWith(prefix))
+    .map(key => key.slice(prefix.length))
+})
 
 function renderTaskMarkdown(value: string | null | undefined): string {
   return value ? renderMarkdown(value) : ''
@@ -642,6 +700,35 @@ const activityFeed = ref<{ key: number; text: string }[]>([])
 let activityKey = 0
 let unsubscribeEvents: (() => void) | null = null
 let refreshDebounce: ReturnType<typeof setTimeout> | null = null
+const incrementalTaskKeys = ref<Set<string>>(new Set())
+
+const baseEventOwnershipContext = computed(() => {
+  const runs = runHistory.runs.value
+  const boardTasks = store.tasks.map(entry => entry.task)
+  const projectedTasks = runs.flatMap(run => run.tasks)
+  return {
+    runIds: new Set([
+      ...runs.map(run => run.id),
+      ...boardTasks.flatMap(task => task.runId ? [task.runId] : []),
+    ]),
+    taskKeys: new Set([...boardTasks, ...projectedTasks].flatMap(task =>
+      task.runId ? [`${task.runId}:${task.id}`] : [])),
+    conversationIds: new Set([
+      ...runs.flatMap(run => run.leadConversationId ? [run.leadConversationId] : []),
+      ...[...boardTasks, ...projectedTasks].flatMap(task =>
+        task.conversationId ? [task.conversationId] : []),
+    ]),
+  }
+})
+
+const eventOwnershipContext = computed(() => ({
+  runIds: baseEventOwnershipContext.value.runIds,
+  conversationIds: baseEventOwnershipContext.value.conversationIds,
+  taskKeys: new Set([
+    ...baseEventOwnershipContext.value.taskKeys,
+    ...incrementalTaskKeys.value,
+  ]),
+}))
 
 function onBoardEvent(e: { event: string; data: Record<string, unknown> }) {
   if (!e.event.startsWith('team_task_')) return
@@ -651,6 +738,12 @@ function onBoardEvent(e: { event: string; data: Record<string, unknown> }) {
     refreshDebounce = null
     refreshBoard()
   }, 300)
+
+  const discoveredKey = discoveredTeamTaskKey(e, baseEventOwnershipContext.value.runIds)
+  if (discoveredKey && !incrementalTaskKeys.value.has(discoveredKey)) {
+    incrementalTaskKeys.value = new Set([...incrementalTaskKeys.value, discoveredKey])
+  }
+  if (!shouldShowInGlobalTeamFeed(e, eventOwnershipContext.value)) return
 
   const type = e.event.slice('team_task_'.length)
   const subject = String(e.data.subject ?? '')
@@ -677,6 +770,7 @@ function stopEventSubscription() {
     unsubscribeEvents = null
   }
   activityFeed.value = []
+  incrementalTaskKeys.value = new Set()
 }
 
 // ==================== polling ====================
@@ -749,6 +843,15 @@ watch(
           })
           return
         }
+      }
+      if (reconciliation.selectedRunId
+        && runHistory.selectedRun.value?.projectionCompleteness !== 'full') {
+        await runHistory.ensureSelectedRunDetail(
+          reconciliation.selectedRunId,
+          reconciliation.selectedTaskId,
+          state.teamId,
+        )
+        if (!routeIsCurrent()) return
       }
       if (reconciliation.taskAction === 'close') dismissTaskDetail()
       if (reconciliation.taskAction === 'load'
@@ -1077,6 +1180,71 @@ async function openRunTask(
   }
 }
 
+function selectedRunTask(taskId: string) {
+  return runHistory.selectedRun.value?.tasks.find(task => task.id === taskId) ?? null
+}
+
+async function openAttentionTask(taskId: string) {
+  const task = selectedRunTask(taskId)
+  if (task) runHistory.select(task.runId, task.id)
+}
+
+function captureAttentionContext(taskId: string): TeamAttentionActionContext | null {
+  const run = runHistory.selectedRun.value
+  const teamId = String(store.currentTeam?.team.id ?? '')
+  if (!run || !teamId || run.teamId !== teamId || !run.tasks.some(task => task.id === taskId)) return null
+  return { teamId, runId: run.id, taskId }
+}
+
+async function refreshAfterTaskAction(context: TeamAttentionActionContext) {
+  await refreshAttentionTaskContext({
+    context,
+    currentTeamId: () => store.currentTeam ? String(store.currentTeam.team.id) : null,
+    currentTaskId: () => currentTask.value?.task.id ?? null,
+    reloadTask: () => reloadTask(false),
+    refreshBoard: teamId => store.fetchTasks(teamId),
+    refreshRun: (runId, teamId) => runHistory.refreshRun(runId, teamId),
+  })
+}
+
+async function performAttentionAction(taskId: string, action: TeamAttentionAction) {
+  const context = captureAttentionContext(taskId)
+  if (!context || !canManageSelectedRun.value) return false
+  return runAttentionTaskAction({
+    context,
+    action,
+    pending: pendingAttentionActions,
+    execute: () => action === 'approve'
+      ? teamApi.approveTask(context.teamId, context.taskId)
+      : teamApi.retryTask(context.teamId, context.taskId),
+    refresh: () => refreshAfterTaskAction(context),
+    onError: cause => ElMessage.error(
+      cause instanceof Error && cause.message ? cause.message : t('teams.actionFailed', 'Operation failed'),
+    ),
+  })
+}
+
+async function approveTaskById(taskId: string) {
+  if (!store.currentTeam) return
+  await teamApi.approveTask(store.currentTeam.team.id, taskId)
+  ElMessage.success(t('teams.approved'))
+  await reloadTask()
+}
+
+async function retryTaskById(taskId: string) {
+  if (!store.currentTeam) return
+  await teamApi.retryTask(store.currentTeam.team.id, taskId)
+  await reloadTask()
+}
+
+async function approveAttentionTask(taskId: string) {
+  if (await performAttentionAction(taskId, 'approve')) ElMessage.success(t('teams.approved'))
+}
+
+async function retryAttentionTask(taskId: string) {
+  await performAttentionAction(taskId, 'retry')
+}
+
 async function openTask(vo: TeamTaskVO, shouldApply: () => boolean = () => true) {
   if (!store.currentTeam) return
   try {
@@ -1100,10 +1268,11 @@ async function openTask(vo: TeamTaskVO, shouldApply: () => boolean = () => true)
   }
 }
 
-async function reloadTask() {
+async function reloadTask(refreshContext = true) {
   if (currentTask.value) {
     const vo = currentTask.value
     await openTask(vo)
+    if (!refreshContext) return
     await Promise.all([
       refreshBoard(),
       vo.task.runId ? runHistory.refreshRun(vo.task.runId) : Promise.resolve(),
@@ -1141,10 +1310,8 @@ async function submitComment() {
 }
 
 async function approveTask() {
-  if (!store.currentTeam || !currentTask.value) return
-  await teamApi.approveTask(store.currentTeam.team.id, currentTask.value.task.id)
-  ElMessage.success(t('teams.approved'))
-  await reloadTask()
+  if (!currentTask.value) return
+  await approveTaskById(currentTask.value.task.id)
 }
 
 async function rejectTask() {
@@ -1161,9 +1328,8 @@ async function rejectTask() {
 }
 
 async function retryTask() {
-  if (!store.currentTeam || !currentTask.value) return
-  await teamApi.retryTask(store.currentTeam.team.id, currentTask.value.task.id)
-  await reloadTask()
+  if (!currentTask.value) return
+  await retryTaskById(currentTask.value.task.id)
 }
 
 async function cancelTask() {
@@ -1399,6 +1565,18 @@ async function cancelTask() {
   align-items: center;
   gap: 10px;
 }
+.detail-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.detail-action-icon {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
 
 /* Segmented switch — same pattern as the employees page view switch. */
 .view-switch {
@@ -1446,6 +1624,35 @@ async function cancelTask() {
   }
 }
 @media (max-width: 768px) {
+  .detail-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .detail-header__right {
+    width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .detail-header__right::-webkit-scrollbar {
+    display: none;
+  }
+  .view-switch {
+    flex: none;
+  }
+  .view-seg {
+    padding: 6px 13px;
+    white-space: nowrap;
+  }
+  .detail-action {
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    flex: none;
+  }
+  .detail-action-label {
+    display: none;
+  }
   .board-grid {
     grid-template-columns: 1fr;
   }

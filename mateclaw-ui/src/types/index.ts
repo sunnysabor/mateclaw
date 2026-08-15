@@ -113,6 +113,7 @@ export interface Conversation {
   status?: 'active' | 'closed'
   streamStatus?: 'idle' | 'running'
   source?: string
+  conversationKind?: 'primary' | 'team_worker' | 'scheduled'
   pinned?: number
   /** Provider id of the model this conversation is pinned to (per-conversation model). */
   modelProvider?: string

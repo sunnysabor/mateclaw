@@ -55,6 +55,26 @@ export function readTeamRunRouteQuery(query: Record<string, unknown>): {
   }
 }
 
+export function readLegacyWorkerRouteContext(
+  conversationId: string,
+  query: Record<string, unknown>,
+): {
+  runId: string
+  taskId: string
+  teamId: string
+  leadConversationId?: string
+} | null {
+  if (!conversationId.startsWith('team-task-')) return null
+  const route = readTeamRunRouteQuery(query)
+  if (!route.teamRunId || !route.taskId || !route.teamId) return null
+  return {
+    runId: route.teamRunId,
+    taskId: route.taskId,
+    teamId: route.teamId,
+    ...(route.leadConversationId ? { leadConversationId: route.leadConversationId } : {}),
+  }
+}
+
 export function buildChatRouteQuery(options: {
   currentQuery: Record<string, unknown>
   agentId?: string

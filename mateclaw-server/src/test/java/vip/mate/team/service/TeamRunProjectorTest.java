@@ -17,6 +17,7 @@ import vip.mate.team.repository.TeamRunMapper;
 import vip.mate.team.repository.TeamTaskMapper;
 
 import java.util.List;
+import java.time.LocalDateTime;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -80,6 +81,170 @@ class TeamRunProjectorTest {
 
         assertEquals("[\"9007199254740993\"]", projected.blockedBy());
         assertEquals("{\"deliverables\":[],\"planId\":\"9007199254740995\"}", projected.metadata());
+    }
+
+    @Test
+    void projectsCanonicalDeliveryContractAndDeduplicatesDeliverables() {
+        LocalDateTime completedAt = LocalDateTime.of(2026, 8, 14, 12, 0);
+        TeamRunEntity run = run(TeamRunStatus.PARTIAL, "{\"projectedOutcome\":\"partial\"}");
+        run.setFinalSummary("Synthesized result");
+        run.setStartedAt(completedAt.minusMinutes(5));
+        run.setCompletedAt(completedAt);
+        run.setUpdateTime(completedAt);
+
+        TeamTaskEntity completed = task(TeamTaskStatus.COMPLETED);
+        completed.setId(101L);
+        completed.setSubject("Report");
+        completed.setAssigneeAgentId(201L);
+        completed.setResult("Completed report");
+        completed.setConversationId("worker-101");
+        completed.setUpdateTime(completedAt.minusMinutes(1));
+        completed.setMetadata("{\"deliverables\":[{\"name\":\"report.pdf\","
+                + "\"url\":\"/api/v1/files/generated/report.pdf\","
+                + "\"time\":\"2026-08-14T11:59:00\"}]}");
+        TeamTaskEntity review = task(TeamTaskStatus.IN_REVIEW);
+        review.setId(102L);
+        review.setSubject("Review");
+        review.setAssigneeAgentId(202L);
+        review.setUpdateTime(completedAt);
+        review.setMetadata(completed.getMetadata());
+
+        when(runMapper.selectById(RUN_ID)).thenReturn(run);
+        when(taskMapper.selectList(any())).thenReturn(List.of(completed, review));
+
+        TeamRunView view = projector.project(RUN_ID);
+
+        assertEquals("synthesized", view.outcomeQuality());
+        assertEquals(1, view.deliverables().size());
+        assertEquals(List.of(101L, 102L), view.deliverables().getFirst().sourceTaskIds());
+        assertEquals(2, view.contributions().size());
+        assertEquals("review", view.attentionItems().getFirst().type());
+        assertEquals("terminal", view.liveness().state());
+        assertEquals(completedAt, view.liveness().lastActivityAt());
+        assertEquals(300L, view.metrics().durationSeconds());
+        assertEquals(2, view.metrics().totalTasks());
+    }
+
+    @Test
+    void marksTaskResultFallbackAndStalledActiveRunWithoutRecentActivity() {
+        LocalDateTime old = LocalDateTime.now().minusHours(1);
+        TeamRunEntity run = run(TeamRunStatus.PLANNING, null);
+        run.setUpdateTime(old);
+        TeamTaskEntity completed = task(TeamTaskStatus.COMPLETED);
+        completed.setResult("Raw member result");
+        completed.setUpdateTime(old);
+        when(runMapper.selectById(RUN_ID)).thenReturn(run);
+        when(taskMapper.selectList(any())).thenReturn(List.of(completed));
+
+        TeamRunView view = projector.project(RUN_ID);
+
+        assertEquals("fallback", view.outcomeQuality());
+        assertEquals("stalled", view.liveness().state());
+        assertEquals(old, view.liveness().lastActivityAt());
+    }
+
+    @Test
+    void rejectsAbsoluteGeneratedDeliverableUrlsInsteadOfRewritingThemAsLocalPaths() {
+        TeamRunEntity run = run(TeamRunStatus.COMPLETED, null);
+        TeamTaskEntity task = task(TeamTaskStatus.COMPLETED);
+        task.setMetadata("{\"deliverables\":["
+                + "{\"name\":\"safe\",\"url\":\"/api/v1/files/generated/safe.pdf\"},"
+                + "{\"name\":\"external\",\"url\":\"https://evil.test/api/v1/files/generated/x.pdf\"}]}");
+        when(runMapper.selectById(RUN_ID)).thenReturn(run);
+        when(taskMapper.selectList(any())).thenReturn(List.of(task));
+
+        TeamRunView view = projector.project(RUN_ID);
+
+        assertEquals(1, view.deliverables().size());
+        assertEquals(List.of("/api/v1/files/generated/safe.pdf"),
+                view.deliverables().stream().map(TeamRunView.Deliverable::url).toList());
+    }
+
+    @Test
+    void rejectsGeneratedUrlsThatEscapeTheirPrefixAfterPathNormalization() {
+        TeamRunEntity run = run(TeamRunStatus.COMPLETED, null);
+        TeamTaskEntity task = task(TeamTaskStatus.COMPLETED);
+        task.setMetadata("{\"deliverables\":["
+                + "{\"name\":\"safe\",\"url\":\"/api/v1/files/generated/safe.pdf\"},"
+                + "{\"name\":\"dots\",\"url\":\"/api/v1/files/generated/../secret.txt\"},"
+                + "{\"name\":\"encoded\",\"url\":\"/api/v1/files/generated/%2e%2e/secret.txt\"},"
+                + "{\"name\":\"slash\",\"url\":\"/api/v1/files/generated/..\\\\secret.txt\"},"
+                + "{\"name\":\"absolute\",\"url\":\"https://evil.test/api/v1/files/generated/a/../../secret.txt\"}]}");
+        when(runMapper.selectById(RUN_ID)).thenReturn(run);
+        when(taskMapper.selectList(any())).thenReturn(List.of(task));
+
+        TeamRunView view = projector.project(RUN_ID);
+
+        assertEquals(1, view.deliverables().size());
+        assertEquals("/api/v1/files/generated/safe.pdf", view.deliverables().getFirst().url());
+    }
+
+    @Test
+    void recentInProgressLeaseIsCrediblyLive() {
+        TeamRunEntity run = run(TeamRunStatus.PLANNING, null);
+        TeamTaskEntity task = task(TeamTaskStatus.IN_PROGRESS);
+        task.setLockExpiresAt(LocalDateTime.now().plusMinutes(5));
+        when(runMapper.selectById(RUN_ID)).thenReturn(run);
+        when(taskMapper.selectList(any())).thenReturn(List.of(task));
+
+        assertEquals("live", projector.project(RUN_ID).liveness().state());
+    }
+
+    @Test
+    void expiredInProgressLeaseIsNotLive() {
+        TeamRunEntity run = run(TeamRunStatus.PLANNING, null);
+        run.setUpdateTime(LocalDateTime.now());
+        TeamTaskEntity task = task(TeamTaskStatus.IN_PROGRESS);
+        task.setLockExpiresAt(LocalDateTime.now().minusSeconds(1));
+        task.setUpdateTime(LocalDateTime.now());
+        when(runMapper.selectById(RUN_ID)).thenReturn(run);
+        when(taskMapper.selectList(any())).thenReturn(List.of(task));
+
+        assertEquals("quiet", projector.project(RUN_ID).liveness().state());
+    }
+
+    @Test
+    void recentDatabaseUpdateIsQuietRatherThanCrediblyLive() {
+        TeamRunEntity run = run(TeamRunStatus.PLANNING, null);
+        run.setUpdateTime(LocalDateTime.now());
+        when(runMapper.selectById(RUN_ID)).thenReturn(run);
+        when(taskMapper.selectList(any())).thenReturn(List.of());
+
+        assertEquals("quiet", projector.project(RUN_ID).liveness().state());
+    }
+
+    @Test
+    void fallbackAndStopReasonProduceAttentionWithHumanActionFirst() {
+        LocalDateTime now = LocalDateTime.now();
+        TeamRunEntity run = run(TeamRunStatus.CANCELLED, "{\"summaryQuality\":\"fallback\"}");
+        run.setFinalSummary("raw results");
+        run.setStopReason("cancelled by operator");
+        run.setUpdateTime(now);
+        TeamTaskEntity failed = task(TeamTaskStatus.FAILED);
+        failed.setId(1L);
+        failed.setReason("worker failed");
+        failed.setUpdateTime(now);
+        TeamTaskEntity review = task(TeamTaskStatus.IN_REVIEW);
+        review.setId(2L);
+        review.setUpdateTime(now.minusHours(1));
+        when(runMapper.selectById(RUN_ID)).thenReturn(run);
+        when(taskMapper.selectList(any())).thenReturn(List.of(failed, review));
+
+        TeamRunView view = projector.project(RUN_ID);
+
+        assertEquals("review", view.attentionItems().getFirst().type());
+        assertTrue(view.attentionItems().stream().anyMatch(item -> "synthesis".equals(item.type())));
+        assertTrue(view.attentionItems().stream().anyMatch(item -> "stopped".equals(item.type())));
+    }
+
+    @Test
+    void invalidOutcomeQualityMetadataSafelyFallsBackToKnownValue() {
+        TeamRunEntity run = run(TeamRunStatus.COMPLETED, "{\"summaryQuality\":\"invented\"}");
+        run.setFinalSummary("summary");
+        when(runMapper.selectById(RUN_ID)).thenReturn(run);
+        when(taskMapper.selectList(any())).thenReturn(List.of());
+
+        assertEquals("synthesized", projector.project(RUN_ID).outcomeQuality());
     }
 
     @Test

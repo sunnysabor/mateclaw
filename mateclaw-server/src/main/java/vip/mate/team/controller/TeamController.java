@@ -27,8 +27,11 @@ import vip.mate.team.service.TeamTaskService;
 import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 
 import java.security.Principal;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.function.Supplier;
 
 /**
@@ -142,8 +145,17 @@ public class TeamController {
                                      @RequestParam(required = false) Integer offset) {
         return guarded(() -> {
             requireTeam(id);
-            return R.ok(taskService.listTasks(id, status, limit, offset).stream()
-                    .map(this::toTaskVO).toList());
+            List<TeamTaskEntity> tasks = taskService.listTasks(id, status, limit, offset);
+            Set<Long> agentIds = tasks.stream()
+                    .flatMap(task -> java.util.stream.Stream.of(
+                            task.getAssigneeAgentId(), task.getOwnerAgentId()))
+                    .filter(java.util.Objects::nonNull)
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+            Map<Long, AgentEntity> agents = agentIds.isEmpty()
+                    ? Map.of()
+                    : agentMapper.selectBatchIds(agentIds).stream()
+                            .collect(Collectors.toMap(AgentEntity::getId, agent -> agent));
+            return R.ok(tasks.stream().map(task -> toTaskVO(task, agents)).toList());
         });
     }
 
@@ -400,6 +412,21 @@ public class TeamController {
                 agentName(task.getAssigneeAgentId()),
                 task.getOwnerAgentId() == null ? null : agentName(task.getOwnerAgentId()),
                 task.getRunId());
+    }
+
+    private TaskVO toTaskVO(TeamTaskEntity task, Map<Long, AgentEntity> agents) {
+        return new TaskVO(task,
+                agentName(task.getAssigneeAgentId(), agents),
+                agentName(task.getOwnerAgentId(), agents),
+                task.getRunId());
+    }
+
+    private String agentName(Long agentId, Map<Long, AgentEntity> agents) {
+        if (agentId == null) {
+            return null;
+        }
+        AgentEntity agent = agents.get(agentId);
+        return agent != null && agent.getName() != null ? agent.getName() : String.valueOf(agentId);
     }
 
     private String agentName(Long agentId) {

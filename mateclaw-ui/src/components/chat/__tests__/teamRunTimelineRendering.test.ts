@@ -6,8 +6,11 @@ import type { Message } from '@/types'
 
 vi.mock('../MessageBubble.vue', () => ({
   default: defineComponent({
-    props: ['message'],
-    setup: props => () => h('div', { 'data-message-id': String(props.message.id) }, props.message.content),
+    props: ['message', 'readonly'],
+    setup: props => () => h('div', {
+      'data-message-id': String(props.message.id),
+      'data-readonly': String(Boolean(props.readonly)),
+    }, props.message.content),
   }),
 }))
 vi.mock('../CompressionSummary.vue', () => ({ default: defineComponent({ setup: () => () => h('div') }) }))
@@ -38,11 +41,12 @@ const messages = {
 const message = (id: string, role: Message['role'], content: string, metadata?: unknown): Message => ({
   id, conversationId: 'lead', role, content, contentParts: [], metadata: metadata as never,
 })
-const run = (): TeamRun => ({
+const run = (extra: Partial<TeamRun> = {}): TeamRun => ({
   id: '10', teamId: '20', workspaceId: '30', leadAgentId: '40', leadConversationId: 'lead',
   originMessageId: '1', title: 'Launch research', objective: 'Collect evidence', status: 'running',
   finalSummary: null, stopReason: null, metadata: null, startedAt: null, completedAt: null,
   createTime: null, updateTime: null, progress: { total: 0, done: 0, failed: 0, inReview: 0, percent: 0 }, tasks: [],
+  ...extra,
 })
 
 const apps: Array<ReturnType<typeof createApp>> = []
@@ -62,6 +66,12 @@ afterEach(() => {
 })
 
 describe('MessageList team run timeline', () => {
+  it('passes readonly state to every message action surface', () => {
+    const host = mount({ messages: [message('1', 'assistant', 'result')], readonly: true })
+
+    expect(host.querySelector('[data-message-id="1"]')?.getAttribute('data-readonly')).toBe('true')
+  })
+
   it('preserves legacy rendering when teamRuns is not provided', () => {
     const host = mount({ messages: [
       message('1', 'user', 'hello'),
@@ -88,5 +98,47 @@ describe('MessageList team run timeline', () => {
     expect(Array.from(host.querySelectorAll('[data-message-id]')).map(node => node.getAttribute('data-message-id'))).toEqual(['1', '3'])
     expect(host.querySelector('[data-team-run-toggle]')?.getAttribute('aria-expanded')).toBe('true')
     expect(host.textContent).toContain('Launch research')
+  })
+
+  it('renders one expandable run card for ten tasks and replayed lifecycle messages', async () => {
+    const tasks = Array.from({ length: 10 }, (_, index) => ({
+      id: String(500 + index), teamId: '20', runId: '10', taskNumber: index + 1,
+      subject: `Evidence task ${index + 1}`, description: null, status: 'completed' as const,
+      priority: 0, taskType: 'general', assigneeAgentId: `agent-${index + 1}`, ownerAgentId: null,
+      blockedBy: null, requireApproval: false, progressPercent: 100, progressStep: null,
+      result: `Result ${index + 1}`, reason: null, conversationId: `worker-${index + 1}`,
+      metadata: null, createTime: null, updateTime: null,
+    }))
+    const lifecycleMessages = tasks.flatMap(task => [
+      message(`progress-${task.id}`, 'system', 'progress', {
+        type: 'team_task_progress', runId: '10', taskId: task.id, eventId: `progress-${task.id}`,
+      }),
+      message(`complete-${task.id}`, 'system', 'complete', {
+        type: 'team_task_completed', runId: '10', taskId: task.id, eventId: `complete-${task.id}`,
+      }),
+      message(`replay-${task.id}`, 'system', 'complete replay', {
+        type: 'team_task_completed', runId: '10', taskId: task.id, eventId: `complete-${task.id}`,
+      }),
+    ])
+    const projectedRun = run({
+      status: 'completed', tasks,
+      progress: { total: 10, done: 10, failed: 0, inReview: 0, percent: 100 },
+    })
+    const host = mount({
+      messages: [message('1', 'user', 'delegate ten tasks'), ...lifecycleMessages],
+      teamRuns: [projectedRun, projectedRun],
+    })
+    await nextTick()
+
+    expect(host.querySelectorAll('[data-team-run-toggle]')).toHaveLength(1)
+    expect(host.querySelectorAll('[data-message-id]')).toHaveLength(1)
+    expect(host.querySelectorAll('.run-task-row')).toHaveLength(0)
+
+    host.querySelector<HTMLButtonElement>('[data-team-run-toggle]')!.click()
+    await nextTick()
+
+    expect(host.querySelectorAll('[data-team-run-toggle]')).toHaveLength(1)
+    expect(host.querySelectorAll('.run-task-row')).toHaveLength(0)
+    expect(host.querySelector('[data-team-run-outcome]')).not.toBeNull()
   })
 })

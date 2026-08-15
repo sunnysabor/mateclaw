@@ -11,6 +11,7 @@ import vip.mate.MateClawApplication;
 import vip.mate.team.model.TeamRunEntity;
 import vip.mate.team.model.TeamRunStatus;
 import vip.mate.team.repository.TeamRunMapper;
+import vip.mate.team.service.TeamRunService;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -42,6 +43,9 @@ class MigrationSmokeTest {
 
     @Autowired
     private TeamRunMapper runMapper;
+
+    @Autowired
+    private TeamRunService runService;
 
     @Test
     @DisplayName("team run migration creates the run table with a BIGINT workspace")
@@ -80,6 +84,75 @@ class MigrationSmokeTest {
             assertTrue(sql.contains("idx_team_task_run_status"),
                     dialect + " migration must index run task statuses");
         }
+    }
+
+    @Test
+    @DisplayName("all database dialects index stable run history and backfill create time")
+    void allDialectsContainStableHistoryIndexMigration() throws Exception {
+        for (String dialect : List.of("h2", "mysql", "kingbase")) {
+            Path migration = MIGRATIONS.resolve(dialect).resolve("V182__team_run_stable_history_indexes.sql");
+            assertTrue(Files.exists(migration), dialect + " migration must contain version 182");
+            String sql = Files.readString(migration).toLowerCase(Locale.ROOT);
+            assertTrue(sql.contains("idx_team_run_team_history_stable"));
+            assertTrue(sql.contains("team_id, create_time, id"));
+            assertTrue(sql.contains("idx_team_run_conversation_history_stable"));
+            assertTrue(sql.contains("lead_conversation_id, create_time, id"));
+            assertTrue(sql.matches("(?s).*update\\s+mate_team_run\\s+set\\s+create_time.*"
+                    + "where\\s+create_time\\s+is\\s+null.*"));
+            assertTrue(sql.contains("not null"));
+        }
+        assertEquals("NO", columnNullable("mate_team_run", "create_time"));
+    }
+
+    @Test
+    @DisplayName("all database dialects persist conversation kind with a primary default")
+    void allDialectsContainConversationKindMigration() throws Exception {
+        for (String dialect : List.of("h2", "mysql", "kingbase")) {
+            Path migration = MIGRATIONS.resolve(dialect).resolve("V183__conversation_kind.sql");
+            assertTrue(Files.exists(migration), dialect + " migration must contain version 183");
+            String sql = Files.readString(migration).toLowerCase(Locale.ROOT);
+            String normalizedSql = sql.replace("''", "'");
+            assertTrue(sql.contains("conversation_kind"));
+            assertTrue(normalizedSql.contains("default 'primary'"));
+            assertTrue(sql.contains("not null"));
+        }
+        assertEquals("NO", columnNullable("mate_conversation", "conversation_kind"));
+    }
+
+    @Test
+    @DisplayName("all database dialects index nullable team task conversation linkage")
+    void allDialectsContainTeamTaskConversationIndex() throws Exception {
+        for (String dialect : List.of("h2", "mysql", "kingbase")) {
+            Path migration = MIGRATIONS.resolve(dialect).resolve("V184__team_task_conversation_index.sql");
+            assertTrue(Files.exists(migration), dialect + " migration must contain version 184");
+            String sql = Files.readString(migration).toLowerCase(Locale.ROOT);
+            assertTrue(sql.contains("idx_team_task_conversation"));
+            assertTrue(sql.matches("(?s).*idx_team_task_conversation.*conversation_id.*"));
+        }
+        assertEquals("YES", columnNullable("mate_team_task", "conversation_id"));
+        assertEquals(1L, countIndexes("mate_team_task", "idx_team_task_conversation"));
+    }
+
+    @Test
+    @DisplayName("H2 run history pages equal timestamps by id and ends without a cursor")
+    void h2StableCursorPaginationAcrossEqualTimestamps() {
+        LocalDateTime sameTime = LocalDateTime.of(2026, 8, 14, 12, 0);
+        TeamRunEntity high = newRun(9_813_002L, "lead-page", null);
+        high.setTeamId(321L);
+        high.setCreateTime(sameTime);
+        TeamRunEntity low = newRun(9_813_001L, "lead-page", null);
+        low.setTeamId(321L);
+        low.setCreateTime(sameTime);
+        runMapper.insert(high);
+        runMapper.insert(low);
+
+        TeamRunService.RunPage first = runService.pageTeamRuns(321L, 41L, false, null, 1);
+        TeamRunService.RunPage second = runService.pageTeamRuns(321L, 41L, false, first.nextCursor(), 1);
+
+        assertEquals(high.getId(), first.items().getFirst().id());
+        assertNotNull(first.nextCursor());
+        assertEquals(low.getId(), second.items().getFirst().id());
+        assertNull(second.nextCursor());
     }
 
     @Test
@@ -177,5 +250,12 @@ class MigrationSmokeTest {
                 String.class,
                 tableName,
                 columnName);
+    }
+
+    private Long countIndexes(String tableName, String indexName) {
+        return jdbc.queryForObject(
+                "SELECT COUNT(DISTINCT index_name) FROM information_schema.indexes "
+                        + "WHERE table_name = ? AND index_name = ?",
+                Long.class, tableName, indexName);
     }
 }

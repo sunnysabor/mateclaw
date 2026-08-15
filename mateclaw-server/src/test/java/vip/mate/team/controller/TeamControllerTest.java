@@ -9,6 +9,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.context.ApplicationEventPublisher;
 import vip.mate.agent.repository.AgentMapper;
+import vip.mate.agent.model.AgentEntity;
 import vip.mate.auth.model.UserEntity;
 import vip.mate.auth.service.AuthService;
 import vip.mate.common.result.R;
@@ -32,6 +33,7 @@ import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 import vip.mate.workspace.core.service.WorkspaceService;
 
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -164,6 +166,44 @@ class TeamControllerTest {
     }
 
     // ==================== task board ====================
+
+    @Test
+    void listTasksBatchLoadsDistinctAssigneesAndOwnersOnce() {
+        TeamTaskEntity first = task(TEAM_ID, TeamTaskStatus.PENDING);
+        first.setId(101L);
+        first.setAssigneeAgentId(11L);
+        first.setOwnerAgentId(12L);
+        TeamTaskEntity second = task(TEAM_ID, TeamTaskStatus.IN_PROGRESS);
+        second.setId(102L);
+        second.setAssigneeAgentId(11L);
+        second.setOwnerAgentId(13L);
+        TeamTaskEntity third = task(TEAM_ID, TeamTaskStatus.COMPLETED);
+        third.setId(103L);
+        third.setAssigneeAgentId(13L);
+        third.setOwnerAgentId(null);
+        when(taskService.listTasks(TEAM_ID, null, null, null)).thenReturn(List.of(first, second, third));
+        AgentEntity assignee = new AgentEntity();
+        assignee.setId(11L);
+        assignee.setName("Assignee");
+        AgentEntity owner = new AgentEntity();
+        owner.setId(12L);
+        owner.setName("Owner");
+        AgentEntity shared = new AgentEntity();
+        shared.setId(13L);
+        shared.setName("Shared");
+        when(agentMapper.selectBatchIds(any())).thenReturn(List.of(assignee, owner, shared));
+
+        R<List<TeamController.TaskVO>> response = controller.listTasks(TEAM_ID, null, null, null);
+
+        assertEquals(List.of("Assignee", "Assignee", "Shared"),
+                response.getData().stream().map(TeamController.TaskVO::assigneeName).toList());
+        assertEquals(java.util.Arrays.asList("Owner", "Shared", null),
+                response.getData().stream().map(TeamController.TaskVO::ownerName).toList());
+        ArgumentCaptor<java.util.Collection<Long>> ids = ArgumentCaptor.forClass(java.util.Collection.class);
+        verify(agentMapper, times(1)).selectBatchIds(ids.capture());
+        assertEquals(Set.of(11L, 12L, 13L), Set.copyOf(ids.getValue()));
+        verify(agentMapper, never()).selectById(anyLong());
+    }
 
     @Test
     void createTaskSurfacesUnknownAssigneeAsReadableFailure() {

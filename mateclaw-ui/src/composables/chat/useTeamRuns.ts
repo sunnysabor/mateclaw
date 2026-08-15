@@ -1,11 +1,11 @@
 import { getCurrentScope, onScopeDispose, ref, toValue, watch, type MaybeRefOrGetter, type Ref } from 'vue'
-import { teamRunApi, type TeamRun } from '@/api'
+import { teamRunApi, type TeamRun, type TeamRunPage } from '@/api'
 import { subscribeTeamEvents, type TeamBoardEvent } from '@/composables/useTeamEvents'
 
 type ApiResult<T> = T | { data: T }
 
 export interface TeamRunsDependencies {
-  listByConversation: (conversationId: string) => Promise<ApiResult<TeamRun[]>>
+  listByConversation: (conversationId: string, cursor?: string) => Promise<ApiResult<TeamRun[] | TeamRunPage>>
   getRun: (runId: string) => Promise<ApiResult<TeamRun>>
   subscribe: (teamId: string, onEvent: (event: TeamBoardEvent) => void) => () => void
 }
@@ -16,7 +16,10 @@ export interface UseTeamRunsOptions {
 }
 
 const defaultDependencies: TeamRunsDependencies = {
-  listByConversation: conversationId => teamRunApi.listByConversation(conversationId),
+  listByConversation: (conversationId, cursor) => teamRunApi.listByConversationPage(conversationId, {
+    ...(cursor ? { cursor } : {}),
+    limit: 20,
+  }),
   getRun: runId => teamRunApi.get(runId),
   subscribe: subscribeTeamEvents,
 }
@@ -28,7 +31,17 @@ function dataOf<T>(result: ApiResult<T>): T {
 }
 
 function uniqueRuns(runs: TeamRun[]): TeamRun[] {
-  return Array.from(new Map(runs.map(run => [run.id, run])).values())
+  const byId = new Map<string, TeamRun>()
+  for (const run of runs) {
+    const current = byId.get(run.id)
+    if (current?.projectionCompleteness === 'full' && run.projectionCompleteness !== 'full') continue
+    byId.set(run.id, run)
+  }
+  return [...byId.values()]
+}
+
+function pageItems(value: TeamRun[] | TeamRunPage): TeamRun[] {
+  return Array.isArray(value) ? value : value?.items ?? []
 }
 
 export function useTeamRuns(
@@ -38,7 +51,10 @@ export function useTeamRuns(
   runs: Ref<TeamRun[]>
   loading: Ref<boolean>
   error: Ref<unknown>
+  nextCursor: Ref<string | null>
+  loadingMore: Ref<boolean>
   refresh: () => Promise<void>
+  loadMore: () => Promise<void>
   refreshRun: (runId: string) => Promise<void>
   stop: () => void
 } {
@@ -46,6 +62,8 @@ export function useTeamRuns(
   const runs = ref<TeamRun[]>([])
   const loading = ref(false)
   const error = ref<unknown>(null)
+  const nextCursor = ref<string | null>(null)
+  const loadingMore = ref(false)
   const subscriptions = new Map<string, () => void>()
   const inFlight = new Map<string, Promise<void>>()
   let generation = 0
@@ -114,6 +132,8 @@ export function useTeamRuns(
 
   const refresh = async () => {
     const activeGeneration = ++generation
+    nextCursor.value = null
+    loadingMore.value = false
     cleanupSubscriptions()
     inFlight.clear()
     loading.value = true
@@ -126,7 +146,9 @@ export function useTeamRuns(
         linkedRunId ? dependencies.getRun(linkedRunId) : Promise.resolve(undefined),
       ])
       if (stopped || activeGeneration !== generation) return
-      const listed = listedResult.status === 'fulfilled' ? dataOf(listedResult.value) : []
+      const listedPayload = listedResult.status === 'fulfilled' ? dataOf(listedResult.value) : []
+      const listed = pageItems(listedPayload)
+      nextCursor.value = Array.isArray(listedPayload) ? null : listedPayload.nextCursor
       const linked = linkedResult.status === 'fulfilled' && linkedResult.value
         ? dataOf(linkedResult.value)
         : undefined
@@ -138,6 +160,25 @@ export function useTeamRuns(
       if (!stopped && activeGeneration === generation) error.value = cause
     } finally {
       if (!stopped && activeGeneration === generation) loading.value = false
+    }
+  }
+
+  const loadMore = async () => {
+    const cursor = nextCursor.value
+    const id = toValue(conversationId)
+    const activeGeneration = generation
+    if (!cursor || !id || loadingMore.value) return
+    loadingMore.value = true
+    try {
+      const payload = dataOf(await dependencies.listByConversation(id, cursor))
+      if (stopped || activeGeneration !== generation) return
+      runs.value = uniqueRuns([...runs.value, ...pageItems(payload)])
+      nextCursor.value = Array.isArray(payload) ? null : payload.nextCursor
+      ensureSubscriptions()
+    } catch (cause) {
+      if (!stopped && activeGeneration === generation) error.value = cause
+    } finally {
+      if (!stopped && activeGeneration === generation) loadingMore.value = false
     }
   }
 
@@ -156,5 +197,5 @@ export function useTeamRuns(
   }
   if (getCurrentScope()) onScopeDispose(stop)
 
-  return { runs, loading, error, refresh, refreshRun, stop }
+  return { runs, loading, loadingMore, error, nextCursor, refresh, loadMore, refreshRun, stop }
 }

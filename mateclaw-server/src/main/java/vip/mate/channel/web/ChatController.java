@@ -192,6 +192,14 @@ public class ChatController {
             }
         }
 
+        // Worker conversations are immutable evidence from the web UI. Keep this
+        // guard at the user entry point so internal dispatch can still persist its
+        // user/assistant execution transcript through ConversationService.
+        if (!conversationService.isUserMessageAllowed(conversationId)) {
+            sendErrorDoneAndComplete(emitter, "执行任务会话为只读，不能发送新消息");
+            return emitter;
+        }
+
         // ---- 审批命令拦截：/approve、/deny 走 SSE 流式 replay ----
         String normalizedMsg = requestMessage.trim().toLowerCase();
         boolean isApprovalCommand = "/approve".equals(normalizedMsg) || "approve".equals(normalizedMsg);

@@ -74,4 +74,55 @@ describe('assembleTeamRunTimeline', () => {
     ])
     expect(messages).toHaveLength(2)
   })
+
+  it('collapses a replayed ten-task lifecycle into one run while keeping task evidence in the projection', () => {
+    const tasks = Array.from({ length: 10 }, (_, index) => ({
+      id: String(100 + index), teamId: 'team-10', runId: '10', taskNumber: index + 1,
+      subject: `Task ${index + 1}`, description: null, status: 'completed' as const, priority: 0,
+      taskType: 'general', assigneeAgentId: `agent-${index + 1}`, ownerAgentId: null,
+      blockedBy: null, requireApproval: false, progressPercent: 100, progressStep: null,
+      result: `Evidence ${index + 1}`, reason: null, conversationId: `worker-${index + 1}`,
+      metadata: null, createTime: null, updateTime: null,
+    }))
+    const lifecycle = tasks.flatMap(task => [
+      message(`start-${task.id}`, 'system', 'started', {
+        type: 'team_task_started', runId: '10', taskId: task.id, eventId: `event-${task.id}-start`,
+      }),
+      message(`done-${task.id}`, 'system', 'completed', {
+        type: 'team_task_completed', runId: '10', taskId: task.id, eventId: `event-${task.id}-done`,
+      }),
+      message(`replay-${task.id}`, 'system', 'completed replay', {
+        type: 'team_task_completed', runId: '10', taskId: task.id, eventId: `event-${task.id}-done`,
+      }),
+    ])
+    const projectedRun = { ...run('10', 'origin'), tasks, progress: {
+      total: 10, done: 10, failed: 0, inReview: 0, percent: 100,
+    } }
+
+    const items = assembleTeamRunTimeline([
+      message('origin', 'user', 'Run ten tasks'),
+      ...lifecycle,
+      message('announce', 'assistant', 'final', {
+        type: 'team_announce_reply', runId: '10', eventId: 'event-final',
+      }),
+    ], [projectedRun, projectedRun])
+
+    expect(keys(items)).toEqual(['m:origin', 'r:10'])
+    const runItems = items.filter(item => item.type === 'team-run')
+    expect(runItems).toHaveLength(1)
+    expect(runItems[0]?.type === 'team-run' && runItems[0].run.tasks).toHaveLength(10)
+  })
+
+  it('does not absorb lifecycle-like messages without a known matching run', () => {
+    const messages = [
+      message('1', 'system', 'missing run', { type: 'team_task_progress', taskId: '101', eventId: 'e1' }),
+      message('2', 'system', 'unknown run', { type: 'team_task_completed', runId: '99', taskId: '101', eventId: 'e2' }),
+      message('3', 'system', 'business system message', { type: 'audit_completed', runId: '10', eventId: 'e3' }),
+      message('4', 'assistant', 'business reply', { runId: '10', eventId: 'e4' }),
+    ]
+
+    expect(keys(assembleTeamRunTimeline(messages, [run('10', null)]))).toEqual([
+      'm:1', 'm:2', 'm:3', 'm:4', 'r:10',
+    ])
+  })
 })

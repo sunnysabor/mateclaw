@@ -51,15 +51,20 @@ class TeamRunControllerTest {
     @Test
     void detailAndListsAreScopedToTheRequestedWorkspace() {
         TeamRunView view = view();
+        TeamRunService.RunPage page = new TeamRunService.RunPage(List.of(view), null);
         when(runService.getRun(RUN_ID, WORKSPACE_ID)).thenReturn(view);
-        when(runService.listTeamRuns(TEAM_ID, WORKSPACE_ID)).thenReturn(List.of(view));
-        when(runService.listConversationRuns(CONVERSATION_ID, WORKSPACE_ID))
-                .thenReturn(List.of(view));
+        when(runService.pageTeamRuns(TEAM_ID, WORKSPACE_ID, false, null, 20)).thenReturn(page);
+        when(runService.pageConversationRuns(CONVERSATION_ID, WORKSPACE_ID, null, 20))
+                .thenReturn(page);
+        when(runService.listTeamRuns(TEAM_ID, WORKSPACE_ID, false)).thenReturn(List.of(view));
+        when(runService.listConversationRuns(CONVERSATION_ID, WORKSPACE_ID)).thenReturn(List.of(view));
 
         assertEquals(view, controller.get(RUN_ID, WORKSPACE_ID).getData());
-        assertEquals(List.of(view), controller.listTeamRuns(TEAM_ID, WORKSPACE_ID).getData());
-        assertEquals(List.of(view),
-                controller.listConversationRuns(CONVERSATION_ID, WORKSPACE_ID).getData());
+        assertEquals(List.of(view), controller.listTeamRuns(TEAM_ID, false, WORKSPACE_ID).getData());
+        assertEquals(List.of(view), controller.listConversationRuns(CONVERSATION_ID, WORKSPACE_ID).getData());
+        assertEquals(page, controller.pageTeamRuns(TEAM_ID, false, null, 20, WORKSPACE_ID).getData());
+        assertEquals(page, controller.pageConversationRuns(
+                CONVERSATION_ID, null, 20, WORKSPACE_ID).getData());
     }
 
     @Test
@@ -89,9 +94,14 @@ class TeamRunControllerTest {
     @Test
     void endpointsDeclareExactPathsAndRoles() throws Exception {
         assertEndpoint("get", "viewer", "/team-runs/{runId}", Long.class, Long.class);
-        assertEndpoint("listTeamRuns", "viewer", "/teams/{teamId}/runs", Long.class, Long.class);
+        assertEndpoint("listTeamRuns", "viewer", "/teams/{teamId}/runs",
+                Long.class, boolean.class, Long.class);
         assertEndpoint("listConversationRuns", "viewer", "/conversations/{conversationId}/team-runs",
                 String.class, Long.class);
+        assertEndpoint("pageTeamRuns", "viewer", "/teams/{teamId}/runs/page",
+                Long.class, boolean.class, String.class, int.class, Long.class);
+        assertEndpoint("pageConversationRuns", "viewer", "/conversations/{conversationId}/team-runs/page",
+                String.class, String.class, int.class, Long.class);
         assertEndpoint("cancel", "admin", "/team-runs/{runId}/cancel",
                 Long.class, TeamRunController.CancelRunRequest.class, Long.class);
     }

@@ -1,5 +1,6 @@
 import type { TeamRun } from '@/api'
 import type { Message } from '@/types'
+import { classifyTeamEventOwnership } from './teamEventOwnership'
 
 const TEAM_RUN_TYPES = new Set([
   'team_run',
@@ -16,6 +17,9 @@ export interface ParsedTeamMessageMetadata {
   originMessageId?: string
   teamId?: string
   leadConversationId?: string
+  actionId?: string
+  conversationId?: string
+  eventId?: string
   isTeamRunProtocol: boolean
   isTeamAnnounce: boolean
   isLegacyTeamAnnounce: boolean
@@ -68,6 +72,9 @@ export function parseTeamMessageMetadata(message: Message): ParsedTeamMessageMet
     originMessageId: stringId(metadata.originMessageId),
     teamId: stringId(metadata.teamId),
     leadConversationId: stringId(metadata.leadConversationId),
+    actionId: stringId(metadata.actionId) ?? stringId(metadata.parentActionId),
+    conversationId: stringId(metadata.conversationId) ?? stringId(message.conversationId),
+    eventId: stringId(metadata.eventId),
     isTeamRunProtocol: Boolean(type && (TEAM_RUN_TYPES.has(type) || type.startsWith('team_run_'))),
     isTeamAnnounce: explicitAnnounce || isLegacyTeamAnnounce,
     isLegacyTeamAnnounce,
@@ -77,7 +84,18 @@ export function parseTeamMessageMetadata(message: Message): ParsedTeamMessageMet
 export function isTeamRunBookkeeping(message: Message, runId: string): boolean {
   const metadata = parseTeamMessageMetadata(message)
   if (metadata.runId !== runId) return false
-  return metadata.isTeamRunProtocol || metadata.type === 'team_announce' || metadata.type === 'team_announce_reply'
+  if (!metadata.type) return false
+  return classifyTeamEventOwnership({
+    id: metadata.eventId,
+    event: metadata.type,
+    data: {
+      runId: metadata.runId,
+      taskId: metadata.taskId,
+      actionId: metadata.actionId,
+      conversationId: metadata.conversationId,
+      eventId: metadata.eventId,
+    },
+  }) !== 'unowned'
 }
 
 export function resolveWorkerRunContext(input: {

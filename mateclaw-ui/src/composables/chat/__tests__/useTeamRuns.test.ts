@@ -1,7 +1,8 @@
 import { effectScope, nextTick, ref } from 'vue'
 import { describe, expect, it, vi } from 'vitest'
+import { AxiosHeaders, type AxiosResponse } from 'axios'
 import { useTeamRuns, type TeamRunsDependencies } from '../useTeamRuns'
-import type { TeamRun } from '@/api'
+import { teamRunApi, type TeamRun } from '@/api'
 import type { TeamBoardEvent } from '@/composables/useTeamEvents'
 
 const run = (id: string, teamId = 'team-1', status: TeamRun['status'] = 'running'): TeamRun => ({
@@ -19,7 +20,106 @@ const flush = async () => {
   await nextTick()
 }
 
+function axiosResponse<T>(data: T): AxiosResponse<T> {
+  return { data, status: 200, statusText: 'OK', headers: new AxiosHeaders(), config: { headers: new AxiosHeaders() } }
+}
+
 describe('useTeamRuns', () => {
+  it('uses the paged conversation API for the first page and cursor continuation', async () => {
+    const page = vi.spyOn(teamRunApi, 'listByConversationPage')
+      .mockResolvedValueOnce(axiosResponse({ items: [run('2')], nextCursor: 'older' }))
+      .mockResolvedValueOnce(axiosResponse({ items: [run('1')], nextCursor: null }))
+    const legacy = vi.spyOn(teamRunApi, 'listByConversation').mockResolvedValue({ data: [] } as never)
+    const scope = effectScope()
+    const state = scope.run(() => useTeamRuns(ref('lead')))!
+    await flush()
+    await state.loadMore()
+
+    expect(page).toHaveBeenNthCalledWith(1, 'lead', { limit: 20 })
+    expect(page).toHaveBeenNthCalledWith(2, 'lead', { cursor: 'older', limit: 20 })
+    expect(legacy).not.toHaveBeenCalled()
+    expect(state.runs.value.map(item => item.id)).toEqual(['2', '1'])
+    scope.stop()
+    vi.restoreAllMocks()
+  })
+
+  it('loads more conversation history by cursor and keeps every run reachable once', async () => {
+    const dependencies: TeamRunsDependencies = {
+      listByConversation: vi.fn()
+        .mockResolvedValueOnce({ data: { items: [run('2'), run('1')], nextCursor: 'older' } })
+        .mockResolvedValueOnce({ data: { items: [run('1'), run('0')], nextCursor: null } }),
+      getRun: vi.fn(), subscribe: vi.fn(() => vi.fn()),
+    }
+    const scope = effectScope()
+    const state = scope.run(() => useTeamRuns(ref('lead'), { dependencies }))!
+    await flush()
+    await state.loadMore()
+    expect(dependencies.listByConversation).toHaveBeenNthCalledWith(2, 'lead', 'older')
+    expect(state.runs.value.map(item => item.id)).toEqual(['2', '1', '0'])
+    expect(state.nextCursor.value).toBeNull()
+    scope.stop()
+  })
+  it('immediately resets pagination when conversation changes during loadMore and ignores the old page', async () => {
+    let resolveOldPage!: (value: { data: { items: TeamRun[]; nextCursor: string | null } }) => void
+    let resolveNewConversation!: (value: { data: { items: TeamRun[]; nextCursor: string | null } }) => void
+    const oldPage = new Promise<{ data: { items: TeamRun[]; nextCursor: string | null } }>(resolve => { resolveOldPage = resolve })
+    const newConversation = new Promise<{ data: { items: TeamRun[]; nextCursor: string | null } }>(resolve => { resolveNewConversation = resolve })
+    const dependencies: TeamRunsDependencies = {
+      listByConversation: vi.fn()
+        .mockResolvedValueOnce({ data: { items: [run('10')], nextCursor: 'older-a' } })
+        .mockReturnValueOnce(oldPage)
+        .mockReturnValueOnce(newConversation),
+      getRun: vi.fn(), subscribe: vi.fn(() => vi.fn()),
+    }
+    const conversationId = ref('A')
+    const scope = effectScope()
+    const state = scope.run(() => useTeamRuns(conversationId, { dependencies }))!
+    await flush()
+    const loadingOldPage = state.loadMore()
+
+    conversationId.value = 'B'
+    await nextTick()
+    expect(state.nextCursor.value).toBeNull()
+    expect(state.loadingMore.value).toBe(false)
+    resolveNewConversation({ data: { items: [run('20', 'team-b')], nextCursor: 'older-b' } })
+    await flush()
+    resolveOldPage({ data: { items: [run('9')], nextCursor: null } })
+    await loadingOldPage
+
+    expect(state.runs.value.map(item => item.id)).toEqual(['20'])
+    expect(state.nextCursor.value).toBe('older-b')
+    expect(state.loadingMore.value).toBe(false)
+    scope.stop()
+  })
+  it('keeps an existing full projection when loadMore returns an overlapping summary', async () => {
+    const full = { ...run('10'), projectionCompleteness: 'full' as const, finalSummary: 'complete outcome' }
+    const summary = { ...run('10'), projectionCompleteness: 'summary' as const, finalSummary: null }
+    const dependencies: TeamRunsDependencies = {
+      listByConversation: vi.fn()
+        .mockResolvedValueOnce({ data: { items: [full], nextCursor: 'older' } })
+        .mockResolvedValueOnce({ data: { items: [summary, run('9')], nextCursor: null } }),
+      getRun: vi.fn(), subscribe: vi.fn(() => vi.fn()),
+    }
+    const scope = effectScope()
+    const state = scope.run(() => useTeamRuns(ref('lead'), { dependencies }))!
+    await flush()
+    await state.loadMore()
+
+    expect(state.runs.value.find(item => item.id === '10')).toEqual(full)
+    expect(state.runs.value.map(item => item.id)).toEqual(['10', '9'])
+    scope.stop()
+  })
+  it('hydrates the new paged conversation response', async () => {
+    const dependencies: TeamRunsDependencies = {
+      listByConversation: vi.fn().mockResolvedValue({ data: { items: [run('10')], nextCursor: 'cursor-2' } }),
+      getRun: vi.fn(), subscribe: vi.fn(() => vi.fn()),
+    }
+    const scope = effectScope()
+    const state = scope.run(() => useTeamRuns(ref('lead'), { dependencies }))!
+    await flush()
+    expect(state.runs.value.map(item => item.id)).toEqual(['10'])
+    scope.stop()
+  })
   it('hydrates by conversation, de-duplicates runs, and subscribes once per team', async () => {
     let onEvent: ((event: TeamBoardEvent) => void) | undefined
     const cleanup = vi.fn()

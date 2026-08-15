@@ -10,11 +10,14 @@ withDefaults(defineProps<{
   loading?: boolean
   error?: string | null
   selectedRunId?: string | null
-}>(), { loading: false, error: null, selectedRunId: null })
+  hasMore?: boolean
+  loadingMore?: boolean
+}>(), { loading: false, error: null, selectedRunId: null, hasMore: false, loadingMore: false })
 
 const emit = defineEmits<{
   refresh: []
   'select-run': [run: TeamRun]
+  'load-more': []
 }>()
 const { t } = useI18n()
 </script>
@@ -52,6 +55,9 @@ const { t } = useI18n()
       </button>
     </div>
     <p v-if="error && runs.length > 0" class="runs-panel__stale">{{ t('teamRuns.loadError') }}</p>
+    <button v-if="hasMore" data-team-runs-load-more type="button" class="runs-panel__more" :disabled="loadingMore" @click="emit('load-more')">
+      {{ loadingMore ? t('teamRuns.loadingMore') : t('teamRuns.loadMore') }}
+    </button>
   </section>
 </template>
 
@@ -71,4 +77,5 @@ const { t } = useI18n()
 .runs-panel__state.is-error, .runs-panel__stale { color: #b53535; }
 .runs-panel__state button { border: 0; background: transparent; color: #16795a; cursor: pointer; }
 .runs-panel__stale { margin: 8px 0 0; font-size: 12px; }
+.runs-panel__more { display:block; width:100%; margin-top:10px; min-height:34px; border:1px solid var(--mc-border); border-radius:6px; background:var(--mc-bg-elevated); color:#16795a; cursor:pointer }.runs-panel__more:disabled{cursor:wait;opacity:.65}
 </style>

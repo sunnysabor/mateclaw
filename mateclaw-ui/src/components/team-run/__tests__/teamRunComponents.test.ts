@@ -1,6 +1,6 @@
 import { createApp, nextTick, type Component } from 'vue'
 import { createI18n } from 'vue-i18n'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TeamRun } from '@/api'
 import TeamRunCard from '../TeamRunCard.vue'
 import TeamRunDetail from '../TeamRunDetail.vue'
@@ -15,9 +15,11 @@ const messages = {
     progress: '{done} of {total} complete',
     tasks: 'Tasks', emptyTasks: 'No tasks in this run', assignee: 'Assignee', dependencies: 'Dependencies',
     noDependencies: 'None', result: 'Result', noResult: 'No result yet', summary: 'Summary',
-    noSummary: 'No summary yet', deliverables: 'Deliverables', noDeliverables: 'No deliverables',
+    noSummary: 'No summary yet', outcome: 'Outcome', attention: 'Needs attention', noAttention: 'No action needed',
+    deliverables: 'Deliverables', noDeliverables: 'No deliverables',
     cancel: 'Cancel run', expand: 'Expand run', collapse: 'Collapse run', openTask: 'Open task',
     objective: 'Objective', taskProgress: 'Task progress', stopReason: 'Stop reason',
+    quality: { synthesized: 'Synthesized', fallback: 'Fallback', partial: 'Partial', pending: 'Pending' },
   },
 }
 
@@ -49,6 +51,20 @@ afterEach(() => {
 })
 
 describe('TeamRunCard', () => {
+  it('renders a bounded collapsed delivery preview and canonical counts', () => {
+    const long = `## Decision\n\n${'evidence '.repeat(80)}`
+    const host = mount(TeamRunCard, { run: sampleRun({
+      finalSummary: long, outcomeQuality: 'fallback', projectionCompleteness: 'summary',
+      metrics: { durationSeconds: 30, totalTasks: 3, completedTasks: 2, failedTasks: 1, deliverableCount: 4 },
+      attentionItems: [{ id: 'a', type: 'failure', severity: 'error', priority: 1, taskId: null, message: 'Review', createdAt: null }],
+    }) })
+    const preview = host.querySelector('[data-team-run-outcome-preview]')!
+    expect(preview.textContent!.length).toBeLessThanOrEqual(163)
+    expect(host.querySelector('[data-team-run-deliverable-count]')?.textContent).toContain('4')
+    expect(host.querySelector('[data-team-run-attention-count]')?.textContent).toContain('1')
+    expect(host.querySelector('[data-team-run-outcome-quality]')?.textContent).toContain('Fallback')
+    expect(host.querySelector('[data-team-run-outcome]')).toBeNull()
+  })
   it.each([
     ['planning', 'Planning'],
     ['running', 'Running'],
@@ -77,7 +93,8 @@ describe('TeamRunCard', () => {
 
     expect(enter.defaultPrevented).toBe(true)
     expect(toggle.getAttribute('aria-expanded')).toBe('true')
-    expect(host.textContent).toContain('No tasks in this run')
+    expect(host.textContent).toContain('No summary yet')
+    expect(host.querySelector('[data-team-run-task-list]')).toBeNull()
     expect(toggles).toEqual([true])
 
     const space = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })
@@ -90,6 +107,45 @@ describe('TeamRunCard', () => {
 })
 
 describe('TeamRunDetail', () => {
+  it('forwards attention recovery actions only in management context', async () => {
+    const actions: string[] = []
+    const attentionItems = [{ id: 'a', type: 'failed', severity: 'error', priority: 1, taskId: '101', message: 'Failed', createdAt: null }]
+    const host = mount(TeamRunDetail, {
+      run: sampleRun({ attentionItems }), managementActions: true,
+      onViewTask: (id: string) => actions.push(`view:${id}`),
+      onRetryTask: (id: string) => actions.push(`retry:${id}`),
+    })
+    host.querySelector<HTMLButtonElement>('[data-attention-view-task="101"]')!.click()
+    host.querySelector<HTMLButtonElement>('[data-attention-retry-task="101"]')!.click()
+    await nextTick()
+    expect(actions).toEqual(['view:101', 'retry:101'])
+    expect(mount(TeamRunDetail, { run: sampleRun({ attentionItems }) }).querySelector('button[data-attention-view-task]')).toBeNull()
+  })
+
+  it('drills into and focuses task evidence inside the detail instead of requesting the legacy modal', async () => {
+    const scrollIntoView = vi.fn()
+    HTMLElement.prototype.scrollIntoView = scrollIntoView
+    const viewed: string[] = []
+    const selected: string[] = []
+    const task = { id: '101', teamId: '10', runId: '20', taskNumber: 1, subject: 'Blocked evidence', description: 'Wait for dependency', status: 'blocked', priority: 0, taskType: 'execution', assigneeAgentId: '31', ownerAgentId: null, blockedBy: '100', requireApproval: false, progressPercent: 0, progressStep: null, result: null, reason: 'Dependency pending', conversationId: 'worker', metadata: null, createTime: null, updateTime: null }
+    const host = mount(TeamRunDetail, {
+      run: sampleRun({ tasks: [task], attentionItems: [{ id: 'blocked', type: 'blocked', severity: 'error', priority: 1, taskId: '101', message: 'Dependency pending', createdAt: null }] }),
+      managementActions: true,
+      onViewTask: (id: string) => viewed.push(id),
+      onSelectTask: (value: { id: string }) => selected.push(value.id),
+    })
+
+    host.querySelector<HTMLButtonElement>('[data-attention-view-task="101"]')!.click()
+    await nextTick()
+
+    const detail = host.querySelector<HTMLElement>('[data-team-run-selected-task]')!
+    expect(detail.textContent).toContain('Blocked evidence')
+    expect(document.activeElement).toBe(detail)
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'nearest' })
+    expect(viewed).toEqual(['101'])
+    expect(selected).toEqual([])
+  })
+
   it('renders summary, task drilldown and emits cancel', async () => {
     let cancelled = 0
     const task = {
@@ -122,8 +178,17 @@ describe('TeamRunDetail', () => {
     })
     await nextTick()
 
-    expect(host.querySelector('.run-detail__markdown h2')?.textContent).toBe('结论')
-    expect(host.querySelector('.run-detail__markdown table')).not.toBeNull()
-    expect(host.querySelector('.run-detail__markdown strong')?.textContent).toBe('完成')
+    expect(host.querySelector('[data-team-run-outcome] h2')?.textContent).toBe('结论')
+    expect(host.querySelector('[data-team-run-outcome] table')).not.toBeNull()
+    expect(host.querySelector('[data-team-run-outcome] strong')?.textContent).toBe('完成')
+  })
+
+  it('renders task description and result through shared reading surfaces', async () => {
+    const task = { id: '101', teamId: '10', runId: '20', taskNumber: 1, subject: 'Evidence', description: '## Method', status: 'completed', priority: 0, taskType: 'execution', assigneeAgentId: '31', ownerAgentId: null, blockedBy: null, requireApproval: false, progressPercent: 100, progressStep: null, result: '```ts\nconst ok = true\n```', reason: null, conversationId: 'worker', metadata: null, createTime: null, updateTime: null }
+    const host = mount(TeamRunDetail, { run: sampleRun({ tasks: [task] }), selectedTaskId: '101' })
+    await nextTick()
+    expect(host.querySelectorAll('[data-team-run-task-markdown]')).toHaveLength(2)
+    expect(host.querySelector('[data-team-run-task-markdown] h2')?.textContent).toBe('Method')
+    expect(host.querySelector('[data-team-run-task-markdown] pre code')).not.toBeNull()
   })
 })

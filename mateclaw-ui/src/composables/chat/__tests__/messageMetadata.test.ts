@@ -68,6 +68,30 @@ describe('parseTeamMessageMetadata', () => {
     expect(parsed.runId).toBeUndefined()
   })
 
+  it('preserves canonical action, conversation, and payload event identities', () => {
+    expect(parseTeamMessageMetadata(message({
+      conversationId: 'message-conversation',
+      metadata: {
+        type: 'team_task_progress',
+        actionId: 'action-7',
+        conversationId: 'worker-conversation',
+        eventId: 'event-9',
+      } as never,
+    }))).toMatchObject({
+      actionId: 'action-7',
+      conversationId: 'worker-conversation',
+      eventId: 'event-9',
+    })
+
+    expect(parseTeamMessageMetadata(message({
+      conversationId: 'message-conversation',
+      metadata: { type: 'team_task_progress', parentActionId: 'parent-8' } as never,
+    }))).toMatchObject({
+      actionId: 'parent-8',
+      conversationId: 'message-conversation',
+    })
+  })
+
   it('uses the content prefix only for legacy null-run announcements', () => {
     const legacy = parseTeamMessageMetadata(message({ content: '[System Message] settled' }))
     const linked = parseTeamMessageMetadata(message({

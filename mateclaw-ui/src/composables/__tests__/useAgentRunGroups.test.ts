@@ -9,7 +9,7 @@ vi.mock('@/api', async (importOriginal) => {
   return {
     ...original,
     teamApi: { ...original.teamApi, list: vi.fn() },
-    teamRunApi: { ...original.teamRunApi, listByTeam: vi.fn(), get: vi.fn() },
+    teamRunApi: { ...original.teamRunApi, listByTeam: vi.fn(), listByTeamPage: vi.fn(), get: vi.fn() },
   }
 })
 
@@ -74,14 +74,12 @@ describe('projectAgentRunGroups', () => {
 })
 
 describe('useAgentRunGroups hydration priority', () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => vi.resetAllMocks())
 
   it('keeps an explicit route run when a later snapshot refresh completes first', async () => {
     const routeDetail = deferred<unknown>()
     vi.mocked(teamApi.list).mockResolvedValue({ data: [{ team: { id: '10' } }] } as never)
-    vi.mocked(teamRunApi.listByTeam)
-      .mockResolvedValueOnce({ data: [] } as never)
-      .mockResolvedValueOnce({ data: [run('running', [])] } as never)
+    vi.mocked(teamRunApi.listByTeamPage).mockResolvedValue({ data: { items: [], nextCursor: null } } as never)
     vi.mocked(teamRunApi.get).mockReturnValue(routeDetail.promise as never)
     const groups = useAgentRunGroups(ref(snapshot([])))
 
@@ -92,6 +90,164 @@ describe('useAgentRunGroups hydration priority', () => {
     await routeLoad
 
     expect(groups.runs.value.map(item => item.id)).toContain('historical')
+    expect(teamRunApi.get).toHaveBeenCalledTimes(1)
+    expect(teamRunApi.get).toHaveBeenCalledWith('historical')
+  })
+
+  it('uses bounded active summary pages with at most three concurrent team requests', async () => {
+    const firstTeamRuns = Array.from({ length: 3 }, (_, index) => {
+      const runId = `run-${index}`
+      return {
+        ...run('running', [{
+          ...task(`${index}`, 1, 'in_progress', `worker-${index}`),
+          runId,
+        }]),
+        id: runId,
+        projectionCompleteness: 'summary',
+      }
+    })
+    const secondTeamRun = {
+      ...run('running', [{
+        ...task('3', 1, 'in_progress', 'worker-3'),
+        teamId: '11', runId: 'run-3',
+      }]),
+      id: 'run-3', teamId: '11', projectionCompleteness: 'summary',
+    }
+    const teamIds = ['10', '11', '12', '13', '14']
+    const gates = teamIds.map(() => deferred<unknown>())
+    let active = 0
+    let peak = 0
+    vi.mocked(teamApi.list).mockResolvedValue({
+      data: teamIds.map(id => ({ team: { id } })),
+    } as never)
+    vi.mocked(teamRunApi.listByTeamPage).mockImplementation((teamId) => {
+      const index = teamIds.indexOf(teamId)
+      active += 1
+      peak = Math.max(peak, active)
+      return gates[index].promise.finally(() => { active -= 1 }) as never
+    })
+    vi.mocked(teamRunApi.get).mockResolvedValue({ data: run('running', []) } as never)
+    const groups = useAgentRunGroups(ref(snapshot([live('worker-0')])))
+
+    const refresh = groups.refreshForSnapshot()
+    const duplicate = groups.refreshForSnapshot()
+    expect(duplicate).toBe(refresh)
+    await vi.waitFor(() => expect(teamRunApi.listByTeamPage).toHaveBeenCalledTimes(3))
+    gates[0].resolve({ data: { items: firstTeamRuns, nextCursor: null } })
+    gates[1].resolve({ data: { items: [secondTeamRun], nextCursor: null } })
+    gates[2].resolve({ data: { items: [], nextCursor: null } })
+    await vi.waitFor(() => expect(teamRunApi.listByTeamPage).toHaveBeenCalledTimes(5))
+    gates[3].resolve({ data: { items: [], nextCursor: null } })
+    gates[4].resolve({ data: { items: [], nextCursor: null } })
+    await Promise.all([refresh, duplicate])
+
+    expect(teamApi.list).toHaveBeenCalledTimes(1)
+    expect(peak).toBeLessThanOrEqual(3)
+    expect(teamRunApi.listByTeamPage).toHaveBeenCalledTimes(5)
+    for (const teamId of teamIds) {
+      expect(teamRunApi.listByTeamPage).toHaveBeenCalledWith(teamId, { activeOnly: true, limit: 50 })
+    }
+    expect(teamRunApi.listByTeam).not.toHaveBeenCalled()
+    expect(teamRunApi.get).not.toHaveBeenCalled()
+    expect(groups.runs.value).toHaveLength(4)
+    expect(groups.projection.value.groups[0].workers[0].task.conversationId).toBe('worker-0')
+    expect(groups.projection.value.groups[0].workers[0].task.runId)
+      .toBe(groups.projection.value.groups[0].run.id)
+    expect(groups.projection.value.groups[0].workers[0].task.description).toBeNull()
+    expect(groups.projection.value.groups[0].workers[0].task.result).toBeNull()
+
+    await groups.refreshForSnapshot()
+    expect(teamApi.list).toHaveBeenCalledTimes(2)
+    expect(teamRunApi.listByTeamPage).toHaveBeenCalledTimes(10)
+  })
+
+  it('follows each team cursor until all bounded active pages are merged', async () => {
+    const firstPage = Array.from({ length: 50 }, (_, index) => ({
+      ...run('running', []), id: `run-${index}`, projectionCompleteness: 'summary',
+    }))
+    const finalRun = { ...run('running', []), id: 'run-50', projectionCompleteness: 'summary' }
+    vi.mocked(teamApi.list).mockResolvedValue({ data: [{ team: { id: '10' } }] } as never)
+    vi.mocked(teamRunApi.listByTeamPage)
+      .mockResolvedValueOnce({ data: { items: firstPage, nextCursor: 'cursor-2' } } as never)
+      .mockResolvedValueOnce({ data: { items: [finalRun], nextCursor: null } } as never)
+    const groups = useAgentRunGroups(ref(snapshot([])))
+
+    await groups.refreshForSnapshot()
+
+    expect(teamRunApi.listByTeamPage).toHaveBeenNthCalledWith(1, '10', {
+      activeOnly: true, limit: 50,
+    })
+    expect(teamRunApi.listByTeamPage).toHaveBeenNthCalledWith(2, '10', {
+      activeOnly: true, cursor: 'cursor-2', limit: 50,
+    })
+    expect(groups.runs.value).toHaveLength(51)
+    expect(teamRunApi.get).not.toHaveBeenCalled()
+  })
+
+  it('fails the refresh when a team page repeats its cursor', async () => {
+    vi.mocked(teamApi.list).mockResolvedValue({ data: [{ team: { id: '10' } }] } as never)
+    vi.mocked(teamRunApi.listByTeamPage)
+      .mockResolvedValueOnce({ data: { items: [run('running', [])], nextCursor: 'loop' } } as never)
+      .mockResolvedValueOnce({ data: { items: [], nextCursor: 'loop' } } as never)
+    const groups = useAgentRunGroups(ref(snapshot([])))
+
+    await expect(groups.refreshForSnapshot()).rejects.toThrow('cursor')
+
+    expect(teamRunApi.listByTeamPage).toHaveBeenCalledTimes(2)
+    expect(groups.runs.value).toEqual([])
+    expect(groups.error.value).toContain('cursor')
+  })
+
+  it('stops claiming teams on first failure but settles started loads before releasing single-flight', async () => {
+    const pending = deferred<unknown>()
+    vi.mocked(teamApi.list)
+      .mockResolvedValueOnce({
+        data: ['10', '11', '12', '13'].map(id => ({ team: { id } })),
+      } as never)
+      .mockResolvedValueOnce({ data: [] } as never)
+    vi.mocked(teamRunApi.listByTeamPage).mockImplementation((teamId) => {
+      if (teamId === '10') return Promise.reject(new Error('team 10 failed')) as never
+      if (teamId === '11') return pending.promise as never
+      return Promise.resolve({ data: { items: [], nextCursor: null } }) as never
+    })
+    const groups = useAgentRunGroups(ref(snapshot([])))
+
+    const first = groups.refreshForSnapshot()
+    let settled = false
+    void first.finally(() => { settled = true }).catch(() => undefined)
+    await vi.waitFor(() => expect(teamRunApi.listByTeamPage).toHaveBeenCalledTimes(3))
+    const duplicate = groups.refreshForSnapshot()
+
+    expect(duplicate).toBe(first)
+    expect(teamRunApi.listByTeamPage).toHaveBeenCalledTimes(3)
+    expect(settled).toBe(false)
+
+    pending.resolve({ data: { items: [], nextCursor: null } })
+    await expect(first).rejects.toThrow('team 10 failed')
+    expect(settled).toBe(true)
+    expect(teamRunApi.listByTeamPage).toHaveBeenCalledTimes(3)
+
+    const next = groups.refreshForSnapshot()
+    expect(next).not.toBe(first)
+    await next
+    expect(teamApi.list).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not publish a paged refresh that finishes after close', async () => {
+    const page = deferred<unknown>()
+    vi.mocked(teamApi.list).mockResolvedValue({ data: [{ team: { id: '10' } }] } as never)
+    vi.mocked(teamRunApi.listByTeamPage).mockReturnValue(page.promise as never)
+    const groups = useAgentRunGroups(ref(snapshot([])))
+
+    const refresh = groups.refreshForSnapshot()
+    await vi.waitFor(() => expect(teamRunApi.listByTeamPage).toHaveBeenCalledTimes(1))
+    groups.close()
+    page.resolve({ data: { items: [run('running', [])], nextCursor: null } })
+    await refresh
+
+    expect(groups.runs.value).toEqual([])
+    expect(groups.loading.value).toBe(false)
+    expect(groups.error.value).toBeNull()
   })
 })
 
@@ -104,10 +260,18 @@ describe('useAgentRunGroups live scope', () => {
 
     expect(result.groups.map(group => group.run.status)).toEqual(['running'])
   })
+
+  it('does not claim active animation without credible liveness or runtime evidence', () => {
+    const quiet = { ...run('running', [task('1', 1, 'in_progress', 'worker')]), liveness: { state: 'quiet' as const, lastActivityAt: null } }
+    const result = projectAgentRunGroups(snapshot([]), [quiet])
+    expect(result.groups[0].state).toBe('waiting')
+    expect(result.groups[0].workers[0].state).toBe('waiting')
+  })
 })
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>(done => { resolve = done })
-  return { promise, resolve }
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail })
+  return { promise, resolve, reject }
 }

@@ -219,7 +219,7 @@
           <p class="error-card__action">{{ errorAction }}</p>
           <div class="error-card__footer">
             <span v-if="errorCode" class="error-card__code">{{ errorCode }}</span>
-            <button v-if="errorRetryable" class="error-card__retry" type="button" @click="$emit('regenerate')">
+            <button v-if="errorRetryable && !readonly" class="error-card__retry" type="button" @click="$emit('regenerate')">
               <el-icon><RefreshRight /></el-icon>
               {{ $t('chat.retry') }}
             </button>
@@ -242,7 +242,7 @@
           </div>
           <p class="incomplete-card__description">{{ $t('chat.incompleteDescription') }}</p>
           <div class="incomplete-card__footer">
-            <button class="incomplete-card__retry" type="button" @click="$emit('regenerate')">
+            <button v-if="!readonly" class="incomplete-card__retry" type="button" @click="$emit('regenerate')">
               <el-icon><RefreshRight /></el-icon>
               {{ $t('chat.incompleteRetry') }}
             </button>
@@ -423,7 +423,7 @@
           </button>
           <!-- 重新生成（仅会话末尾的 assistant 回答；服务端只支持对末条回答重生成） -->
           <button
-            v-if="role === 'assistant' && !isGenerating && isLast"
+            v-if="role === 'assistant' && !isGenerating && isLast && !readonly"
             class="action-btn"
             type="button"
             :title="$t('chat.regenerate')"
@@ -434,7 +434,7 @@
           <!-- 回退到此处：删除本条及之后的所有消息。仅已持久化的消息可回退
                （客户端临时 id 带下划线，持久化雪花 id 是纯数字） -->
           <button
-            v-if="!isGenerating && canRewind"
+            v-if="!isGenerating && canRewind && !readonly"
             class="action-btn"
             type="button"
             :title="$t('chat.rewindHere')"
@@ -620,6 +620,7 @@ interface Props {
   assistantIcon?: string
   userIcon?: string
   showCursor?: boolean
+  readonly?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -627,6 +628,7 @@ const props = withDefaults(defineProps<Props>(), {
   assistantIcon: '🤖',
   userIcon: 'U',
   showCursor: false,
+  readonly: false,
 })
 
 const emit = defineEmits<{
@@ -1379,6 +1381,7 @@ const feedbackInfo = computed<FeedbackInfo | undefined>(() => {
 })
 
 function handleFeedbackAction(action: string) {
+  if (props.readonly && (action === 'retry' || action === 'regenerate')) return
   if (action === 'retry' || action === 'regenerate') {
     emit('regenerate')
     return

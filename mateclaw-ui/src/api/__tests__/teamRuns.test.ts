@@ -38,6 +38,24 @@ describe('teamRunApi', () => {
     })
   })
 
+  it('uses the real paged run URLs and passes cursor and limit as request params', () => {
+    const get = vi.spyOn(http, 'get').mockResolvedValue({} as never)
+    const teamId = '9007199254740995'
+    const conversationId = 'lead/conversation#one'
+
+    teamRunApi.listByTeamPage(teamId, { activeOnly: true, cursor: 'team-cursor', limit: 17 })
+    teamRunApi.listByConversationPage(conversationId, { cursor: 'conversation-cursor', limit: 19 })
+
+    expect(get).toHaveBeenNthCalledWith(1, `/teams/${teamId}/runs/page`, {
+      params: { activeOnly: true, cursor: 'team-cursor', limit: 17 },
+    })
+    expect(get).toHaveBeenNthCalledWith(
+      2,
+      `/conversations/${encodeURIComponent(conversationId)}/team-runs/page`,
+      { params: { cursor: 'conversation-cursor', limit: 19 } },
+    )
+  })
+
   it('models every run projection id as a string', () => {
     const run = {
       id: '9007199254740993',

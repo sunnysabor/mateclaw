@@ -42,7 +42,7 @@ function workerState(task: TeamRunTask, runtime: LiveRunCard | null): AgentWorke
   if (task.status === 'cancelled' || task.status === 'stale') return 'cancelled'
   if (task.status === 'completed') return 'completed'
   if (task.status === 'failed') return 'failed'
-  return 'active'
+  return runtime ? 'active' : 'waiting'
 }
 
 function runState(run: TeamRun, workers: AgentRunWorker[]): AgentRunState {
@@ -53,7 +53,7 @@ function runState(run: TeamRun, workers: AgentRunWorker[]): AgentRunState {
   if (run.status === 'failed') return 'failed'
   if (run.status === 'awaiting_review' || workers.some(worker => worker.state === 'review')) return 'review'
   if (workers.length > 0 && workers.every(worker => ['waiting', 'completed', 'cancelled'].includes(worker.state))) return 'waiting'
-  return 'active'
+  return run.liveness?.state === 'live' || workers.some(worker => worker.state === 'active') ? 'active' : 'waiting'
 }
 
 export function projectAgentRunGroups(snapshot: LiveSnapshot | null, runs: readonly TeamRun[]): AgentRunProjection {
@@ -82,6 +82,34 @@ function relevantRuns(runs: TeamRun[], snapshot: LiveSnapshot | null): TeamRun[]
     || run.tasks.some(task => task.conversationId != null && liveIds.has(task.conversationId)))
 }
 
+async function mapConcurrent<T, R>(
+  items: readonly T[],
+  limit: number,
+  load: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let cursor = 0
+  let stopped = false
+  let hasError = false
+  let firstError: unknown
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (!stopped && cursor < items.length) {
+      const index = cursor++
+      try {
+        results[index] = await load(items[index])
+      } catch (cause) {
+        if (!hasError) {
+          hasError = true
+          firstError = cause
+        }
+        stopped = true
+      }
+    }
+  }))
+  if (hasError) throw firstError
+  return results
+}
+
 export function useAgentRunGroups(snapshot: Ref<LiveSnapshot | null>) {
   const listedRuns = ref<TeamRun[]>([])
   const ensuredRun = ref<TeamRun | null>(null)
@@ -90,25 +118,66 @@ export function useAgentRunGroups(snapshot: Ref<LiveSnapshot | null>) {
   let listSequence = 0
   let routeRevision = 0
   let closed = false
+  let refreshPromise: Promise<void> | null = null
 
-  async function refreshForSnapshot() {
-    const request = ++listSequence
-    loading.value = true
+  async function loadActiveTeamRuns(teamId: string): Promise<TeamRun[]> {
+    const runs: TeamRun[] = []
+    const seenCursors = new Set<string>()
+    let cursor: string | undefined
+    do {
+      const response: any = await teamRunApi.listByTeamPage(teamId, {
+        activeOnly: true,
+        ...(cursor ? { cursor } : {}),
+        limit: 50,
+      })
+      const payload = response?.data
+      runs.push(...(Array.isArray(payload?.items) ? payload.items : []))
+      const nextCursor = typeof payload?.nextCursor === 'string' && payload.nextCursor.length > 0
+        ? payload.nextCursor
+        : undefined
+      if (nextCursor && seenCursors.has(nextCursor)) {
+        throw new Error(`Repeated team run cursor for team ${teamId}: ${nextCursor}`)
+      }
+      if (nextCursor) seenCursors.add(nextCursor)
+      cursor = nextCursor
+    } while (cursor)
+    return runs
+  }
+
+  async function runRefresh(request: number) {
     try {
       const teamsResponse: any = await teamApi.list()
       const teams = teamsResponse?.data ?? []
-      const responses: any[] = await Promise.all(
-        teams.map((entry: any) => teamRunApi.listByTeam(String(entry.team.id), true)),
+      if (closed || request !== listSequence) return
+      const teamRuns = await mapConcurrent(
+        teams,
+        3,
+        (entry: any) => loadActiveTeamRuns(String(entry.team.id)),
       )
       if (closed || request !== listSequence) return
-      const allRuns = responses.flatMap(response => response?.data ?? []) as TeamRun[]
-      listedRuns.value = relevantRuns(allRuns, snapshot.value)
+      const allRuns = teamRuns.flat()
+      const relevant = relevantRuns(allRuns, snapshot.value)
+      if (closed || request !== listSequence) return
+      listedRuns.value = relevant
       error.value = null
     } catch (cause) {
       if (!closed && request === listSequence) error.value = cause instanceof Error ? cause.message : String(cause)
+      throw cause
     } finally {
       if (!closed && request === listSequence) loading.value = false
     }
+  }
+
+  function refreshForSnapshot(): Promise<void> {
+    if (refreshPromise) return refreshPromise
+    const request = ++listSequence
+    loading.value = true
+    let shared: Promise<void>
+    shared = runRefresh(request).finally(() => {
+      if (refreshPromise === shared) refreshPromise = null
+    })
+    refreshPromise = shared
+    return shared
   }
 
   async function ensureRun(runId: string | null, expectedRouteRevision: number) {

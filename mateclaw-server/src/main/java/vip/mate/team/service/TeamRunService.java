@@ -19,7 +19,12 @@ import vip.mate.team.repository.TeamRunMapper;
 import vip.mate.team.repository.TeamTaskMapper;
 
 import java.time.LocalDateTime;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.Collection;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -29,6 +34,9 @@ import java.util.stream.Collectors;
 @Slf4j
 public class TeamRunService {
 
+    public record RunPage(List<TeamRunView> items, String nextCursor) {
+    }
+
     public record SealResult(TeamRunEntity run, boolean transitioned) {
     }
 
@@ -36,6 +44,7 @@ public class TeamRunService {
     }
 
     private static final int MAX_TITLE_LENGTH = 255;
+    private static final int TASK_SUMMARY_BATCH_SIZE = 500;
     private static final Set<String> FINAL_OUTCOMES = Set.of(
             TeamRunStatus.COMPLETED, TeamRunStatus.PARTIAL, TeamRunStatus.FAILED);
 
@@ -131,38 +140,137 @@ public class TeamRunService {
 
     private void finalizeWithoutSummary(TeamRunEntity run, String outcome, String summary) {
         LocalDateTime completedAt = LocalDateTime.now();
+        String fallbackMetadata = metadata(run.getMetadata()).set("summaryQuality", "fallback").toString();
         runMapper.update(null, Wrappers.<TeamRunEntity>lambdaUpdate()
                 .eq(TeamRunEntity::getId, run.getId())
                 .eq(TeamRunEntity::getStatus, TeamRunStatus.FINALIZING)
                 .set(TeamRunEntity::getStatus, outcome)
                 .set(TeamRunEntity::getFinalSummary, summary)
+                .set(TeamRunEntity::getMetadata, fallbackMetadata)
                 .set(TeamRunEntity::getCompletedAt, completedAt));
         log.warn("Reconciled stranded team run {} from finalizing to {}", run.getId(), outcome);
     }
 
-    public List<TeamRunView> listTeamRuns(Long teamId, Long workspaceId) {
-        return listTeamRuns(teamId, workspaceId, false);
+    public RunPage pageTeamRuns(Long teamId, Long workspaceId, boolean activeOnly,
+                                String cursor, int requestedLimit) {
+        return pageRuns(teamId, null, workspaceId, activeOnly, cursor, requestedLimit);
     }
 
+    /** Backward-compatible array response used until clients migrate to cursor pagination. */
     public List<TeamRunView> listTeamRuns(Long teamId, Long workspaceId, boolean activeOnly) {
+        return listRuns(teamId, null, workspaceId, activeOnly);
+    }
+
+    /** Backward-compatible array response used until clients migrate to cursor pagination. */
+    public List<TeamRunView> listConversationRuns(String conversationId, Long workspaceId) {
+        return listRuns(null, conversationId, workspaceId, false);
+    }
+
+    private List<TeamRunView> listRuns(Long teamId, String conversationId, Long workspaceId,
+                                       boolean activeOnly) {
         var query = Wrappers.<TeamRunEntity>lambdaQuery()
-                        .eq(TeamRunEntity::getTeamId, teamId)
-                        .eq(TeamRunEntity::getWorkspaceId, workspaceId)
-                        .orderByDesc(TeamRunEntity::getCreateTime);
+                .eq(teamId != null, TeamRunEntity::getTeamId, teamId)
+                .eq(conversationId != null, TeamRunEntity::getLeadConversationId, conversationId)
+                .eq(TeamRunEntity::getWorkspaceId, workspaceId);
         if (activeOnly) {
             query.in(TeamRunEntity::getStatus, TeamRunStatus.PLANNING, TeamRunStatus.RUNNING,
                     TeamRunStatus.AWAITING_REVIEW, TeamRunStatus.FINALIZING);
         }
-        return runMapper.selectList(query)
-                .stream().map(this::buildView).toList();
+        List<TeamRunEntity> runs = runMapper.selectList(query
+                .orderByDesc(TeamRunEntity::getCreateTime).orderByDesc(TeamRunEntity::getId));
+        return summaryViews(runs);
     }
 
-    public List<TeamRunView> listConversationRuns(String conversationId, Long workspaceId) {
-        return runMapper.selectList(Wrappers.<TeamRunEntity>lambdaQuery()
-                        .eq(TeamRunEntity::getLeadConversationId, conversationId)
-                        .eq(TeamRunEntity::getWorkspaceId, workspaceId)
-                        .orderByDesc(TeamRunEntity::getCreateTime))
-                .stream().map(this::buildView).toList();
+    public RunPage pageConversationRuns(String conversationId, Long workspaceId,
+                                        String cursor, int requestedLimit) {
+        return pageRuns(null, conversationId, workspaceId, false, cursor, requestedLimit);
+    }
+
+    private RunPage pageRuns(Long teamId, String conversationId, Long workspaceId,
+                             boolean activeOnly, String cursor, int requestedLimit) {
+        int limit = Math.max(1, Math.min(requestedLimit <= 0 ? 20 : requestedLimit, 100));
+        Cursor decoded = decodeCursor(cursor);
+        var query = Wrappers.<TeamRunEntity>lambdaQuery()
+                .eq(teamId != null, TeamRunEntity::getTeamId, teamId)
+                .eq(conversationId != null, TeamRunEntity::getLeadConversationId, conversationId)
+                .eq(TeamRunEntity::getWorkspaceId, workspaceId);
+        if (activeOnly) {
+            query.in(TeamRunEntity::getStatus, TeamRunStatus.PLANNING, TeamRunStatus.RUNNING,
+                    TeamRunStatus.AWAITING_REVIEW, TeamRunStatus.FINALIZING);
+        }
+        if (decoded != null) {
+            query.and(nested -> nested.lt(TeamRunEntity::getCreateTime, decoded.createTime())
+                    .or(equal -> equal.eq(TeamRunEntity::getCreateTime, decoded.createTime())
+                            .lt(TeamRunEntity::getId, decoded.id())));
+        }
+        List<TeamRunEntity> fetched = runMapper.selectList(query
+                .orderByDesc(TeamRunEntity::getCreateTime).orderByDesc(TeamRunEntity::getId)
+                .last("LIMIT " + (limit + 1)));
+        boolean hasMore = fetched.size() > limit;
+        List<TeamRunEntity> runs = hasMore ? fetched.subList(0, limit) : fetched;
+        List<TeamRunView> items = summaryViews(runs);
+        TeamRunEntity last = runs.isEmpty() ? null : runs.getLast();
+        return new RunPage(items, hasMore && last != null ? encodeCursor(last) : null);
+    }
+
+    private List<TeamRunView> summaryViews(List<TeamRunEntity> runs) {
+        Map<Long, List<TeamTaskEntity>> tasksByRun = summaryTasks(runs);
+        return runs.stream().map(run -> {
+            List<TeamTaskEntity> tasks = tasksByRun.getOrDefault(run.getId(), List.of());
+            var projection = stateMachine.project(run, tasks);
+            return TeamRunViewFactory.create(run, projection.status(), projection.progress(), tasks, false);
+        }).toList();
+    }
+
+    private Map<Long, List<TeamTaskEntity>> summaryTasks(List<TeamRunEntity> runs) {
+        if (runs.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, List<TeamTaskEntity>> grouped = new LinkedHashMap<>();
+        List<Long> runIds = runs.stream().map(TeamRunEntity::getId).toList();
+        for (int start = 0; start < runIds.size(); start += TASK_SUMMARY_BATCH_SIZE) {
+            List<Long> batch = runIds.subList(start, Math.min(start + TASK_SUMMARY_BATCH_SIZE, runIds.size()));
+            List<TeamTaskEntity> tasks = taskMapper.selectList(Wrappers.<TeamTaskEntity>lambdaQuery()
+                    .select(TeamTaskEntity::getId, TeamTaskEntity::getTeamId, TeamTaskEntity::getRunId,
+                            TeamTaskEntity::getTaskNumber, TeamTaskEntity::getSubject,
+                            TeamTaskEntity::getStatus, TeamTaskEntity::getPriority,
+                            TeamTaskEntity::getTaskType, TeamTaskEntity::getAssigneeAgentId,
+                            TeamTaskEntity::getOwnerAgentId, TeamTaskEntity::getBlockedBy,
+                            TeamTaskEntity::getRequireApproval, TeamTaskEntity::getProgressPercent,
+                            TeamTaskEntity::getProgressStep, TeamTaskEntity::getReason,
+                            TeamTaskEntity::getConversationId, TeamTaskEntity::getMetadata,
+                            TeamTaskEntity::getLockExpiresAt, TeamTaskEntity::getCreateTime,
+                            TeamTaskEntity::getUpdateTime)
+                    .in(TeamTaskEntity::getRunId, batch)
+                    .orderByAsc(TeamTaskEntity::getTaskNumber));
+            for (TeamTaskEntity task : tasks) {
+                grouped.computeIfAbsent(task.getRunId(), ignored -> new ArrayList<>()).add(task);
+            }
+        }
+        return grouped;
+    }
+
+    private record Cursor(LocalDateTime createTime, Long id) {
+    }
+
+    private String encodeCursor(TeamRunEntity run) {
+        String raw = run.getCreateTime() + "|" + run.getId();
+        return Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(raw.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private Cursor decodeCursor(String cursor) {
+        if (cursor == null || cursor.isBlank()) {
+            return null;
+        }
+        try {
+            String raw = new String(Base64.getUrlDecoder().decode(cursor), StandardCharsets.UTF_8);
+            int separator = raw.lastIndexOf('|');
+            return new Cursor(LocalDateTime.parse(raw.substring(0, separator)),
+                    Long.valueOf(raw.substring(separator + 1)));
+        } catch (RuntimeException invalid) {
+            throw new IllegalArgumentException("invalid team run cursor");
+        }
     }
 
     @Transactional
@@ -264,11 +372,7 @@ public class TeamRunService {
     public TeamRunView buildView(TeamRunEntity run) {
         List<TeamTaskEntity> tasks = tasksForRun(run.getId());
         TeamRunStateMachine.Projection projection = stateMachine.project(run, tasks);
-        return new TeamRunView(run.getId(), run.getTeamId(), run.getWorkspaceId(), run.getLeadAgentId(),
-                run.getLeadConversationId(), run.getOriginMessageId(), run.getTitle(), run.getObjective(),
-                projection.status(), run.getFinalSummary(), run.getStopReason(), run.getMetadata(),
-                run.getStartedAt(), run.getCompletedAt(), run.getCreateTime(), run.getUpdateTime(),
-                projection.progress(), tasks.stream().map(TeamRunView.Task::from).toList());
+        return TeamRunViewFactory.create(run, projection.status(), projection.progress(), tasks, true);
     }
 
     private List<TeamTaskEntity> tasksForRun(Long runId) {

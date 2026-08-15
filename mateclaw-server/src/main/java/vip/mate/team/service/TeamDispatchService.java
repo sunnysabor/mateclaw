@@ -167,7 +167,8 @@ public class TeamDispatchService {
         try {
             AgentTeamEntity team = teamService.getTeam(teamId);
             conversationService.createChildConversation(childConvId, memberId, "system",
-                    team == null ? null : team.getWorkspaceId(), task.getLeadConversationId());
+                    team == null ? null : team.getWorkspaceId(), task.getLeadConversationId(),
+                    "team_worker");
             taskService.attachConversation(task.getId(), childConvId);
             // Track the child run so graph nodes honor requestStop() — without a
             // registered RunState, cancelling the task could never interrupt the

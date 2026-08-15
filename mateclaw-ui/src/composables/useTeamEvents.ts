@@ -1,4 +1,5 @@
 import { isHigherSseEventId, RecentSseEventIds } from './sseEventIds'
+import { canonicalTeamEventKey } from './chat/teamEventOwnership'
 
 /** One parsed SSE frame before JSON decoding. */
 export interface TeamSseFrame {
@@ -54,6 +55,7 @@ export interface TeamEventSubscriptionOptions {
   retryBaseMs?: number
   retryMaxMs?: number
   seenEventLimit?: number
+  maxBufferBytes?: number
   setTimeoutImpl?: (callback: () => void, delay: number) => unknown
   clearTimeoutImpl?: (handle: unknown) => void
 }
@@ -68,6 +70,7 @@ export function subscribeTeamEvents(
   const storage = options.storage ?? localStorage
   const retryBaseMs = options.retryBaseMs ?? 1_000
   const retryMaxMs = options.retryMaxMs ?? 30_000
+  const maxBufferBytes = Math.max(1_024, options.maxBufferBytes ?? 1_048_576)
   const setTimeoutImpl = options.setTimeoutImpl
     ?? ((callback, delay) => globalThis.setTimeout(callback, delay))
   const clearTimeoutImpl = options.clearTimeoutImpl
@@ -92,18 +95,21 @@ export function subscribeTeamEvents(
 
   const dispatchFrames = (frames: TeamSseFrame[]) => {
     for (const frame of frames) {
+      if (stopped) return
       if (frame.id !== undefined) {
         if (isHigherSseEventId(frame.id, lastEventId)) lastEventId = frame.id
-        if (seenEventIds.has(frame.id)) continue
-        seenEventIds.add(frame.id)
       }
       if (frame.event === 'heartbeat' || !frame.data) continue
       try {
-        onEvent({
+        const event: TeamBoardEvent = {
           ...(frame.id === undefined ? {} : { id: frame.id }),
           event: frame.event,
           data: JSON.parse(frame.data) as Record<string, unknown>,
-        })
+        }
+        const canonicalKey = canonicalTeamEventKey(event)
+        if (canonicalKey && seenEventIds.has(canonicalKey)) continue
+        if (canonicalKey) seenEventIds.add(canonicalKey)
+        onEvent(event)
         retryAttempt = 0
       } catch {
         // Ignore malformed or non-JSON board events.
@@ -132,18 +138,38 @@ export function subscribeTeamEvents(
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
+      let discardingOversizedFrame = false
+      let discardBoundaryTail = ''
       for (;;) {
         const { done, value } = await reader.read()
+        if (stopped) break
         if (done) {
           buffer += decoder.decode()
           const parsed = parseTeamSseFrames(buffer)
           dispatchFrames(parsed.frames)
           break
         }
-        buffer += decoder.decode(value, { stream: true })
+        let chunk = decoder.decode(value, { stream: true })
+        if (discardingOversizedFrame) {
+          const discardInput = discardBoundaryTail + chunk
+          const separator = /\r\n\r\n|\n\n|\r\r/.exec(discardInput)
+          if (!separator || separator.index == null) {
+            discardBoundaryTail = discardInput.slice(-3)
+            continue
+          }
+          chunk = discardInput.slice(separator.index + separator[0].length)
+          discardingOversizedFrame = false
+          discardBoundaryTail = ''
+        }
+        buffer += chunk
         const parsed = parseTeamSseFrames(buffer)
         buffer = parsed.remainder
         dispatchFrames(parsed.frames)
+        if (buffer.length > maxBufferBytes) {
+          discardBoundaryTail = buffer.slice(-3)
+          buffer = ''
+          discardingOversizedFrame = true
+        }
       }
     } catch {
       // A dropped stream follows the same reconnect path as a clean EOF.

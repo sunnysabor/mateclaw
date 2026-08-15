@@ -92,11 +92,7 @@ public class TeamRunProjector {
 
     private TeamRunView view(TeamRunEntity run, TeamRunStateMachine.Projection projection,
                              List<TeamTaskEntity> tasks) {
-        return new TeamRunView(run.getId(), run.getTeamId(), run.getWorkspaceId(), run.getLeadAgentId(),
-                run.getLeadConversationId(), run.getOriginMessageId(), run.getTitle(), run.getObjective(),
-                run.getStatus(), run.getFinalSummary(), run.getStopReason(), run.getMetadata(),
-                run.getStartedAt(), run.getCompletedAt(), run.getCreateTime(), run.getUpdateTime(),
-                projection.progress(), tasks.stream().map(TeamRunView.Task::from).toList());
+        return TeamRunViewFactory.create(run, run.getStatus(), projection.progress(), tasks, true);
     }
 
     private JSONObject metadata(String value) {

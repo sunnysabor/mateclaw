@@ -1,5 +1,5 @@
 import { computed, getCurrentInstance, onBeforeUnmount, ref } from 'vue'
-import { teamRunApi, type TeamRun } from '@/api'
+import { teamRunApi, type TeamRun, type TeamRunPage } from '@/api'
 import { subscribeTeamEvents, type TeamBoardEvent } from './useTeamEvents'
 
 export function sortTeamRuns(runs: readonly TeamRun[]): TeamRun[] {
@@ -16,7 +16,7 @@ export function sortTeamRuns(runs: readonly TeamRun[]): TeamRun[] {
 }
 
 interface RunHistoryApi {
-  listByTeam(teamId: string): Promise<unknown>
+  listByTeam(teamId: string, cursor?: string): Promise<unknown>
   get(runId: string): Promise<unknown>
 }
 
@@ -33,7 +33,13 @@ function responseData<T>(response: unknown): T {
 }
 
 export function useTeamRunHistory(options: TeamRunHistoryOptions = {}) {
-  const api = options.api ?? teamRunApi
+  const api: RunHistoryApi = options.api ?? {
+    listByTeam: (id, cursor) => teamRunApi.listByTeamPage(id, {
+      ...(cursor ? { cursor } : {}),
+      limit: 20,
+    }),
+    get: id => teamRunApi.get(id),
+  }
   const subscribe = options.subscribe ?? subscribeTeamEvents
   const debounceMs = options.debounceMs ?? 250
   const setTimeoutImpl = options.setTimeoutImpl ?? ((handler, delay) => globalThis.setTimeout(handler, delay))
@@ -41,15 +47,21 @@ export function useTeamRunHistory(options: TeamRunHistoryOptions = {}) {
   const runs = ref<TeamRun[]>([])
   const loading = ref(false)
   const error = ref<string | null>(null)
+  const loadingMore = ref(false)
+  const detailLoading = ref(false)
+  const detailError = ref<string | null>(null)
   const teamId = ref<string | null>(null)
   const selectedRunId = ref<string | null>(null)
   const selectedTaskId = ref<string | null>(null)
+  const nextCursor = ref<string | null>(null)
   const selectedRun = computed(() => runs.value.find(run => run.id === selectedRunId.value) ?? null)
   const refreshTimers = new Map<string, unknown>()
   const runRevisions = new Map<string, number>()
   const runRequestSequences = new Map<string, number>()
   let generation = 0
   let revision = 0
+  let selectionRevision = 0
+  let detailRequestSequence = 0
   let unsubscribe: (() => void) | null = null
 
   function merge(run: TeamRun) {
@@ -76,22 +88,41 @@ export function useTeamRunHistory(options: TeamRunHistoryOptions = {}) {
     runId: string,
     expectedTeamId = teamId.value,
     expectedGeneration = generation,
+    options: { silent?: boolean } = {},
   ): Promise<TeamRun | null> {
-    const requestSequence = (runRequestSequences.get(runId) ?? 0) + 1
-    runRequestSequences.set(runId, requestSequence)
+    const silent = options.silent === true
+    const requestKey = `${silent ? 'background' : 'foreground'}:${runId}`
+    const requestSequence = (runRequestSequences.get(requestKey) ?? 0) + 1
+    const requestRevision = runRevisions.get(runId) ?? 0
+    runRequestSequences.set(requestKey, requestSequence)
+    const requestSelectionRevision = selectionRevision
+    const currentDetailRequest = silent ? null : ++detailRequestSequence
     const isLatestRequest = () => expectedGeneration === generation
-      && runRequestSequences.get(runId) === requestSequence
+      && runRequestSequences.get(requestKey) === requestSequence
+    const isLatestDetailRequest = () => !silent
+      && expectedGeneration === generation
+      && detailRequestSequence === currentDetailRequest
+      && selectionRevision === requestSelectionRevision
     try {
+      if (!silent) {
+        detailLoading.value = true
+        detailError.value = null
+      }
       const response = await api.get(runId)
       if (!isLatestRequest()) return null
       const run = responseData<TeamRun>(response)
       if (!expectedTeamId || run.teamId !== expectedTeamId) return null
+      if (silent && (runRevisions.get(runId) ?? 0) > requestRevision) return run
       merge(run)
-      error.value = null
+      if (isLatestDetailRequest()) detailError.value = null
       return run
     } catch (cause) {
-      if (isLatestRequest()) error.value = cause instanceof Error ? cause.message : String(cause)
+      if (isLatestRequest() && isLatestDetailRequest()) {
+        detailError.value = cause instanceof Error ? cause.message : String(cause)
+      }
       return null
+    } finally {
+      if (isLatestDetailRequest()) detailLoading.value = false
     }
   }
 
@@ -100,7 +131,7 @@ export function useTeamRunHistory(options: TeamRunHistoryOptions = {}) {
     if (current !== undefined) clearTimeoutImpl(current)
     refreshTimers.set(runId, setTimeoutImpl(() => {
       refreshTimers.delete(runId)
-      void refreshRun(runId, expectedTeamId, expectedGeneration)
+      void refreshRun(runId, expectedTeamId, expectedGeneration, { silent: true })
     }, debounceMs))
   }
 
@@ -113,6 +144,8 @@ export function useTeamRunHistory(options: TeamRunHistoryOptions = {}) {
 
   async function open(nextTeamId: string) {
     const expectedGeneration = ++generation
+    nextCursor.value = null
+    loadingMore.value = false
     unsubscribe?.()
     unsubscribe = null
     refreshTimers.forEach(clearTimeoutImpl)
@@ -121,6 +154,7 @@ export function useTeamRunHistory(options: TeamRunHistoryOptions = {}) {
     runs.value = []
     runRevisions.clear()
     runRequestSequences.clear()
+    detailRequestSequence++
     revision = 0
     loading.value = true
     error.value = null
@@ -129,7 +163,10 @@ export function useTeamRunHistory(options: TeamRunHistoryOptions = {}) {
     try {
       const response = await api.listByTeam(nextTeamId)
       if (expectedGeneration === generation) {
-        mergeList(responseData<TeamRun[]>(response) ?? [], requestRevision, nextTeamId)
+        const payload = responseData<TeamRun[] | TeamRunPage>(response)
+        const list = Array.isArray(payload) ? payload : payload?.items ?? []
+        nextCursor.value = Array.isArray(payload) ? null : payload?.nextCursor ?? null
+        mergeList(list, requestRevision, nextTeamId)
       }
     } catch (cause) {
       if (expectedGeneration === generation) error.value = cause instanceof Error ? cause.message : String(cause)
@@ -142,9 +179,47 @@ export function useTeamRunHistory(options: TeamRunHistoryOptions = {}) {
     if (teamId.value) await open(teamId.value)
   }
 
+  async function loadMore() {
+    const cursor = nextCursor.value
+    const expectedTeamId = teamId.value
+    const expectedGeneration = generation
+    if (!cursor || !expectedTeamId || loadingMore.value) return
+    loadingMore.value = true
+    try {
+      const response = await api.listByTeam(expectedTeamId, cursor)
+      if (expectedGeneration !== generation) return
+      const payload = responseData<TeamRun[] | TeamRunPage>(response)
+      const list = Array.isArray(payload) ? payload : payload?.items ?? []
+      const byId = new Map(runs.value.map(run => [run.id, run]))
+      for (const run of list) if (!byId.has(run.id)) byId.set(run.id, run)
+      runs.value = sortTeamRuns([...byId.values()])
+      nextCursor.value = Array.isArray(payload) ? null : payload?.nextCursor ?? null
+    } catch (cause) {
+      if (expectedGeneration === generation) error.value = cause instanceof Error ? cause.message : String(cause)
+    } finally {
+      if (expectedGeneration === generation) loadingMore.value = false
+    }
+  }
+
   function select(runId: string | null, taskId: string | null = null) {
+    selectionRevision++
+    detailLoading.value = false
+    detailError.value = null
     selectedRunId.value = runId
     selectedTaskId.value = taskId
+  }
+
+  async function ensureSelectedRunDetail(runId: string, taskId: string | null, expectedTeamId = teamId.value) {
+    const current = runs.value.find(run => run.id === runId)
+    if (current?.projectionCompleteness === 'full') return current
+    const expectedSelectionRevision = selectionRevision
+    const loaded = await refreshRun(runId, expectedTeamId)
+    if (expectedSelectionRevision === selectionRevision
+      && selectedRunId.value === runId
+      && selectedTaskId.value === taskId) {
+      selectedTaskId.value = taskId
+    }
+    return loaded
   }
 
   function close() {
@@ -157,12 +232,16 @@ export function useTeamRunHistory(options: TeamRunHistoryOptions = {}) {
     runs.value = []
     runRevisions.clear()
     runRequestSequences.clear()
+    detailRequestSequence++
     loading.value = false
     error.value = null
+    detailLoading.value = false
+    detailError.value = null
+    nextCursor.value = null
     select(null)
   }
 
   if (getCurrentInstance()) onBeforeUnmount(close)
 
-  return { runs, loading, error, selectedRun, selectedRunId, selectedTaskId, open, refresh, refreshRun, select, close }
+  return { runs, loading, loadingMore, error, detailLoading, detailError, nextCursor, selectedRun, selectedRunId, selectedTaskId, open, refresh, loadMore, refreshRun, ensureSelectedRunDetail, select, close }
 }

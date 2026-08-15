@@ -127,6 +127,9 @@
         :team-runs="teamRuns"
         :expanded-team-run-id="teamRunRouteQuery.teamRunId || null"
         :selected-team-task-id="teamRunRouteQuery.taskId || null"
+        :team-runs-has-more="Boolean(teamRunsNextCursor)"
+        :team-runs-loading-more="teamRunsLoadingMore"
+        :readonly="workerConversationReadOnly"
         @regenerate="handleRegenerate"
         @rewind="handleRewind"
         @suggestion-click="sendSuggestion"
@@ -135,6 +138,7 @@
         @approve-always="handleApproveAlways"
         @deny="handleDeny"
         @team-run-navigate="router.push($event)"
+        @team-runs-load-more="loadMoreTeamRuns"
       >
         <!-- Issue #81 v2 R2: blocking-only popup. Recoverable cases use the
              non-blocking <RecoverableModelBanner> below instead. -->
@@ -303,12 +307,14 @@ import { useFileDrop } from '@/composables/useFileDrop'
 import { useIsMobile, useMediaQuery, BREAKPOINTS } from '@/composables/useBreakpoint'
 import { useChat } from '@/composables/chat/useChat'
 import { useTeamRuns } from '@/composables/chat/useTeamRuns'
-import { isConversationReadOnly, parseTeamMessageMetadata, resolveWorkerRunContext } from '@/composables/chat/messageMetadata'
+import { useWorkerConversationGuard } from '@/composables/chat/useWorkerConversationGuard'
+import { parseTeamMessageMetadata } from '@/composables/chat/messageMetadata'
 import RunOverviewPanel from '@/components/chat/RunOverviewPanel.vue'
 import { reconstructErrorInfo } from '@/types/chatError'
 import { reconcileMessages, extractMessages } from '@/utils/messageReconcile'
 import {
   buildChatRouteQuery,
+  readLegacyWorkerRouteContext,
   readTeamRunRouteQuery,
   resolveConversationAgentSelection,
   resolveRouteHydrationQuery,
@@ -652,6 +658,7 @@ function reconcileCurrentConversation() {
 const { isDragging, onDragEnter, onDragLeave, onDrop } = useFileDrop(processDroppedItems)
 
 async function processDroppedItems(e: DragEvent) {
+  if (workerConversationReadOnly.value) return
   const dtFiles = Array.from(e.dataTransfer?.files || [])
   const items = Array.from(e.dataTransfer?.items || [])
 
@@ -693,6 +700,7 @@ async function processDroppedItems(e: DragEvent) {
 }
 
 function handleDirectoryAttach(dirFiles: File[]) {
+  if (workerConversationReadOnly.value) return
   if (!currentConversationId.value) {
     newConversation()
   }
@@ -814,15 +822,34 @@ const metadataWorkerRunId = computed(() => {
   return undefined
 })
 const linkedTeamRunId = computed(() => teamRunRouteQuery.value.teamRunId ?? metadataWorkerRunId.value)
-const { runs: teamRuns } = useTeamRuns(currentConversationId, { linkedRunId: linkedTeamRunId })
-const workerRunContext = computed(() => resolveWorkerRunContext({
-  messages: messages.value,
-  runs: teamRuns.value,
-  conversationId: currentConversationId.value,
-  routeRunId: teamRunRouteQuery.value.teamRunId,
-  routeTaskId: teamRunRouteQuery.value.taskId,
-}))
-const workerConversationReadOnly = computed(() => isConversationReadOnly(workerRunContext.value))
+const {
+  runs: teamRuns,
+  nextCursor: teamRunsNextCursor,
+  loadingMore: teamRunsLoadingMore,
+  loadMore: loadMoreTeamRuns,
+} = useTeamRuns(currentConversationId, { linkedRunId: linkedTeamRunId })
+const currentConversationKind = computed(() => conversations.value
+  .find(conversation => conversation.conversationId === currentConversationId.value)?.conversationKind)
+const workerRouteHint = computed(() => Boolean(
+  teamRunRouteQuery.value.teamRunId
+  || teamRunRouteQuery.value.taskId
+  || currentConversationKind.value === 'team_worker'))
+const workerGuard = useWorkerConversationGuard({
+  conversationId: currentConversationId,
+  workerHint: workerRouteHint,
+  load: async (conversationId) => {
+    if (isEphemeralConversation(conversationId)) return null
+    const query = teamRunRouteQuery.value
+    const response = await conversationApi.getTeamWorkerContext(conversationId, {
+      runId: query.teamRunId,
+      taskId: query.taskId,
+    })
+    return response.data ?? null
+  },
+})
+const workerRunContext = computed(() => workerGuard.context.value
+  ?? readLegacyWorkerRouteContext(currentConversationId.value, route.query))
+const workerConversationReadOnly = computed(() => workerGuard.readOnly.value)
 
 // ============ 连接状态 ============
 const connectionStatusClass = computed(() => {
@@ -2090,7 +2117,8 @@ function handleStopStream() {
 }
 
 async function handleRegenerate(message: Message) {
-  if (isGenerating.value || !currentConversationId.value || !selectedAgentId.value) return
+  if (workerConversationReadOnly.value
+    || isGenerating.value || !currentConversationId.value || !selectedAgentId.value) return
   const idx = messages.value.indexOf(message)
   if (idx >= 0) {
     // The server drops the trailing assistant block and reuses the persisted
@@ -2114,7 +2142,7 @@ async function handleRegenerate(message: Message) {
 }
 
 async function handleRewind(message: Message) {
-  if (isGenerating.value || !currentConversationId.value) return
+  if (workerConversationReadOnly.value || isGenerating.value || !currentConversationId.value) return
   const idx = messages.value.indexOf(message)
   if (idx < 0) return
   const count = messages.value.length - idx
@@ -2242,6 +2270,7 @@ function resetStreamingState() {
 
 // ============ 附件处理 ============
 async function handleFileSelect(files: File[]) {
+  if (workerConversationReadOnly.value) return
   if (!currentConversationId.value) {
     newConversation()
   }

@@ -49,6 +49,19 @@ public class TeamRunController {
         return guarded(() -> R.ok(runService.listTeamRuns(teamId, workspaceId(workspaceId), activeOnly)));
     }
 
+    @Operation(summary = "Page team runs")
+    @GetMapping("/teams/{teamId}/runs/page")
+    @RequireWorkspaceRole("viewer")
+    public R<TeamRunService.RunPage> pageTeamRuns(
+            @PathVariable Long teamId,
+            @RequestParam(value = "activeOnly", defaultValue = "false") boolean activeOnly,
+            @RequestParam(value = "cursor", required = false) String cursor,
+            @RequestParam(value = "limit", defaultValue = "20") int limit,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        return guarded(() -> R.ok(runService.pageTeamRuns(
+                teamId, workspaceId(workspaceId), activeOnly, cursor, limit)));
+    }
+
     @Operation(summary = "List conversation team runs")
     @GetMapping("/conversations/{conversationId}/team-runs")
     @RequireWorkspaceRole("viewer")
@@ -57,6 +70,18 @@ public class TeamRunController {
             @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         return guarded(() -> R.ok(runService.listConversationRuns(
                 conversationId, workspaceId(workspaceId))));
+    }
+
+    @Operation(summary = "Page conversation team runs")
+    @GetMapping("/conversations/{conversationId}/team-runs/page")
+    @RequireWorkspaceRole("viewer")
+    public R<TeamRunService.RunPage> pageConversationRuns(
+            @PathVariable String conversationId,
+            @RequestParam(value = "cursor", required = false) String cursor,
+            @RequestParam(value = "limit", defaultValue = "20") int limit,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        return guarded(() -> R.ok(runService.pageConversationRuns(
+                conversationId, workspaceId(workspaceId), cursor, limit)));
     }
 
     @Operation(summary = "Cancel team run")
