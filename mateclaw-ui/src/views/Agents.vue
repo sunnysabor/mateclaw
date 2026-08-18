@@ -158,6 +158,11 @@
                 <p class="agent-card__tagline">
                   {{ agentTagline(agent) || t('agents.messages.noTagline') }}
                 </p>
+                <span class="agent-runtime-badge" :class="{ 'agent-runtime-badge--dsh': agent.runtimeType === 'dsh' }">
+                  <svg v-if="agent.runtimeType === 'dsh'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17l6-6 4 4 6-8"/><path d="M4 20h16"/></svg>
+                  <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg>
+                  {{ agent.runtimeType === 'dsh' ? t('agents.runtime.dsh') : t('agents.runtime.native') }}
+                </span>
                 <div v-if="agentTags(agent).length" class="agent-card__tags">
                   <span v-for="tag in agentTags(agent)" :key="tag" class="agent-card__tag"
                     :class="{ active: activeTags.includes(tag) }" @click="toggleTag(tag)">
@@ -423,16 +428,25 @@
                 <option value="acp">{{ t('agents.types.acp') }}</option>
               </select>
             </div>
-            <div v-if="isAcpRuntime" class="form-group">
-              <label class="form-label">{{ t('agents.fields.acpEndpoint') }}</label>
-              <select v-model="form.acpEndpointName" class="form-input">
-                <option v-for="endpoint in managedAcpEndpoints" :key="endpoint.value" :value="endpoint.value">
-                  {{ endpoint.label }}
-                </option>
+            <div class="form-group">
+              <label class="form-label">{{ t('agents.fields.runtime') }}</label>
+              <select v-model="form.runtimeType" class="form-input">
+                <option value="native">{{ t('agents.runtime.native') }}</option>
+                <option value="dsh">{{ t('agents.runtime.dsh') }}</option>
               </select>
-              <p class="form-hint">{{ t('agents.fields.acpEndpointHint') }}</p>
+              <p class="form-hint">{{ form.runtimeType === 'dsh' ? t('agents.fields.runtimeDshHint') : t('agents.fields.runtimeNativeHint') }}</p>
             </div>
-            <div v-if="!isAcpRuntime" class="form-group">
+            <div v-if="form.runtimeType === 'dsh'" class="form-group full-width">
+              <label class="form-label">{{ t('agents.fields.runtimeConfig') }}</label>
+              <textarea v-model="form.runtimeConfig" class="form-textarea runtime-config-editor" rows="4" spellcheck="false" placeholder="{}"></textarea>
+              <p class="form-hint">{{ t('agents.fields.runtimeConfigHint') }}</p>
+              <p v-if="dshDiagnostics" class="form-hint runtime-diagnostics" :class="{ 'runtime-diagnostics--ready': dshDiagnostics.executableAvailable && dshDiagnostics.cordisConfigAvailable }">
+                {{ dshDiagnostics.executableAvailable && dshDiagnostics.cordisConfigAvailable
+                  ? t('agents.fields.runtimeReady')
+                  : t('agents.fields.runtimeUnavailable') }}
+              </p>
+            </div>
+            <div class="form-group">
               <label class="form-label">{{ t('agents.fields.maxIterations') }}</label>
               <input v-model.number="form.maxIterations" type="number" min="1" max="50" class="form-input" />
             </div>
@@ -1104,6 +1118,7 @@ const selectedProviderPrefs = ref<Array<{ providerId: string; modelId: string | 
 // global enabled-models list, blank value means "fall back to default".
 // id is a string (Snowflake serialised as string).
 const availableModels = ref<Array<{ id: string; name: string; provider: string; modelName: string }>>([])
+const dshDiagnostics = ref<Record<string, any> | null>(null)
 
 // Template selector state
 const showTemplateSelector = ref(false)
@@ -1114,7 +1129,7 @@ const filterTabs = [
   { key: 'agents.tabs.all', value: 'all' },
   { key: 'agents.tabs.react', value: 'react' },
   { key: 'agents.tabs.planExecute', value: 'plan_execute' },
-  { key: 'agents.tabs.acp', value: 'acp' },
+  { key: 'agents.tabs.dsh', value: 'dsh' },
   { key: 'agents.tabs.enabled', value: 'enabled' },
   { key: 'agents.tabs.disabled', value: 'disabled' },
 ]
@@ -1147,7 +1162,8 @@ const defaultForm = (): Partial<Agent> & { name: string; defaultThinkingLevel: s
   name: '',
   description: '',
   agentType: 'react',
-  acpEndpointName: 'codex',
+  runtimeType: 'native',
+  runtimeConfig: null,
   systemPrompt: '',
   modelName: '', // RFC-03 G1 — empty means "use global default"
   maxIterations: 10,
@@ -1392,7 +1408,7 @@ const filteredAgents = computed(() => {
   }
   if (activeFilter.value === 'react') list = list.filter(a => a.agentType === 'react')
   else if (activeFilter.value === 'plan_execute') list = list.filter(a => a.agentType === 'plan_execute')
-  else if (activeFilter.value === 'acp') list = list.filter(a => a.agentType === 'acp')
+  else if (activeFilter.value === 'dsh') list = list.filter(a => a.runtimeType === 'dsh')
   else if (activeFilter.value === 'enabled') list = list.filter(a => a.enabled)
   else if (activeFilter.value === 'disabled') list = list.filter(a => !a.enabled)
   // Tag filter: intersection — an agent must carry every selected tag.
@@ -1442,9 +1458,18 @@ async function refreshLiveCounts() {
   }
 }
 
+async function loadDshDiagnostics() {
+  try {
+    const res: any = await liveApi.dshDiagnostics()
+    dshDiagnostics.value = res?.data ?? res
+  } catch {
+    dshDiagnostics.value = null
+  }
+}
+
 onMounted(() => {
   loadAgents()
-  loadTeams()
+  loadDshDiagnostics()
   // RFC-03 G1: load models once for the per-Agent override dropdown.
   // Failure is non-fatal — the dropdown just shows only "global default".
   loadAvailableModels()
@@ -1696,7 +1721,8 @@ async function openEditModal(agent: Agent) {
     name: agent.name,
     description: agent.description || '',
     agentType: agent.agentType,
-    acpEndpointName: (agent as any).acpEndpointName || 'codex',
+    runtimeType: agent.runtimeType || 'native',
+    runtimeConfig: agent.runtimeConfig || null,
     systemPrompt: agent.systemPrompt || '',
     modelName: agent.modelName || '',
     maxIterations: agent.maxIterations,
@@ -1795,6 +1821,18 @@ function closeModal() {
 
 async function saveAgent() {
   try {
+    if (form.value.runtimeType === 'dsh') {
+      try {
+        const parsed = JSON.parse(form.value.runtimeConfig || '{}')
+        if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error('object')
+        form.value.runtimeConfig = JSON.stringify(parsed, null, 2)
+      } catch {
+        mcToast.error(t('agents.messages.runtimeConfigInvalid'))
+        return
+      }
+    } else {
+      form.value.runtimeConfig = null
+    }
     // Flatten the structured profile back to a single systemPrompt before
     // sending to the backend — the schema is unchanged, only the editor
     // exposes the H2 sections to the user.
@@ -2209,6 +2247,30 @@ html.dark .seg-count.warn {
   overflow: hidden;
   text-overflow: ellipsis;
   letter-spacing: -0.005em;
+}
+
+.agent-runtime-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: fit-content;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--mc-bg-sunken);
+  color: var(--mc-text-tertiary);
+  font-size: 11px;
+  font-weight: 600;
+}
+.agent-runtime-badge--dsh {
+  background: var(--mc-primary-bg);
+  color: var(--mc-primary-hover);
+}
+
+.runtime-config-editor {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
 }
 
 .agent-card__tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }

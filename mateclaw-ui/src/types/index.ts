@@ -36,8 +36,9 @@ export interface Agent {
   id: string | number
   name: string
   description?: string
-  agentType: 'react' | 'plan_execute' | 'acp'
-  acpEndpointName?: 'hermes' | 'codex' | 'openclaw' | string | null
+  agentType: 'react' | 'plan_execute'
+  runtimeType?: 'native' | 'dsh' | string
+  runtimeConfig?: string | null
   systemPrompt?: string
   modelName?: string
   maxIterations: number
