@@ -763,6 +763,17 @@ export const settingsApi = {
   getSearchProviders: () => http.get('/settings/search-providers'),
 }
 
+// ==================== DeepSeek Harness runtime ====================
+export const dshApi = {
+  status: () => http.get('/admin/dsh/status'),
+  saveConfig: (data: Record<string, string>) => http.put('/admin/dsh/config', data),
+  install: () => http.post('/admin/dsh/install'),
+  verify: () => http.post('/admin/dsh/verify'),
+  testConnection: () => http.post('/admin/dsh/test-connection'),
+  enable: () => http.post('/admin/dsh/enable'),
+  disable: () => http.post('/admin/dsh/disable'),
+}
+
 // ==================== Global outbound proxy ====================
 export const proxyApi = {
   get: () => http.get('/settings/proxy'),

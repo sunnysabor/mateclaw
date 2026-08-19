@@ -706,6 +706,7 @@ export default {
     core: '核心',
     connect: '连接',
     system: '系统',
+    dsh: 'DeepSeek Harness',
     agent: '智能体',
     workspace: '工作区',
     agentContext: '智能体上下文',

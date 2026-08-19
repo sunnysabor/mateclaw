@@ -715,6 +715,7 @@ export default {
     core: 'Core',
     connect: 'Connect',
     system: 'System',
+    dsh: 'DeepSeek Harness',
     datasources: 'Datasources',
     mcpServers: 'MCP Connections',
     mcpConnections: 'MCP Connections',
