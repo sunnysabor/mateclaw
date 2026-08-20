@@ -9,7 +9,8 @@ import lombok.NoArgsConstructor;
  * Picker DTO for the unified agent tool selector.
  *
  * <p>One row per atomic tool the agent can be bound to — built-in tools
- * appear under {@code source="builtin"}, MCP tools appear under
+ * appear under {@code source="builtin"}, plugin callbacks appear under
+ * {@code source="plugin"}, MCP tools appear under
  * {@code source="mcp"} and are grouped by their server. The {@link #name}
  * field is the value the UI saves into {@code mate_agent_tool.tool_name};
  * for MCP tools it is the prefixed callback name returned by the resolver
@@ -29,7 +30,7 @@ public class AvailableToolDTO {
      */
     private String rowId;
 
-    /** {@code "builtin"} or {@code "mcp"}. */
+    /** {@code "builtin"}, {@code "channel"}, {@code "plugin"}, or {@code "mcp"}. */
     private String source;
 
     /** MCP server id when {@code source == "mcp"}; null otherwise. */
@@ -123,28 +124,21 @@ public class AvailableToolDTO {
                 .build();
     }
 
-    private static String displayNameOrName(ToolEntity t) {
-        if (t == null) return "";
-        String display = t.getDisplayName();
-        if (display != null && !display.isBlank()) {
-            return display;
-        }
-        return t.getName() != null ? t.getName() : "";
-    }
-
-    private static String channelToolDisplayName(ToolEntity t) {
-        String display = displayNameOrName(t);
-        String channelName = extractChannelName(display);
-        if (!channelName.isEmpty()) {
-            int open = display.lastIndexOf('(');
-            if (open > 0) {
-                String base = display.substring(0, open).trim();
-                if (!base.isEmpty()) {
-                    return base;
-                }
-            }
-        }
-        return display;
+    public static AvailableToolDTO fromPlugin(String name, String description) {
+        return AvailableToolDTO.builder()
+                .rowId("plugin#" + name)
+                .source("plugin")
+                .providerId(null)
+                .providerName(null)
+                .name(name)
+                .rawName(name)
+                .description(description != null ? description : "")
+                .group("Plugin tools")
+                .groupId("plugin")
+                .stale(false)
+                .available(true)
+                .unavailableReason(null)
+                .build();
     }
 
     private static String extractChannelName(String displayName) {

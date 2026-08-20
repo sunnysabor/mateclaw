@@ -38,8 +38,8 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class AcpEndpointService {
 
-    private static final Set<String> MANAGED_CODING_AGENT_NAMES = Set.of("hermes", "codex", "openclaw");
-    private static final long DEFAULT_WORKSPACE_ID = 1L;
+    public static final int DEFAULT_PROMPT_TIMEOUT_SECONDS = 300;
+    public static final int MAX_PROMPT_TIMEOUT_SECONDS = 3600;
 
     private final AcpEndpointMapper mapper;
     private final ObjectMapper objectMapper;
@@ -132,7 +132,8 @@ public class AcpEndpointService {
         if (input.getStdioBufferLimitBytes() == null || input.getStdioBufferLimitBytes() <= 0) {
             input.setStdioBufferLimitBytes(50L * 1024L * 1024L);
         }
-        input.setWorkspaceId(normalizeWorkspaceId(workspaceId));
+        input.setPromptTimeoutSeconds(normalizePromptTimeoutSeconds(input.getPromptTimeoutSeconds()));
+        if (input.getWorkspaceId() == null) input.setWorkspaceId(1L);
         mapper.insert(input);
         log.info("Created ACP endpoint: {}", input.getName());
         publish(input, AcpEndpointChangedEvent.Type.CREATED);
@@ -164,6 +165,9 @@ public class AcpEndpointService {
         if (patch.getEnabled() != null) existing.setEnabled(patch.getEnabled());
         if (patch.getStdioBufferLimitBytes() != null && patch.getStdioBufferLimitBytes() > 0) {
             existing.setStdioBufferLimitBytes(patch.getStdioBufferLimitBytes());
+        }
+        if (patch.getPromptTimeoutSeconds() != null) {
+            existing.setPromptTimeoutSeconds(normalizePromptTimeoutSeconds(patch.getPromptTimeoutSeconds()));
         }
         mapper.updateById(existing);
         publish(existing, AcpEndpointChangedEvent.Type.UPDATED);
@@ -235,6 +239,13 @@ public class AcpEndpointService {
                     ep.getName(), e.getMessage());
             return Map.of();
         }
+    }
+
+    public static int normalizePromptTimeoutSeconds(Integer seconds) {
+        if (seconds == null || seconds <= 0) {
+            return DEFAULT_PROMPT_TIMEOUT_SECONDS;
+        }
+        return Math.min(seconds, MAX_PROMPT_TIMEOUT_SECONDS);
     }
 
     private List<String> parseStringList(String json) {

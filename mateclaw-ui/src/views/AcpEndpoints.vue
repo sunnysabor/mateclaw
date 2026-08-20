@@ -181,6 +181,18 @@
                 <option value="update_detail">update_detail</option>
               </select>
             </div>
+            <div class="form-group">
+              <label class="form-label">{{ t('acp.fields.promptTimeoutSeconds') }}</label>
+              <input
+                v-model.number="form.promptTimeoutSeconds"
+                class="form-input"
+                type="number"
+                min="1"
+                max="3600"
+                step="30"
+              />
+              <p class="form-help">{{ t('acp.fields.promptTimeoutHint') }}</p>
+            </div>
             <div class="form-group full-width">
               <label class="form-label">{{ t('acp.fields.args') }}</label>
               <input v-model="form.argsJson" class="form-input mono" placeholder='["-y","@agentclientprotocol/codex-acp"]' />
@@ -302,6 +314,7 @@ interface AcpEndpoint {
   lastError?: string
   lastTestedAt?: string
   stdioBufferLimitBytes?: number
+  promptTimeoutSeconds?: number
 }
 
 interface AgentDiagnostic {
@@ -346,6 +359,7 @@ const defaultForm = (): any => ({
   argsJson: '[]',
   envJson: '{}',
   toolParseMode: 'call_title',
+  promptTimeoutSeconds: 300,
   enabled: false,
 })
 const form = reactive<any>(defaultForm())
@@ -557,6 +571,7 @@ function openEditModal(ep: AcpEndpoint) {
     argsJson: ep.argsJson || '[]',
     envJson: ep.envJson || '{}',
     toolParseMode: ep.toolParseMode || 'call_title',
+    promptTimeoutSeconds: ep.promptTimeoutSeconds || 300,
     enabled: !!ep.enabled,
   })
   // Always open in form mode so users see the structured editor first.
@@ -796,6 +811,7 @@ td .status-error { background: none; color: var(--mc-text-tertiary); font-size: 
 .form-input { padding: 8px 10px; border: 1px solid var(--mc-border); border-radius: 8px; font-size: 13px; color: var(--mc-text-primary); outline: none; background: var(--mc-bg-sunken); }
 .form-input:focus { border-color: var(--mc-primary); box-shadow: 0 0 0 2px rgba(217, 119, 87, 0.1); }
 .form-input.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.form-help { margin: 0; font-size: 11px; line-height: 1.4; color: var(--mc-text-tertiary); }
 .form-textarea { resize: vertical; }
 .toggle-inline { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .modal-footer { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 22px; border-top: 1px solid var(--mc-border-light); }

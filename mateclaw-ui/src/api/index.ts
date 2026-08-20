@@ -212,7 +212,7 @@ export const conversationApi = {
    */
   page: (params: { page?: number; size?: number; keyword?: string }) =>
     http.get('/conversations/page', { params }),
-  listMessages: (conversationId: string, params?: { beforeId?: number; limit?: number }) =>
+  listMessages: (conversationId: string, params?: { beforeId?: number; limit?: number; runId?: string; taskId?: string }) =>
     http.get(`/conversations/${encId(conversationId)}/messages`, { params }),
   getStatus: (conversationId: string) =>
     http.get(`/conversations/${encId(conversationId)}/status`),
@@ -531,8 +531,8 @@ export const toolApi = {
   list: () => http.get('/tools'),
   listEnabled: () => http.get('/tools/enabled'),
   /**
-   * Unified picker source for the agent edit tool tab — returns built-in
-   * tools plus every MCP-discovered tool grouped by server. The `name`
+   * Unified picker source for the agent edit tool tab — returns built-in,
+   * channel, plugin, and MCP-discovered tools. The `name`
    * field is what gets saved into mate_agent_tool.tool_name.
    */
   listAvailable: () => http.get('/tools/available'),
