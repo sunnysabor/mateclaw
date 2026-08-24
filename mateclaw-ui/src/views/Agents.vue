@@ -448,7 +448,7 @@
             </div>
             <div class="form-group">
               <label class="form-label">{{ t('agents.fields.maxIterations') }}</label>
-              <input v-model.number="form.maxIterations" type="number" min="1" max="50" class="form-input" />
+              <input v-model.number="form.maxIterations" type="number" min="1" max="150" class="form-input" />
             </div>
             <!-- RFC-03 Lane G1: per-Agent model override. Empty value falls
                  back to the global default in ModelConfigService.resolveModel. -->
