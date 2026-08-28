@@ -190,8 +190,8 @@ public class ChatStreamTracker {
         /** 等待原因（审批等待时有值） */
         volatile String waitingReason;
 
-        /** 排队的用户消息队列（支持多条排队消息，按序消费） */
-        final java.util.Queue<QueuedInput> messageQueue = new java.util.concurrent.ConcurrentLinkedQueue<>();
+        /** Wake signal only; queued input payloads live in the database. */
+        final AtomicBoolean queuedInputPending = new AtomicBoolean(false);
 
         /**
          * Emergency save callback registered by the SSE chain owner (ChatController).
@@ -507,18 +507,7 @@ public class ChatStreamTracker {
                 }
                 if (current.done) {
                     stopHeartbeat(current);
-                    RunState nextState = new RunState(id);
-                    int carried = 0;
-                    QueuedInput queued;
-                    while ((queued = current.messageQueue.poll()) != null) {
-                        nextState.messageQueue.offer(queued);
-                        carried++;
-                    }
-                    if (carried > 0) {
-                        log.info("[ChatStreamTracker] Carried {} queued message(s) into next run: {}",
-                                carried, id);
-                    }
-                    return nextState;
+                    return new RunState(id);
                 }
                 // Registration is a fresh lifecycle entrance. Refresh every
                 // stale-run input while holding the same lock cleanup uses to
@@ -1303,10 +1292,8 @@ public class ChatStreamTracker {
         }
     }
 
-    /**
-     * 完成结果：包含是否全部完成、排队消息快照
-     */
-    public record CompletionResult(boolean allDone, QueuedInput queuedInput) {}
+    /** Completion result for the current in-memory stream generation. */
+    public record CompletionResult(boolean allDone) {}
 
     /**
      * 标记一个 Flux 完成。仅在所有 Flux 都完成时才真正移除 RunState。
@@ -1372,22 +1359,19 @@ public class ChatStreamTracker {
     public CompletionResult completeAndConsumeIfLast(String conversationId) {
         RunState state = runs.get(conversationId);
         if (state == null) {
-            return new CompletionResult(true, null);
+            return new CompletionResult(true);
         }
-        QueuedInput consumed = null;
         ScheduledFuture<?> oldHeartbeat;
         synchronized (state.lock) {
             if (!isCurrent(state)) {
-                return new CompletionResult(false, null);
+                return new CompletionResult(false);
             }
             state.activeFluxCount = Math.max(0, state.activeFluxCount - 1);
             if (state.activeFluxCount > 0) {
-                log.debug("Stream partially completed: {} (remaining flux={}, queuePreserved={})",
-                        conversationId, state.activeFluxCount, !state.messageQueue.isEmpty());
-                return new CompletionResult(false, null);
+                log.debug("Stream partially completed: {} (remaining flux={}, queuedInputPending={})",
+                        conversationId, state.activeFluxCount, state.queuedInputPending.get());
+                return new CompletionResult(false);
             }
-            // 最后一个 Flux：在同一个锁内消费排队消息（取队首）
-            consumed = state.messageQueue.poll();
             state.done = true;
             state.cancellationHooks.clear();
             state.termination.complete(null);
@@ -1399,9 +1383,9 @@ public class ChatStreamTracker {
         if (oldHeartbeat != null) {
             oldHeartbeat.cancel(false);
         }
-        log.debug("Stream fully completed: {} (hasQueuedSnapshot={}, kept in map for {}ms reconnect window)",
-                conversationId, consumed != null, DONE_RETENTION_MS);
-        return new CompletionResult(true, consumed);
+        log.debug("Stream fully completed: {} (queuedInputPending={}, kept in map for {}ms reconnect window)",
+                conversationId, state.queuedInputPending.get(), DONE_RETENTION_MS);
+        return new CompletionResult(true);
     }
 
     /**
@@ -1504,7 +1488,7 @@ public class ChatStreamTracker {
                                 "currentPhase", safe(state.currentPhase),
                                 "waitingReason", safe(state.waitingReason),
                                 "runningToolName", safe(state.runningToolName),
-                                "queueLength", state.messageQueue.size(),
+                                "queueLength", state.queuedInputPending.get() ? 1 : 0,
                                 "timestamp", System.currentTimeMillis()
                         ));
                     } catch (Exception e) {
@@ -1649,9 +1633,7 @@ public class ChatStreamTracker {
         synchronized (state.lock) {
             Disposable d = state.disposable;
             canInterrupt = d != null && !d.isDisposed();
-            // 无论是否可中断，都入队（支持多条排队消息）
-            state.messageQueue.offer(new QueuedInput(queuedMessage, agentId, persisted,
-                    contentParts, state.origin));
+            state.queuedInputPending.set(true);
             if (canInterrupt) {
                 state.interruptType = InterruptType.USER_INTERRUPT_WITH_FOLLOWUP;
                 state.stopRequested.set(true);
@@ -1723,8 +1705,7 @@ public class ChatStreamTracker {
         if (state == null || state.done) {
             return false;
         }
-        ChatOrigin queuedOrigin = origin != null ? origin : state.origin;
-        state.messageQueue.offer(new QueuedInput(message, agentId, persisted, contentParts, queuedOrigin));
+        state.queuedInputPending.set(true);
         // broadcast 在锁外
         try {
             String json = objectMapper.writeValueAsString(Map.of(
@@ -1760,9 +1741,7 @@ public class ChatStreamTracker {
      * 从队列头部取出一条消息。
      */
     public QueuedInput consumeQueuedInput(String conversationId) {
-        RunState state = runs.get(conversationId);
-        if (state == null) return null;
-        return state.messageQueue.poll();
+        return null;
     }
 
     /**
@@ -1806,7 +1785,7 @@ public class ChatStreamTracker {
      */
     public boolean hasQueuedMessage(String conversationId) {
         RunState state = runs.get(conversationId);
-        return state != null && !state.messageQueue.isEmpty();
+        return state != null && state.queuedInputPending.get();
     }
 
     /**
@@ -1814,7 +1793,20 @@ public class ChatStreamTracker {
      */
     public int getQueueSize(String conversationId) {
         RunState state = runs.get(conversationId);
-        return state != null ? state.messageQueue.size() : 0;
+        return state != null && state.queuedInputPending.get() ? 1 : 0;
+    }
+
+    /** Notify the live stream that durable queued input is ready to consume. */
+    public boolean notifyQueuedInput(String conversationId) {
+        RunState state = runs.get(conversationId);
+        if (state == null || state.done) return false;
+        state.queuedInputPending.set(true);
+        return true;
+    }
+
+    boolean hasQueuedInputNotification(String conversationId) {
+        RunState state = runs.get(conversationId);
+        return state != null && state.queuedInputPending.get();
     }
 
     // ===== Approval idempotency =====
@@ -2254,7 +2246,7 @@ public class ChatStreamTracker {
             int queue;
             synchronized (s.lock) {
                 subs = s.subscribers.size();
-                queue = s.messageQueue.size();
+                queue = s.queuedInputPending.get() ? 1 : 0;
             }
             out.add(new RunSnapshot(
                     s.conversationId,
