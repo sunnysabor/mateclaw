@@ -22,7 +22,8 @@ import java.util.Set;
  * Rebuilds the fact projection from canonical sources.
  * <p>
  * Derived columns are overwritten; accumulated columns (use_count, last_used_at)
- * are preserved via select-then-update keyed on (agent_id, source_ref).
+ * are preserved via select-then-update keyed on
+ * (agent_id, source_ref, scope, owner_key).
  * <p>
  * Only this class may write derived columns to mate_fact (core invariant).
  * Uses MyBatis Plus CRUD (dialect-safe for both H2 and MySQL).
@@ -49,35 +50,43 @@ public class FactProjectionBuilder {
             return 0;
         }
 
-        List<ExtractedFact> allFacts = new ArrayList<>();
+        List<ProjectedFact> allFacts = new ArrayList<>();
 
-        // Extract from structured/*.md files (shared + personal rows).
-        List<WorkspaceFileEntity> files = workspaceFileService.listAllFilesForMaintenance(agentId);
+        // Extract every canonical memory row with its visibility identity. A
+        // shared agent can have the same filename/key for many personal owners,
+        // so filename/sourceRef alone is not a projection identity.
+        List<WorkspaceFileEntity> files = workspaceFileService.listFiles(agentId);
         for (WorkspaceFileEntity file : files) {
             String filename = file.getFilename();
             if (filename == null) continue;
-            if (filename.startsWith("structured/") && filename.endsWith(".md")) {
-                addFactsFromFile(agentId, file, allFacts);
-            }
-        }
+            boolean canonical = "MEMORY.md".equals(filename)
+                    || filename.startsWith("structured/") && filename.endsWith(".md");
+            if (!canonical) continue;
 
-        // Extract from MEMORY.md (shared + personal rows).
-        for (WorkspaceFileEntity file : files) {
-            if ("MEMORY.md".equals(file.getFilename())) {
-                addFactsFromFile(agentId, file, allFacts);
+            String scope = normalizeScope(file.getScope());
+            String ownerKey = normalizeOwner(file.getOwnerKey(), scope);
+            WorkspaceFileEntity full = MemoryScope.PERSONAL.equals(scope)
+                    ? workspaceFileService.getMemoryFile(agentId, filename, ownerKey)
+                    : workspaceFileService.getFile(agentId, filename);
+            if (full == null || full.getContent() == null || full.getContent().isBlank()) continue;
+            for (ExtractedFact fact : extractor.extract(agentId, filename, full.getContent())) {
+                allFacts.add(new ProjectedFact(fact, ownerKey, scope));
             }
         }
 
         // Upsert all extracted facts (dialect-safe)
         LocalDateTime now = LocalDateTime.now();
-        for (ExtractedFact fact : allFacts) {
-            upsertDerived(agentId, fact, now);
+        List<Long> keepIds = new ArrayList<>();
+        for (ProjectedFact projected : allFacts) {
+            Long id = upsertDerived(agentId, projected.fact(), projected.ownerKey(), projected.scope(), now);
+            if (id != null) keepIds.add(id);
         }
 
-        // Remove stale facts by the full logical projection key. source_ref is
-        // not unique once per-owner memory is enabled: two owners can both have
-        // "structured/user.md#preferred_language".
-        softDeleteStaleFacts(agentId, allFacts, now);
+        // Remove stale facts by row ID. source_ref is intentionally not unique
+        // across owners, so a source-ref keep set cannot express owner identity.
+        if (!keepIds.isEmpty() && keepIds.size() == allFacts.size()) {
+            factMapper.deleteByAgentIdAndIdNotIn(agentId, keepIds, now);
+        }
 
         log.info("[FactProjection] rebuildAll: agent={}, facts={}", agentId, allFacts.size());
         return allFacts.size();
@@ -101,12 +110,18 @@ public class FactProjectionBuilder {
      * Incremental rebuild for a single file change.
      */
     public int rebuildOne(Long agentId, String filename, String content) {
+        return rebuildOne(agentId, filename, content, "", MemoryScope.TEAM);
+    }
+
+    /** Incremental owner-aware rebuild for one canonical memory row. */
+    public int rebuildOne(Long agentId, String filename, String content, String ownerKey, String scope) {
         if (!properties.getFact().isProjectionEnabled()) return 0;
 
         List<ExtractedFact> facts = extractor.extract(agentId, filename, content);
         LocalDateTime now = LocalDateTime.now();
         for (ExtractedFact fact : facts) {
-            upsertDerived(agentId, fact, now);
+            String normalizedScope = normalizeScope(scope);
+            upsertDerived(agentId, fact, normalizeOwner(ownerKey, normalizedScope), normalizedScope, now);
         }
         factMapper.softDeleteByAgentIdAndSourceRefPrefixNotIn(
                 agentId, filename + "#", facts.stream().map(ExtractedFact::sourceRef).toList(), now);
@@ -115,47 +130,24 @@ public class FactProjectionBuilder {
     }
 
     /**
-     * Incremental rebuild for a changed owner-scoped canonical file. The owner
-     * metadata is written into each derived fact so fact recall and the UI can
-     * apply the same PERSONAL / TEAM visibility rules as memory files.
-     */
-    public int rebuildOne(Long agentId, String filename, String content, String ownerKey, String scope) {
-        if (!properties.getFact().isProjectionEnabled()) return 0;
-
-        String effectiveScope = normalizeScope(scope);
-        String effectiveOwner = MemoryScope.PERSONAL.equals(effectiveScope) ? ownerKey : null;
-        List<ExtractedFact> facts = withVisibility(
-                extractor.extract(agentId, filename, content), effectiveScope, effectiveOwner);
-        LocalDateTime now = LocalDateTime.now();
-        for (ExtractedFact fact : facts) {
-            upsertDerived(agentId, fact, now);
-        }
-        factMapper.softDeleteByAgentIdSourceRefPrefixAndVisibilityNotIn(
-                agentId, filename + "#", effectiveScope, effectiveOwner,
-                facts.stream().map(ExtractedFact::sourceRef).toList(), now);
-        log.debug("[FactProjection] rebuildOne: agent={}, file={}, owner={}, scope={}, facts={}",
-                agentId, filename, effectiveOwner, effectiveScope, facts.size());
-        return facts.size();
-    }
-
-    /**
-     * Dialect-safe upsert: select by (agent_id, source_ref), then insert or update.
+     * Dialect-safe upsert: select by owner-aware projection identity, then insert or update.
      * Preserves accumulated columns (use_count, last_used_at) on update.
      */
-    private void upsertDerived(Long agentId, ExtractedFact fact, LocalDateTime now) {
-        FactEntity existing = factMapper.selectOne(
-                new LambdaQueryWrapper<FactEntity>()
-                        .eq(FactEntity::getAgentId, agentId)
-                        .eq(FactEntity::getSourceRef, fact.sourceRef())
-                        .eq(FactEntity::getScope, normalizeScope(fact.scope()))
-                        .and(w -> {
-                            if (fact.ownerKey() == null || fact.ownerKey().isBlank()) {
-                                w.isNull(FactEntity::getOwnerKey).or().eq(FactEntity::getOwnerKey, "");
-                            } else {
-                                w.eq(FactEntity::getOwnerKey, fact.ownerKey());
-                            }
-                        })
-                        .last("LIMIT 1"));
+    private Long upsertDerived(Long agentId, ExtractedFact fact, String ownerKey,
+                               String scope, LocalDateTime now) {
+        LambdaQueryWrapper<FactEntity> identity = new LambdaQueryWrapper<FactEntity>()
+                .eq(FactEntity::getAgentId, agentId)
+                .eq(FactEntity::getSourceRef, fact.sourceRef())
+                .eq(FactEntity::getScope, scope);
+        if (MemoryScope.PERSONAL.equals(scope)) {
+            identity.eq(FactEntity::getOwnerKey, ownerKey);
+        } else {
+            // V137 backfilled scope but historical fact rows may still have a
+            // null owner, while newer shared canonical rows use the "" sentinel.
+            identity.and(w -> w.isNull(FactEntity::getOwnerKey)
+                    .or().eq(FactEntity::getOwnerKey, ""));
+        }
+        FactEntity existing = factMapper.selectOne(identity.last("LIMIT 1"));
 
         if (existing != null) {
             // Update derived columns only; preserve accumulated columns
@@ -165,14 +157,15 @@ public class FactProjectionBuilder {
             existing.setObjectValue(fact.objectValue());
             existing.setConfidence(fact.confidence());
             existing.setExtractedBy(fact.extractedBy());
-            existing.setOwnerKey(fact.ownerKey());
-            existing.setScope(normalizeScope(fact.scope()));
+            existing.setOwnerKey(ownerKey);
+            existing.setScope(scope);
             // Trust derived from canonical feedback metadata, then time-decayed
             double baseTrust = fact.trust();
             existing.setTrust(applyTimeDecay(baseTrust, existing.getUpdateTime(), now));
             existing.setUpdateTime(now);
             existing.setDeleted(0); // un-delete if previously soft-deleted
             factMapper.updateById(existing);
+            return existing.getId();
         } else {
             FactEntity entity = new FactEntity();
             entity.setAgentId(agentId);
@@ -185,69 +178,26 @@ public class FactProjectionBuilder {
             entity.setTrust(fact.trust());
             entity.setUseCount(0);
             entity.setExtractedBy(fact.extractedBy());
-            entity.setOwnerKey(fact.ownerKey());
-            entity.setScope(normalizeScope(fact.scope()));
+            entity.setOwnerKey(ownerKey);
+            entity.setScope(scope);
             entity.setCreateTime(now);
             entity.setUpdateTime(now);
             entity.setDeleted(0);
             factMapper.insert(entity);
+            return entity.getId();
         }
-    }
-
-    private List<ExtractedFact> withVisibility(List<ExtractedFact> facts, String scope, String ownerKey) {
-        String effectiveScope = normalizeScope(scope);
-        String effectiveOwner = MemoryScope.PERSONAL.equals(effectiveScope) ? ownerKey : null;
-        return facts.stream()
-                .map(f -> new ExtractedFact(
-                        f.sourceRef(), f.category(), f.subject(), f.predicate(), f.objectValue(),
-                        f.confidence(), f.trust(), f.extractedBy(), effectiveOwner, effectiveScope))
-                .toList();
-    }
-
-    private void softDeleteStaleFacts(Long agentId, List<ExtractedFact> currentFacts, LocalDateTime now) {
-        Set<String> keep = currentFacts.stream()
-                .map(this::factKey)
-                .collect(java.util.stream.Collectors.toSet());
-        for (FactEntity existing : factMapper.selectList(
-                new LambdaQueryWrapper<FactEntity>()
-                        .eq(FactEntity::getAgentId, agentId)
-                        .eq(FactEntity::getDeleted, 0))) {
-            if (!keep.contains(factKey(existing))) {
-                existing.setDeleted(1);
-                existing.setUpdateTime(now);
-                factMapper.updateById(existing);
-            }
-        }
-    }
-
-    private String factKey(ExtractedFact fact) {
-        return fact.sourceRef() + "\u0000" + normalizeScope(fact.scope())
-                + "\u0000" + (fact.ownerKey() == null ? "" : fact.ownerKey());
-    }
-
-    private String factKey(FactEntity fact) {
-        return fact.getSourceRef() + "\u0000" + normalizeScope(fact.getScope())
-                + "\u0000" + (fact.getOwnerKey() == null ? "" : fact.getOwnerKey());
-    }
-
-    private boolean isPersonal(WorkspaceFileEntity file) {
-        return file != null && MemoryScope.PERSONAL.equals(file.getScope())
-                && file.getOwnerKey() != null && !file.getOwnerKey().isBlank();
-    }
-
-    private String visibilityScope(WorkspaceFileEntity file) {
-        return file != null ? normalizeScope(file.getScope()) : MemoryScope.TEAM;
-    }
-
-    private String visibilityOwner(WorkspaceFileEntity file) {
-        return isPersonal(file) ? file.getOwnerKey() : null;
     }
 
     private String normalizeScope(String scope) {
-        if (MemoryScope.PERSONAL.equals(scope)) return MemoryScope.PERSONAL;
-        if (MemoryScope.GLOBAL.equals(scope)) return MemoryScope.GLOBAL;
-        return MemoryScope.TEAM;
+        return MemoryScope.PERSONAL.equals(scope) || MemoryScope.GLOBAL.equals(scope)
+                ? scope : MemoryScope.TEAM;
     }
+
+    private String normalizeOwner(String ownerKey, String scope) {
+        return MemoryScope.PERSONAL.equals(scope) && ownerKey != null ? ownerKey : "";
+    }
+
+    private record ProjectedFact(ExtractedFact fact, String ownerKey, String scope) {}
 
     /**
      * Apply exponential time decay to trust score.

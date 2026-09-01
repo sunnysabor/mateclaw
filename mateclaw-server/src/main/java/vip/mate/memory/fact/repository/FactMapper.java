@@ -51,59 +51,18 @@ public interface FactMapper extends BaseMapper<FactEntity> {
                                           @Param("now") LocalDateTime now);
 
     /**
-     * Soft-delete stale facts for a single shared canonical file after an
-     * incremental rebuild. Without this, deleted / forgotten sections remain
-     * recallable until the next full projection rebuild.
+     * Soft-delete stale projections by their concrete row IDs. Fact source refs
+     * are not unique across personal owners, so owner-safe rebuilds retain IDs.
      */
     @Update("""
         <script>
         UPDATE mate_fact SET deleted = 1, update_time = #{now}
         WHERE agent_id = #{agentId} AND deleted = 0
-        AND source_ref LIKE CONCAT(#{sourcePrefix}, '%')
-        <choose>
-          <when test='keepSet != null and keepSet.size() > 0'>
-            AND source_ref NOT IN
-            <foreach item='ref' collection='keepSet' open='(' separator=',' close=')'>#{ref}</foreach>
-          </when>
-        </choose>
+        AND id NOT IN
+        <foreach item='id' collection='keepIds' open='(' separator=',' close=')'>#{id}</foreach>
         </script>
         """)
-    void softDeleteByAgentIdAndSourceRefPrefixNotIn(@Param("agentId") Long agentId,
-                                                    @Param("sourcePrefix") String sourcePrefix,
-                                                    @Param("keepSet") List<String> keepSet,
-                                                    @Param("now") LocalDateTime now);
-
-    /**
-     * Owner-aware variant for PERSONAL rows. Scope + owner_key are part of the
-     * logical projection key because different owners can have the same source
-     * filename and section name.
-     */
-    @Update("""
-        <script>
-        UPDATE mate_fact SET deleted = 1, update_time = #{now}
-        WHERE agent_id = #{agentId} AND deleted = 0
-        AND source_ref LIKE CONCAT(#{sourcePrefix}, '%')
-        AND scope = #{scope}
-        <choose>
-          <when test='ownerKey != null'>
-            AND owner_key = #{ownerKey}
-          </when>
-          <otherwise>
-            AND (owner_key IS NULL OR owner_key = '')
-          </otherwise>
-        </choose>
-        <choose>
-          <when test='keepSet != null and keepSet.size() > 0'>
-            AND source_ref NOT IN
-            <foreach item='ref' collection='keepSet' open='(' separator=',' close=')'>#{ref}</foreach>
-          </when>
-        </choose>
-        </script>
-        """)
-    void softDeleteByAgentIdSourceRefPrefixAndVisibilityNotIn(@Param("agentId") Long agentId,
-                                                              @Param("sourcePrefix") String sourcePrefix,
-                                                              @Param("scope") String scope,
-                                                              @Param("ownerKey") String ownerKey,
-                                                              @Param("keepSet") List<String> keepSet,
-                                                              @Param("now") LocalDateTime now);
+    void deleteByAgentIdAndIdNotIn(@Param("agentId") Long agentId,
+                                   @Param("keepIds") List<Long> keepIds,
+                                   @Param("now") LocalDateTime now);
 }
