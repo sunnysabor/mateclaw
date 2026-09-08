@@ -59,17 +59,18 @@ public class MemoryRecallService {
         recordRecall(agentId, filename, snippetText, userQueryHash, null, MemoryScope.TEAM);
     }
 
-    /**
-     * Owner-aware recall recording. PERSONAL recalls are scored and promoted
-     * independently from shared recalls even when the logical filename matches.
-     */
-    public void recordRecall(Long agentId, String filename, String snippetText,
-                             String userQueryHash, String ownerKey, String scope) {
+    /** Owner-aware recall ledger write. Shared legacy rows keep a null owner key. */
+    public void recordRecall(Long agentId, String filename, String snippetText, String userQueryHash,
+                             String ownerKey, String scope) {
         if (agentId == null || filename == null || filename.isBlank()) {
             return;
         }
         String effectiveScope = normalizeScope(scope);
         String effectiveOwner = MemoryScope.PERSONAL.equals(effectiveScope) ? ownerKey : null;
+        if (MemoryScope.PERSONAL.equals(effectiveScope)
+                && (effectiveOwner == null || effectiveOwner.isBlank())) {
+            return;
+        }
         // 写库前硬截断：覆盖所有调用路径（含 trackActiveRetrieval 透传的外部 filename），
         // 防 filename 突破 VARCHAR(256) 导致写入失败（#461）
         filename = truncateFilename(filename);
@@ -79,21 +80,13 @@ public class MemoryRecallService {
                 ? snippetText.substring(0, 200)
                 : snippetText;
 
-        MemoryRecallEntity existing = recallMapper.selectOne(
-                new LambdaQueryWrapper<MemoryRecallEntity>()
+        LambdaQueryWrapper<MemoryRecallEntity> existingQuery = new LambdaQueryWrapper<MemoryRecallEntity>()
                         .eq(MemoryRecallEntity::getAgentId, agentId)
                         .eq(MemoryRecallEntity::getFilename, filename)
                         .eq(MemoryRecallEntity::getScope, effectiveScope)
-                        .and(w -> {
-                            if (effectiveOwner == null || effectiveOwner.isBlank()) {
-                                w.isNull(MemoryRecallEntity::getOwnerKey)
-                                        .or().eq(MemoryRecallEntity::getOwnerKey, "");
-                            } else {
-                                w.eq(MemoryRecallEntity::getOwnerKey, effectiveOwner);
-                            }
-                        })
-                        .eq(MemoryRecallEntity::getDeleted, 0)
-                        .last("LIMIT 1"));
+                        .eq(MemoryRecallEntity::getDeleted, 0);
+        applyOwnerIdentity(existingQuery, effectiveOwner, effectiveScope);
+        MemoryRecallEntity existing = recallMapper.selectOne(existingQuery.last("LIMIT 1"));
 
         LocalDateTime now = LocalDateTime.now();
 
@@ -138,21 +131,13 @@ public class MemoryRecallService {
             } catch (org.springframework.dao.DuplicateKeyException e) {
                 // 并发插入冲突，重新查询后更新（不递归，避免 StackOverflow）
                 log.debug("[MemoryRecall] Concurrent insert for {}, falling back to update", filename);
-                MemoryRecallEntity retry = recallMapper.selectOne(
-                        new LambdaQueryWrapper<MemoryRecallEntity>()
+                LambdaQueryWrapper<MemoryRecallEntity> retryQuery = new LambdaQueryWrapper<MemoryRecallEntity>()
                                 .eq(MemoryRecallEntity::getAgentId, agentId)
                                 .eq(MemoryRecallEntity::getFilename, filename)
                                 .eq(MemoryRecallEntity::getScope, effectiveScope)
-                                .and(w -> {
-                                    if (effectiveOwner == null || effectiveOwner.isBlank()) {
-                                        w.isNull(MemoryRecallEntity::getOwnerKey)
-                                                .or().eq(MemoryRecallEntity::getOwnerKey, "");
-                                    } else {
-                                        w.eq(MemoryRecallEntity::getOwnerKey, effectiveOwner);
-                                    }
-                                })
-                                .eq(MemoryRecallEntity::getDeleted, 0)
-                                .last("LIMIT 1"));
+                                .eq(MemoryRecallEntity::getDeleted, 0);
+                applyOwnerIdentity(retryQuery, effectiveOwner, effectiveScope);
+                MemoryRecallEntity retry = recallMapper.selectOne(retryQuery.last("LIMIT 1"));
                 if (retry != null) {
                     retry.setRecallCount(retry.getRecallCount() + 1);
                     retry.setDailyCount(retry.getDailyCount() + 1);
@@ -209,7 +194,14 @@ public class MemoryRecallService {
         applyRecallVisibility(wrapper, ownerKey);
         wrapper.orderByDesc(MemoryRecallEntity::getScore);
         return recallMapper.selectList(
-                wrapper);
+                new LambdaQueryWrapper<MemoryRecallEntity>()
+                        .eq(MemoryRecallEntity::getAgentId, agentId)
+                        // Current Dream writes shared MEMORY.md. Keep PERSONAL
+                        // candidates out until consolidation itself is owner-aware.
+                        .in(MemoryRecallEntity::getScope, MemoryScope.TEAM, MemoryScope.GLOBAL)
+                        .eq(MemoryRecallEntity::getPromoted, false)
+                        .eq(MemoryRecallEntity::getDeleted, 0)
+                        .orderByDesc(MemoryRecallEntity::getScore));
     }
 
     /**
@@ -377,14 +369,16 @@ public class MemoryRecallService {
                 .eq(MemoryRecallEntity::getDeleted, 0);
         applyRecallVisible(totalQuery, ownerKey);
         long total = recallMapper.selectCount(
-                totalQuery);
-        LambdaQueryWrapper<MemoryRecallEntity> promotedQuery = new LambdaQueryWrapper<MemoryRecallEntity>()
-                .eq(MemoryRecallEntity::getAgentId, agentId)
-                .eq(MemoryRecallEntity::getPromoted, true)
-                .eq(MemoryRecallEntity::getDeleted, 0);
-        applyRecallVisible(promotedQuery, ownerKey);
+                new LambdaQueryWrapper<MemoryRecallEntity>()
+                        .eq(MemoryRecallEntity::getAgentId, agentId)
+                        .in(MemoryRecallEntity::getScope, MemoryScope.TEAM, MemoryScope.GLOBAL)
+                        .eq(MemoryRecallEntity::getDeleted, 0));
         long promoted = recallMapper.selectCount(
-                promotedQuery);
+                new LambdaQueryWrapper<MemoryRecallEntity>()
+                        .eq(MemoryRecallEntity::getAgentId, agentId)
+                        .in(MemoryRecallEntity::getScope, MemoryScope.TEAM, MemoryScope.GLOBAL)
+                        .eq(MemoryRecallEntity::getPromoted, true)
+                        .eq(MemoryRecallEntity::getDeleted, 0));
         long pending = total - promoted;
 
         Map<String, Object> status = new LinkedHashMap<>();
@@ -413,7 +407,11 @@ public class MemoryRecallService {
         applyRecallVisible(query, ownerKey);
         query.orderByDesc(MemoryRecallEntity::getScore);
         List<MemoryRecallEntity> candidates = recallMapper.selectList(
-                query);
+                new LambdaQueryWrapper<MemoryRecallEntity>()
+                        .eq(MemoryRecallEntity::getAgentId, agentId)
+                        .in(MemoryRecallEntity::getScope, MemoryScope.TEAM, MemoryScope.GLOBAL)
+                        .eq(MemoryRecallEntity::getDeleted, 0)
+                        .orderByDesc(MemoryRecallEntity::getScore));
 
         return candidates.stream().map(c -> {
             Map<String, Object> item = new LinkedHashMap<>();
@@ -478,6 +476,25 @@ public class MemoryRecallService {
             return objectMapper.writeValueAsString(list);
         } catch (Exception e) {
             return "[]";
+        }
+    }
+
+    private static String normalizeScope(String scope) {
+        if (MemoryScope.PERSONAL.equals(scope) || MemoryScope.GLOBAL.equals(scope)) {
+            return scope;
+        }
+        return MemoryScope.TEAM;
+    }
+
+    private static void applyOwnerIdentity(LambdaQueryWrapper<MemoryRecallEntity> query,
+                                           String ownerKey, String scope) {
+        if (MemoryScope.PERSONAL.equals(scope)) {
+            query.eq(MemoryRecallEntity::getOwnerKey, ownerKey);
+        } else {
+            // V137 left legacy shared recall rows with NULL while newer rows may
+            // use the workspace-file empty-string sentinel. Treat both as shared.
+            query.and(w -> w.isNull(MemoryRecallEntity::getOwnerKey)
+                    .or().eq(MemoryRecallEntity::getOwnerKey, ""));
         }
     }
 

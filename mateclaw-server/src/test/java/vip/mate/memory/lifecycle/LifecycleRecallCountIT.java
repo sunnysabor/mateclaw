@@ -19,6 +19,7 @@ import vip.mate.workspace.conversation.repository.ConversationMapper;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -81,7 +82,7 @@ class LifecycleRecallCountIT {
         }
 
         // trackRecalls: exactly 10 times (once per chat call)
-        verify(memoryRecallTracker, times(10)).trackRecalls(eq(1L), any(), eq("system"));
+        verify(memoryRecallTracker, times(10)).trackRecalls(eq(1L), any(), isNull());
 
         // Mediator is not invoked when flag is off
         verify(memoryManager, never()).prefetchAll(any(), any(), any());
@@ -103,7 +104,8 @@ class LifecycleRecallCountIT {
 
         // Mediator IS invoked
         verify(memoryManager, times(10)).prefetchAll(eq(1L), any(), any());
-        verify(memoryManager, times(10)).syncAll(eq(1L), eq("conv-1"), any(), any());
+        verify(memoryManager, times(10)).syncAll(
+                eq(1L), eq("conv-1"), any(), any(), eq("system"));
     }
 
     @Test
@@ -123,7 +125,8 @@ class LifecycleRecallCountIT {
         }
 
         // Total: 10 trackRecalls calls regardless of flag state
-        verify(memoryRecallTracker, times(10)).trackRecalls(eq(1L), any(), eq("system"));
+        verify(memoryRecallTracker, times(5)).trackRecalls(eq(1L), any(), isNull());
+        verify(memoryRecallTracker, times(5)).trackRecalls(eq(1L), any(), eq("system"));
 
         // Mediator only called for the ON rounds
         verify(memoryManager, times(5)).prefetchAll(eq(1L), any(), any());
