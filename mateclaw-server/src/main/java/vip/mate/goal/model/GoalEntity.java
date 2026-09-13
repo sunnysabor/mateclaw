@@ -53,11 +53,14 @@ public class GoalEntity {
     /** Long-form objective. Always non-null but may be short. */
     private String description;
 
+    /** Advances on evaluation-definition edits, independently of optimistic-lock/usage version. */
+    private long evaluationRevision;
+
     /** LLM-readable exit criteria; evaluator scores against this. Nullable. */
     @TableField(value = "exit_criteria", updateStrategy = FieldStrategy.ALWAYS)
     private String exitCriteria;
 
-    /** Optional per-goal evaluator prompt override; nullable -> default. */
+    /** Optional evaluation guidance; does not replace platform evidence/output rules. */
     @TableField(value = "success_check_prompt", updateStrategy = FieldStrategy.ALWAYS)
     private String successCheckPrompt;
 
