@@ -1887,6 +1887,7 @@ export interface GoalCriterion {
 }
 
 export interface Goal {
+  jsonAcceptanceRequired?: boolean
   id: string
   conversationId: string
   agentId: string
@@ -1943,6 +1944,9 @@ export const goalApi = {
 
   findActive: (conversationId: string) =>
     http.get<Goal | null>(`/goals/by-conversation/${encId(conversationId)}`),
+
+  history: (conversationId: string, beforeId?: string) =>
+    http.get<Goal[]>(`/goals/by-conversation/${encId(conversationId)}/history`, { params: { beforeId, limit: 20 } }),
 
   get: (id: string) => http.get<Goal>(`/goals/${id}`),
 

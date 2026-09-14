@@ -72,6 +72,16 @@ public class GoalServiceImpl implements GoalService {
      * effort: memory should never block the state-machine write.
      */
     private vip.mate.memory.spi.MemoryManager memoryManager;
+    private GoalJsonBindingService jsonBindings;
+    private ManagedGoalJsonService managedArtifacts;
+
+    @Autowired
+    public void setManagedArtifacts(ManagedGoalJsonService managedArtifacts) { this.managedArtifacts = managedArtifacts; }
+
+    @Autowired
+    public void setJsonBindings(GoalJsonBindingService jsonBindings) {
+        this.jsonBindings = jsonBindings;
+    }
 
     public GoalServiceImpl(GoalMapper goalMapper,
                            GoalEventMapper eventMapper,
@@ -202,6 +212,16 @@ public class GoalServiceImpl implements GoalService {
                 .orderByDesc(GoalEntity::getCreateTime)
                 .orderByDesc(GoalEntity::getId)
                 .last("LIMIT 1"));
+    }
+
+    @Override
+    public List<GoalEntity> listByConversation(String conversationId, Long beforeId, int limit) {
+        if (conversationId == null || conversationId.isBlank()) return List.of();
+        return goalMapper.selectList(new LambdaQueryWrapper<GoalEntity>()
+                .eq(GoalEntity::getConversationId, conversationId)
+                .lt(beforeId != null, GoalEntity::getId, beforeId)
+                .orderByDesc(GoalEntity::getId)
+                .last("LIMIT " + Math.max(1, Math.min(50, limit))));
     }
 
     @Override
@@ -374,7 +394,7 @@ public class GoalServiceImpl implements GoalService {
     @Override
     @Transactional
     public GoalEntity markCompleted(Long id, GoalEvaluationResult result) {
-        return completeGoal(id, result, false);
+        return completeGoal(id, result, false, null, false);
     }
 
     @Override
@@ -385,20 +405,46 @@ public class GoalServiceImpl implements GoalService {
             throw new MateClawException("err.goal.completion_not_verified", 409,
                     "Automatic completion requires a completed evaluation");
         }
-        return completeGoal(id, result, true);
+        return completeGoal(id, result, true, null, false);
     }
 
-    private GoalEntity completeGoal(Long id, GoalEvaluationResult result, boolean evaluated) {
+    @Override
+    @Transactional
+    public GoalEntity markRuntimeCompleted(Long id, GoalEvaluationResult result, vip.mate.agent.context.ChatOrigin origin) {
+        return completeGoal(id, result, false, origin, true);
+    }
+
+    @Override
+    @Transactional
+    public GoalEntity markRuntimeEvaluatedCompleted(Long id, GoalEvaluationResult result, vip.mate.agent.context.ChatOrigin origin) {
+        if (result == null || !result.completed()
+                || !GoalEvaluationResult.DECISION_COMPLETED.equals(result.decision())) {
+            throw new MateClawException("err.goal.completion_not_verified", 409,
+                    "Automatic completion requires a completed evaluation");
+        }
+        return completeGoal(id, result, true, origin, true);
+    }
+
+    private GoalEntity completeGoal(Long id, GoalEvaluationResult result, boolean evaluated,
+                                   vip.mate.agent.context.ChatOrigin origin, boolean runtimeCaller) {
         boolean[] transitioned = {false};
+        var jsonProof = new java.util.concurrent.atomic.AtomicReference<List<GoalJsonBindingService.State>>(List.of());
         GoalEntity g = retryOptimistic(id, "markCompleted", fresh -> {
             // A failed CAS may retry against another worker's completed row.
             transitioned[0] = false;
+            jsonProof.set(List.of());
             if (fresh.getStatus().isTerminal()) {
                 if (evaluated && fresh.getStatus() != GoalStatus.COMPLETED) {
                     throw new MateClawException("err.goal.completion_not_verified", 409,
                             "Automatic completion cannot replace another terminal state");
                 }
                 return null; // idempotent
+            }
+            ManagedGoalJsonService.RuntimeScope runtime = null;
+            if (runtimeCaller && fresh.isJsonAcceptanceRequired()) {
+                if (managedArtifacts == null) throw new MateClawException(409, "Managed JSON runtime verification is unavailable");
+                runtime = managedArtifacts.runtimeGoal(origin);
+                if (runtime.goal().id() != fresh.getId()) throw new MateClawException(403, "Completion runtime goal mismatch");
             }
             if (evaluated && result.evaluationRevision() != fresh.getEvaluationRevision()) {
                 throw new MateClawException("err.goal.completion_not_verified", 409,
@@ -429,6 +475,12 @@ public class GoalServiceImpl implements GoalService {
                         .toList();
                 w.set(GoalEntity::getCriteria, GoalCriteriaCodec.serialize(allPassed, objectMapper));
             }
+            if (fresh.isJsonAcceptanceRequired()) {
+                if (jsonBindings == null) throw new MateClawException("err.goal.json_acceptance_required", 409,
+                        "Managed JSON verification service is unavailable");
+                jsonProof.set(jsonBindings.requireForCompletion(fresh));
+                if (runtime != null) ManagedGoalJsonService.verifyLease(runtime);
+            }
             bumpVersionAndTime(w);
             transitioned[0] = true;
             return w;
@@ -439,6 +491,10 @@ public class GoalServiceImpl implements GoalService {
         detail.put("agentLlmCallsUsed", g.getAgentLlmCallsUsed());
         detail.put("evalLlmCallsUsed", g.getEvalLlmCallsUsed());
         detail.put("criteria", GoalCriteriaCodec.parse(g.getCriteria(), objectMapper));
+        if (g.isJsonAcceptanceRequired()) {
+            detail.put("jsonAcceptanceRequired", true);
+            detail.put("jsonBindings", jsonProof.get());
+        }
         writeEvent(id, GoalEventType.COMPLETED, null, detail);
         recordAudit("goal.completed", g, detail);
 
@@ -737,6 +793,7 @@ public class GoalServiceImpl implements GoalService {
         r.setExitCriteria(e.getExitCriteria());
         r.setSuccessCheckPrompt(e.getSuccessCheckPrompt());
         r.setStatus(e.getStatus());
+        r.setJsonAcceptanceRequired(e.isJsonAcceptanceRequired());
         r.setPersistentExecution(Boolean.TRUE.equals(e.getPersistentExecution()));
         r.setTurnBudget(e.getTurnBudget());
         r.setTurnsUsed(e.getTurnsUsed());

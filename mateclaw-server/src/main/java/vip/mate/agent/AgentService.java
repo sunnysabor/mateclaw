@@ -93,6 +93,9 @@ public class AgentService {
     @Autowired(required = false)
     private vip.mate.agent.runtime.dsh.DshRuntimeService dshRuntimeService;
 
+    @Autowired(required = false)
+    private vip.mate.goal.service.GoalApprovalReplayStream goalApprovalReplay;
+
     /**
      * Runtime Agent instance cache. Keyed first by agentId, then by a model
      * key, so a conversation that pins a non-default model gets its own graph
@@ -587,8 +590,22 @@ public class AgentService {
         trackMemoryRecalls(agentId, userMessage, origin);
         BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
         ChatOrigin captured = origin != null ? origin : ChatOrigin.EMPTY;
-        memoryRecallTracker.trackRecalls(agentId, userMessage, memoryOwnerResolver.resolve(captured));
-        BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
+        if (goalApprovalReplay != null && goalApprovalReplay.applies(captured)) {
+            return Flux.using(() -> acquireTurn(conversationId), permit ->
+                    goalApprovalReplay.replay(captured, toolCallPayload, fresh -> {
+                        ChatOrigin previous = ChatOriginHolder.get();
+                        ChatOriginHolder.set(fresh);
+                        try {
+                            return vip.mate.agent.context.GoalContinuationContext.call(true, () ->
+                                    invokeWithLifecycleFlux(agentId, userMessage, conversationId,
+                                            (msg, convId) -> agent.chatWithReplayStream(msg, convId, toolCallPayload,
+                                                    requesterId != null ? requesterId : ""), StreamDelta::content));
+                        } finally {
+                            if (previous == ChatOrigin.EMPTY) ChatOriginHolder.clear();
+                            else ChatOriginHolder.set(previous);
+                        }
+                    }), vip.mate.agent.runtime.ConversationTurnGate.Permit::close);
+        }
         return Flux.defer(() -> {
                     ChatOriginHolder.set(captured);
                     return withLifecycleFlux(agentId, userMessage, conversationId,
