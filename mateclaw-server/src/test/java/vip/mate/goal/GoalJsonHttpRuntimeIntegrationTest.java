@@ -77,9 +77,16 @@ class GoalJsonHttpRuntimeIntegrationTest {
 
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"false,sync,true", "true,sync,true", "false,stream,true", "true,stream,true",
-        "false,scheduled,true", "true,scheduled,true", "false,recovered,true", "true,recovered,true",
+        "false,scheduled,true", "true,scheduled,true", "false,scheduled-queued,true", "true,scheduled-queued,true",
+        "false,scheduled-queued-foreign,true", "true,scheduled-queued-foreign,true",
+        "false,scheduled-queued-legacy,true", "true,scheduled-queued-legacy,true",
+        "false,scheduled-queued-legacy-new-goal,true", "true,scheduled-queued-legacy-new-goal,true",
+        "false,scheduled-queued-unselected,true", "true,scheduled-queued-unselected,true",
+        "false,scheduled-queued-terminal-unselected,true", "true,scheduled-queued-terminal-unselected,true",
+        "false,scheduled-queued-paused,true", "true,scheduled-queued-paused,true", "false,recovered,true", "true,recovered,true",
         "false,scheduled,false", "true,scheduled,false", "false,recovered,false", "true,recovered,false",
-        "false,queued,true", "false,reuse,true", "true,reuse,true", "false,recheck,true", "true,recheck,true",
+        "false,queued,true", "false,queued-unselected-then-goal,true", "true,queued-unselected-then-goal,true",
+        "false,reuse,true", "true,reuse,true", "false,recheck,true", "true,recheck,true",
         "false,supervised,true", "true,supervised,true", "false,supervised-recovered,true", "true,supervised-recovered,true",
         "false,supervised,false", "true,supervised,false", "false,supervised-recovered,false", "true,supervised-recovered,false",
         "false,approval,true", "true,approval,true", "false,scheduled-approval,true", "true,scheduled-approval,true",
@@ -94,7 +101,8 @@ class GoalJsonHttpRuntimeIntegrationTest {
         "false,legacy-terminal-approval,true", "true,legacy-terminal-approval,true",
         "false,originless-terminal-approval,true", "true,originless-terminal-approval,true",
         "false,late-terminal-approval,true", "true,late-terminal-approval,true",
-        "false,queued-terminal-approval,true", "true,queued-terminal-approval,true"})
+        "false,queued-terminal-approval,true", "true,queued-terminal-approval,true",
+        "false,queued-revoked-approval,true", "true,queued-revoked-approval,true"})
     void authenticatedGoalCompletesThroughHttpOrScheduledProductionRuntime(boolean plan, String entry, boolean accepted) throws Exception {
         boolean approval = entry.endsWith("approval");
         boolean doubleApproval = entry.equals("scheduled-double-approval");
@@ -102,13 +110,16 @@ class GoalJsonHttpRuntimeIntegrationTest {
         boolean terminal = entry.contains("terminal-");
         boolean lateTerminal = entry.startsWith("late-");
         boolean queuedTerminal = entry.startsWith("queued-terminal-");
+        boolean queuedRevoked = entry.startsWith("queued-revoked-");
+        boolean queuedPreflightRejected = queuedTerminal || queuedRevoked;
         boolean detached = entry.contains("detached");
         boolean foreign = entry.contains("foreign");
         boolean supervised = entry.startsWith("supervised");
         boolean scheduled = entry.startsWith("scheduled") || entry.equals("recovered") || supervised;
         boolean reuse = entry.equals("reuse");
         boolean recheck = entry.equals("recheck");
-        boolean queued = entry.equals("queued") || queuedTerminal;
+        boolean queuedReplacement = entry.equals("queued-unselected-then-goal");
+        boolean queued = entry.equals("queued") || queuedReplacement || queuedPreflightRejected;
         boolean recovered = entry.equals("recovered") || entry.equals("supervised-recovered");
         String username = "http-json-" + UUID.randomUUID();
         String conversation = UUID.randomUUID().toString();
@@ -140,6 +151,14 @@ class GoalJsonHttpRuntimeIntegrationTest {
         JsonNode configured = request("PUT", "/api/v1/goals/" + goal.getId() + "/json-acceptance/requirements/r", token,
             Map.of("expectedRevision", "0", "artifactSlot", "report", "requiredFields", List.of("summary")));
         assertEquals(200, configured.path("code").asInt(), configured.toString());
+        if (!plan && entry.equals("sync") && accepted) {
+            var explicitlyUnselected = ChatOrigin.web(conversation, username, 1L, null, null, userId)
+                    .withAgent(agentId).withSelectedGoalId(0L);
+            assertEquals(goal.getId(), approvalRuns.captureSelectedGoal(explicitlyUnselected).selectedGoalId(),
+                    "An ordinary in-flight request may tighten an explicit zero before approval persistence");
+            assertFalse(approvalRuns.queuedSelectionStillCurrent(explicitlyUnselected),
+                    "An unselected queue snapshot must become stale when a managed Goal appears");
+        }
         if (reuse) {
             for (long generation = 0; generation < 32; generation++) {
                 artifacts.publish(goal.getId(), "report", new ManagedGoalJsonService.PublishRequest(generation, "{\"summary\":false}"), username);
@@ -327,7 +346,7 @@ class GoalJsonHttpRuntimeIntegrationTest {
                     assertTrue(coordinator.settle(run, outcome, java.time.LocalDateTime.now()));
                     assertEquals("waiting_approval", continuations.get(goal.getId()).state());
                     waiting = outcome.toString();
-                } else if (queuedTerminal) {
+                } else if (queuedPreflightRejected) {
                     String queuedToken = token;
                     var initialTurn = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
                         try {
@@ -347,8 +366,12 @@ class GoalJsonHttpRuntimeIntegrationTest {
                         assertEquals(userId, jdbc.queryForObject("SELECT requester_user_id FROM mate_conversation_input_queue WHERE id=?", Long.class, queueId));
                         assertEquals(goal.getId(), jdbc.queryForObject(
                                 "SELECT selected_goal_id FROM mate_conversation_input_queue WHERE id=?", Long.class, queueId));
-                        goals.abandon(goal.getId(), username);
-                        assertEquals(GoalStatus.ABANDONED, goals.getById(goal.getId()).getStatus());
+                        if (queuedTerminal) {
+                            goals.abandon(goal.getId(), username);
+                            assertEquals(GoalStatus.ABANDONED, goals.getById(goal.getId()).getStatus());
+                        } else {
+                            jdbc.update("UPDATE mate_user SET enabled=FALSE WHERE id=?", userId);
+                        }
                         String initialAnswer = plan
                                 ? "{\"needs_planning\":false,\"direct_answer\":\"Initial fixture turn finished.\"}"
                                 : "Initial fixture turn finished.";
@@ -379,6 +402,15 @@ class GoalJsonHttpRuntimeIntegrationTest {
                 } else {
                     waiting = requestBody("POST", "/api/v1/chat/stream", token,
                             Map.of("agentId", String.valueOf(agentId), "conversationId", conversation, "message", message));
+                }
+                if (queuedPreflightRejected) {
+                    assertTrue(waiting.contains("queued_input_skipped"), waiting);
+                    assertEquals(0, calls.get(), "A stale queued Goal must not invoke the model");
+                    assertEquals(queuedTerminal ? GoalStatus.ABANDONED : GoalStatus.ACTIVE,
+                            goals.getById(goal.getId()).getStatus());
+                    assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM mate_tool_approval WHERE conversation_id=?", Integer.class, conversation));
+                    assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM mate_goal_json_artifact WHERE goal_id=?", Integer.class, goal.getId()));
+                    return;
                 }
                 JsonNode pending = request("GET", "/api/v1/chat/" + conversation + "/pending-approvals", token, null).path("data");
                 assertEquals(1, pending.size(), waiting);
@@ -529,16 +561,43 @@ class GoalJsonHttpRuntimeIntegrationTest {
             });
             try {
                 assertTrue(firstSubscribed.await(10, java.util.concurrent.TimeUnit.SECONDS), "Initial HTTP turn must reach the actual model boundary");
+                if (queuedReplacement) goals.abandon(goal.getId(), username);
                 JsonNode enqueue = request("POST", "/api/v1/chat/" + conversation + "/interrupt", token,
                     Map.of("agentId", String.valueOf(agentId), "message", message));
                 assertTrue(enqueue.path("data").path("queued").asBoolean(), enqueue.toString());
                 long queueId = Long.parseLong(enqueue.path("data").path("queueItemId").asText());
                 assertEquals(userId, jdbc.queryForObject("SELECT requester_user_id FROM mate_conversation_input_queue WHERE id=?", Long.class, queueId));
+                GoalEntity replacement = null;
+                if (queuedReplacement) {
+                    assertEquals(0L, jdbc.queryForObject(
+                            "SELECT selected_goal_id FROM mate_conversation_input_queue WHERE id=?", Long.class, queueId));
+                    var replacementCreate = new GoalCreateRequest(); replacementCreate.setConversationId(conversation);
+                    replacementCreate.setAgentId(agentId); replacementCreate.setWorkspaceId(1L);
+                    replacementCreate.setTitle("Managed Goal created while input waits");
+                    replacementCreate.setDescription("Do not attach the explicit zero queue snapshot");
+                    replacement = goals.create(replacementCreate, username);
+                    JsonNode replacementConfigured = request("PUT", "/api/v1/goals/" + replacement.getId()
+                                    + "/json-acceptance/requirements/r", token,
+                            Map.of("expectedRevision", "0", "artifactSlot", "report", "requiredFields", List.of("summary")));
+                    assertEquals(200, replacementConfigured.path("code").asInt(), replacementConfigured.toString());
+                }
+                String initialAnswer = plan
+                        ? "{\"needs_planning\":false,\"direct_answer\":\"Initial fixture turn finished.\"}"
+                        : "Initial fixture turn finished.";
                 assertEquals(reactor.core.publisher.Sinks.EmitResult.OK, initialResponse.tryEmitValue(
-                    new ChatResponse(List.of(new Generation(new AssistantMessage("Initial fixture turn finished."))))));
+                    new ChatResponse(List.of(new Generation(new AssistantMessage(initialAnswer))))));
                 String events = response.get(30, java.util.concurrent.TimeUnit.SECONDS);
-                assertTrue(events.contains("Managed JSON fixture completed."), events);
                 assertEquals("consumed", jdbc.queryForObject("SELECT state FROM mate_conversation_input_queue WHERE id=?", String.class, queueId));
+                if (queuedReplacement) {
+                    assertTrue(events.contains("queued_input_skipped"), events);
+                    assertEquals(0, calls.get(), "The explicit zero snapshot must not start a second model turn");
+                    assertEquals(GoalStatus.ACTIVE, goals.getById(replacement.getId()).getStatus());
+                    assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM mate_goal_json_artifact WHERE goal_id=?",
+                            Integer.class, replacement.getId()));
+                    return;
+                } else {
+                    assertTrue(events.contains("Managed JSON fixture completed."), events);
+                }
             } finally {
                 initialResponse.tryEmitEmpty();
                 response.cancel(true);
@@ -575,7 +634,124 @@ class GoalJsonHttpRuntimeIntegrationTest {
                 runner.cancel(goal.getId());
             }
         } else if (scheduled) {
+            if (entry.equals("scheduled-queued-terminal-unselected")) {
+                var queuedInput = new vip.mate.channel.web.ConversationInputQueueStore(jdbc, json).enqueue(
+                        conversation, agentId, username, "Unselected input after Goal ended", List.of(),
+                        userId, 0L, java.time.LocalDateTime.now());
+                goals.abandon(goal.getId(), username);
+
+                SegmentOutcome outcome = runner.run(run, message, false);
+
+                assertInstanceOf(SegmentOutcome.Continue.class, outcome);
+                assertEquals(0, calls.get(), "Terminal Goal must reject queued input before model execution");
+                assertEquals("consumed", jdbc.queryForObject(
+                        "SELECT state FROM mate_conversation_input_queue WHERE id=?", String.class, queuedInput.id()));
+                assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM mate_message WHERE conversation_id=? AND role='user' AND content=?",
+                        Integer.class, conversation, "Unselected input after Goal ended"));
+                assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM mate_message WHERE conversation_id=? AND role='assistant' AND content LIKE ?",
+                        Integer.class, conversation, "%was not run because its selected Goal%"));
+                assertTrue(coordinator.settle(run, outcome, java.time.LocalDateTime.now()));
+                return;
+            }
+            if (entry.equals("scheduled-queued-legacy-new-goal")) {
+                goals.abandon(goal.getId(), username);
+                assertTrue(coordinator.settle(run, new SegmentOutcome.Cancelled("replaced"),
+                        java.time.LocalDateTime.now()));
+                var replacement = new GoalCreateRequest(); replacement.setConversationId(conversation);
+                replacement.setAgentId(agentId); replacement.setWorkspaceId(1L);
+                replacement.setTitle("Replacement unselected Goal"); replacement.setDescription("Legacy queue isolation");
+                replacement.setPersistentExecution(true); replacement.setAutoFollowupEnabled(true);
+                GoalEntity newGoal = goals.create(replacement, username);
+                assertFalse(newGoal.isJsonAcceptanceRequired());
+                var queuedInput = new vip.mate.channel.web.ConversationInputQueueStore(jdbc, json).enqueue(
+                        conversation, agentId, username, "Old unknown selected input", List.of(),
+                        null, null, java.time.LocalDateTime.now());
+                continuations.discover(java.time.LocalDateTime.now());
+                var replacementRun = claim(newGoal);
+
+                SegmentOutcome outcome = runner.run(replacementRun, message, false);
+
+                assertInstanceOf(SegmentOutcome.Continue.class, outcome);
+                assertEquals(0, calls.get(), "Legacy unknown input must not run under the replacement Goal");
+                assertEquals(GoalStatus.ACTIVE, goals.getById(newGoal.getId()).getStatus());
+                assertEquals("consumed", jdbc.queryForObject(
+                        "SELECT state FROM mate_conversation_input_queue WHERE id=?", String.class, queuedInput.id()));
+                assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM mate_message WHERE conversation_id=? AND role='user' AND content=?",
+                        Integer.class, conversation, "Old unknown selected input"));
+                assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM mate_message WHERE conversation_id=? AND role='assistant' AND content LIKE ?",
+                        Integer.class, conversation, "%was not run because its selected Goal%"));
+                assertTrue(coordinator.settle(replacementRun, outcome, java.time.LocalDateTime.now()));
+                return;
+            }
+            if (entry.equals("scheduled-queued-paused")) {
+                var queuedInput = new vip.mate.channel.web.ConversationInputQueueStore(jdbc, json).enqueue(
+                        conversation, agentId, username, message, List.of(), userId, goal.getId(),
+                        java.time.LocalDateTime.now());
+                goals.pause(goal.getId(), username);
+                SegmentOutcome pausedOutcome = runner.run(run, message, false);
+                assertInstanceOf(SegmentOutcome.Cancelled.class, pausedOutcome);
+                assertEquals(0, calls.get(), "Paused Goal must not start a model call");
+                assertEquals("queued", jdbc.queryForObject(
+                        "SELECT state FROM mate_conversation_input_queue WHERE id=?", String.class, queuedInput.id()));
+                assertTrue(coordinator.settle(run, pausedOutcome, java.time.LocalDateTime.now()));
+                goals.resume(goal.getId(), username);
+                var resumedRun = claim(goal);
+                SegmentOutcome resumedOutcome = runner.run(resumedRun, message, false);
+                assertEquals(GoalStatus.COMPLETED, goals.getById(goal.getId()).getStatus(), resumedOutcome.toString());
+                assertEquals("consumed", jdbc.queryForObject(
+                        "SELECT state FROM mate_conversation_input_queue WHERE id=?", String.class, queuedInput.id()));
+                assertTrue(coordinator.settle(resumedRun, resumedOutcome, java.time.LocalDateTime.now()));
+                assertEquals("completed", continuations.get(goal.getId()).state());
+                return;
+            }
+            if (entry.equals("scheduled-queued-foreign") || entry.equals("scheduled-queued-legacy")
+                    || entry.equals("scheduled-queued-unselected")) {
+                Long selectedGoalId = null;
+                if (entry.equals("scheduled-queued-foreign")) {
+                    String foreignConversation = UUID.randomUUID().toString();
+                    jdbc.update("INSERT INTO mate_conversation(id,conversation_id,username,workspace_id,agent_id,model_provider,model_name,create_time,update_time,deleted) VALUES (?,?,?,1,?,'dashscope','json-http-fixture',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,0)",
+                            IdWorker.getId(), foreignConversation, username, agentId);
+                    var foreignCreate = new GoalCreateRequest(); foreignCreate.setConversationId(foreignConversation);
+                    foreignCreate.setAgentId(agentId); foreignCreate.setWorkspaceId(1L);
+                    foreignCreate.setTitle("Other selected Goal"); foreignCreate.setDescription("Separate conversation");
+                    selectedGoalId = goals.create(foreignCreate, username).getId();
+                } else if (entry.equals("scheduled-queued-unselected")) {
+                    selectedGoalId = 0L;
+                }
+                Long queuedUserId = entry.equals("scheduled-queued-legacy") ? null : userId;
+                var queuedInput = new vip.mate.channel.web.ConversationInputQueueStore(jdbc, json).enqueue(
+                        conversation, agentId, username, "Do not run this queued input", List.of(), queuedUserId,
+                        selectedGoalId, java.time.LocalDateTime.now());
+                assertEquals(selectedGoalId, queuedInput.selectedGoalId());
+                assertEquals(queuedUserId, queuedInput.requesterUserId());
+
+                SegmentOutcome outcome = runner.run(run, message, false);
+
+                assertInstanceOf(SegmentOutcome.Continue.class, outcome);
+                assertEquals(0, calls.get(), "The unavailable queued selection must not start a model call");
+                assertEquals(GoalStatus.ACTIVE, goals.getById(goal.getId()).getStatus());
+                assertEquals("consumed", jdbc.queryForObject(
+                        "SELECT state FROM mate_conversation_input_queue WHERE id=?", String.class, queuedInput.id()));
+                assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM mate_message WHERE conversation_id=? AND role='user' AND content=?",
+                        Integer.class, conversation, "Do not run this queued input"));
+                assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM mate_message WHERE conversation_id=? AND role='assistant' AND content LIKE ?",
+                        Integer.class, conversation, "%was not run because its selected Goal%"));
+                assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM mate_goal_json_artifact WHERE goal_id=?",
+                        Integer.class, goal.getId()));
+                assertTrue(coordinator.settle(run, outcome, java.time.LocalDateTime.now()));
+                return;
+            }
+            Long queuedInputId = null;
+            if (entry.equals("scheduled-queued")) {
+                var queuedInput = new vip.mate.channel.web.ConversationInputQueueStore(jdbc, json).enqueue(
+                        conversation, agentId, username, message, List.of(), userId, goal.getId(),
+                        java.time.LocalDateTime.now());
+                queuedInputId = queuedInput.id();
+                assertEquals(goal.getId(), queuedInput.selectedGoalId());
+            }
             SegmentOutcome outcome = runner.run(run, message, recovered);
+            if (queuedInputId != null) assertEquals("consumed", jdbc.queryForObject(
+                    "SELECT state FROM mate_conversation_input_queue WHERE id=?", String.class, queuedInputId));
             assertEquals(accepted ? GoalStatus.COMPLETED : GoalStatus.ACTIVE, goals.getById(goal.getId()).getStatus(), outcome.toString());
             if (!accepted) assertInstanceOf(SegmentOutcome.Retry.class, outcome, "Runner must consume the actual rejected-completion event");
             var savedAttempt = attempts.get(run.attempt().id());

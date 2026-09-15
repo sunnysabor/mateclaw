@@ -849,6 +849,8 @@ const {
       }
     }
   },
+  onQueuedInputSkipped: (reason) => mcToast.warning(t(reason === 'managed_goal_selection_stale'
+    ? 'chat.queuedSelectionStaleResend' : 'chat.queuedLegacyResend')),
 })
 
 const teamRunRouteQuery = computed(() => readTeamRunRouteQuery(route.query))

@@ -14,12 +14,21 @@ class GoalJsonExternalApprovalIntegrationTest extends GoalJsonHttpRuntimeIntegra
 
     @Override
     @ParameterizedTest
-    @CsvSource({"false,approval,true", "true,approval,true",
+    @CsvSource({"false,sync,true", "false,approval,true", "true,approval,true",
+            "false,queued-unselected-then-goal,true", "true,queued-unselected-then-goal,true",
+            "false,scheduled-queued,true", "true,scheduled-queued,true",
+            "false,scheduled-queued-foreign,true", "true,scheduled-queued-foreign,true",
+            "false,scheduled-queued-legacy,true", "true,scheduled-queued-legacy,true",
+            "false,scheduled-queued-legacy-new-goal,true", "true,scheduled-queued-legacy-new-goal,true",
+            "false,scheduled-queued-unselected,true", "true,scheduled-queued-unselected,true",
+            "false,scheduled-queued-terminal-unselected,true", "true,scheduled-queued-terminal-unselected,true",
+            "false,scheduled-queued-paused,true", "true,scheduled-queued-paused,true",
             "false,terminal-approval,true", "true,terminal-approval,true",
             "false,legacy-terminal-approval,true", "true,legacy-terminal-approval,true",
             "false,originless-terminal-approval,true", "true,originless-terminal-approval,true",
             "false,late-terminal-approval,true", "true,late-terminal-approval,true",
-            "false,queued-terminal-approval,true", "true,queued-terminal-approval,true"})
+            "false,queued-terminal-approval,true", "true,queued-terminal-approval,true",
+            "false,queued-revoked-approval,true", "true,queued-revoked-approval,true"})
     void authenticatedGoalCompletesThroughHttpOrScheduledProductionRuntime(
             boolean plan, String entry, boolean accepted) throws Exception {
         super.authenticatedGoalCompletesThroughHttpOrScheduledProductionRuntime(plan, entry, accepted);
