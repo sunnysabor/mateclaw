@@ -93,6 +93,9 @@ public class AgentService {
     @Autowired(required = false)
     private vip.mate.agent.runtime.dsh.DshRuntimeService dshRuntimeService;
 
+    @Autowired
+    private vip.mate.agent.runtime.dsh.DshConversationHistory dshConversationHistory;
+
     @Autowired(required = false)
     private vip.mate.goal.service.GoalApprovalReplayStream goalApprovalReplay;
 
@@ -463,7 +466,8 @@ public class AgentService {
                                     dshAgent.getModelName(), dshWorkingDirectory(dshAgent),
                                     dshWorkingDirectory(dshAgent)),
                             connection -> vip.mate.agent.runtime.RuntimeEventStreamAdapter.adapt(
-                                    connection.prompt(msg)),
+                                    connection.prompt(dshConversationHistory.enrich(
+                                            convId, message, msg, origin))),
                             connection -> connection.close()),
                     StreamDelta::content)
                     .doFinally(signal -> ThinkingLevelHolder.clear());
