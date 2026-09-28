@@ -1,5 +1,8 @@
 package vip.mate.agent;
 
+import vip.mate.goal.service.GoalDecisionAdapter;
+import vip.mate.planning.service.AgentRoutingDecisionAdapter;
+
 // PR-0b: DashScope imports moved with the construction code into DashScopeChatModelBuilder.
 import com.alibaba.cloud.ai.graph.CompiledGraph;
 import com.alibaba.cloud.ai.graph.CompileConfig;
@@ -160,6 +163,15 @@ public class AgentGraphBuilder {
     private final vip.mate.goal.service.GoalEvaluationService goalEvaluationService;
     private final vip.mate.goal.service.GoalFollowupService goalFollowupService;
     private final vip.mate.goal.config.GoalProperties goalProperties;
+    private GoalDecisionAdapter goalDecisionAdapter;
+    private AgentRoutingDecisionAdapter routingDecisionAdapter;
+
+    @Autowired(required = false)
+    public void setRoutingDecisionAdapter(AgentRoutingDecisionAdapter adapter) { this.routingDecisionAdapter = adapter; }
+
+
+    @Autowired(required = false)
+    public void setGoalDecisionAdapter(GoalDecisionAdapter adapter) { this.goalDecisionAdapter = adapter; }
     /** C4: per-conversation environment notification registry, injected into ReasoningNode. */
     private final vip.mate.agent.runtime.RunningConversationRegistry runningConversationRegistry;
 
@@ -703,6 +715,7 @@ public class AgentGraphBuilder {
             // Team hand-off: a lead-of-team plan agent parks multi-step plans on
             // the team task board instead of the serial delegation pipeline.
             planGenerationNode.setTeamPlanBridge(teamPlanBridge);
+            planGenerationNode.setRoutingAdapter(routingDecisionAdapter);
             List<ToolCallback> advertisedCallbacks = toolDisclosureService
                     .split(toolSet, Set.of(), autoDemotedTools).activeCallbacks();
             AgentToolSet advertisedToolSet = AgentToolSet.fromCallbacks(
@@ -841,6 +854,7 @@ public class AgentGraphBuilder {
                     goalEvaluationService, goalFollowupService, goalService, goalProperties,
                     conversationWindowManager, conversationService,
                     vip.mate.goal.service.GraphFlavor.PLAN_EXECUTE);
+            goalEvalNode.setDecisionAdapter(goalDecisionAdapter);
 
             StateGraph graph = new StateGraph("plan-execute-agent", keyStrategyFactory)
                     .addNode(PlanStateKeys.PLAN_GENERATION_NODE,
@@ -1183,6 +1197,7 @@ public class AgentGraphBuilder {
                     goalEvaluationService, goalFollowupService, goalService, goalProperties,
                     conversationWindowManager, conversationService,
                     vip.mate.goal.service.GraphFlavor.REACT);
+            goalEvalNode.setDecisionAdapter(goalDecisionAdapter);
 
             StateGraph graph = new StateGraph("react-agent-v2", keyStrategyFactory)
                     .addNode(MateClawStateKeys.REASONING_NODE,

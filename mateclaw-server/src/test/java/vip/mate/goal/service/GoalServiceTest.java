@@ -16,6 +16,7 @@ import org.springframework.dao.DuplicateKeyException;
 import vip.mate.audit.service.AuditEventService;
 import vip.mate.exception.MateClawException;
 import vip.mate.goal.config.GoalProperties;
+import vip.mate.goal.model.GoalContinuationDecision.Action;
 import vip.mate.goal.model.GoalCreateRequest;
 import vip.mate.goal.model.GoalEntity;
 import vip.mate.goal.model.GoalEvaluationResult;
@@ -551,6 +552,37 @@ class GoalServiceTest {
         verify(eventMapper).insert(evCaptor.capture());
         assertEquals("exhausted", evCaptor.getValue().getEventType());
         assertTrue(evCaptor.getValue().getDetailJson().contains("turn_budget"));
+    }
+
+    @Test void terminalTransitionsObserveOnlySuccessfulStateChanges() {
+        var adapter = mock(GoalDecisionAdapter.class); service.setDecisionAdapter(adapter);
+        var active = persisted(1L, GoalStatus.ACTIVE);
+        var completed = statusFlipped(active, GoalStatus.COMPLETED);
+        when(goalMapper.selectById(1L)).thenReturn(active, completed);
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(1);
+        service.markCompleted(1L, null);
+        verify(adapter).observeTransition(completed, Action.COMPLETE);
+        service.markCompleted(1L, null);
+        verify(adapter, times(1)).observeTransition(any(), any());
+    }
+
+    @Test void budgetTransitionObservesCommittedState() {
+        var adapter = mock(GoalDecisionAdapter.class); service.setDecisionAdapter(adapter);
+        var active = persisted(1L, GoalStatus.ACTIVE);
+        var exhausted = statusFlipped(active, GoalStatus.EXHAUSTED);
+        when(goalMapper.selectById(1L)).thenReturn(active, exhausted);
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(1);
+        service.markExhausted(1L, "turn_budget");
+        verify(adapter).observeTransition(exhausted, Action.BUDGET_LIMITED);
+    }
+
+    @Test void userPauseIsIndependentOfDecisionAuditAvailability() {
+        var adapter = mock(GoalDecisionAdapter.class); service.setDecisionAdapter(adapter);
+        var active = persisted(1L, GoalStatus.ACTIVE);
+        when(goalMapper.selectById(1L)).thenReturn(active, statusFlipped(active, GoalStatus.PAUSED));
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(1);
+        assertEquals(GoalStatus.PAUSED, service.pause(1L, "alice").getStatus());
+        verifyNoInteractions(adapter);
     }
 
     // ==================== evaluation bookkeeping ====================

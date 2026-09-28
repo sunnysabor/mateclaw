@@ -19,6 +19,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import vip.mate.audit.service.AuditEventService;
 import vip.mate.exception.MateClawException;
 import vip.mate.goal.config.GoalProperties;
+import vip.mate.goal.model.GoalContinuationDecision.Action;
 import vip.mate.goal.model.GoalCreateRequest;
 import vip.mate.goal.model.GoalCriteriaCodec;
 import vip.mate.goal.model.GoalCriterion;
@@ -74,6 +75,10 @@ public class GoalServiceImpl implements GoalService {
     private vip.mate.memory.spi.MemoryManager memoryManager;
     private GoalJsonBindingService jsonBindings;
     private ManagedGoalJsonService managedArtifacts;
+    private GoalDecisionAdapter decisionAdapter;
+
+    @Autowired(required = false)
+    public void setDecisionAdapter(GoalDecisionAdapter decisionAdapter) { this.decisionAdapter = decisionAdapter; }
 
     @Autowired
     public void setManagedArtifacts(ManagedGoalJsonService managedArtifacts) { this.managedArtifacts = managedArtifacts; }
@@ -486,6 +491,7 @@ public class GoalServiceImpl implements GoalService {
             return w;
         });
         if (!transitioned[0]) return g;
+        if (decisionAdapter != null) decisionAdapter.observeTransition(g, Action.COMPLETE);
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("finalScore", result != null ? result.score() : null);
         detail.put("agentLlmCallsUsed", g.getAgentLlmCallsUsed());
@@ -542,7 +548,9 @@ public class GoalServiceImpl implements GoalService {
     @Override
     @Transactional
     public GoalEntity markExhausted(Long id, String reason) {
+        boolean[] transitioned = {false};
         GoalEntity g = retryOptimistic(id, "markExhausted", fresh -> {
+            transitioned[0] = false;
             if (fresh.getStatus().isTerminal()) return null;
             boolean persistent = Boolean.TRUE.equals(fresh.getPersistentExecution());
             LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(fresh)
@@ -552,9 +560,11 @@ public class GoalServiceImpl implements GoalService {
                         + (reason != null ? reason : "budget limit")
                         + ". Increase the budget and resume to continue.");
             }
+            transitioned[0] = true;
             bumpVersionAndTime(w);
             return w;
         });
+        if (transitioned[0] && decisionAdapter != null) decisionAdapter.observeTransition(g, Action.BUDGET_LIMITED);
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("reason", reason != null ? reason : "unknown");
         detail.put("turnsUsed", g.getTurnsUsed());

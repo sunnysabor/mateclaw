@@ -6,6 +6,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
+import vip.mate.decision.api.DecisionRecordingException;
+import vip.mate.decision.api.DecisionTicket;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
 import vip.mate.team.event.TeamTasksDelegatedEvent;
@@ -53,6 +56,11 @@ import java.util.regex.Pattern;
 @Service
 @RequiredArgsConstructor
 public class TeamDispatchService {
+
+    private WorkerDecisionAdapter decisionAdapter;
+
+    @Autowired(required = false)
+    public void setDecisionAdapter(WorkerDecisionAdapter adapter) { this.decisionAdapter = adapter; }
 
     /** Result summaries are capped before persisting to keep the board readable. */
     static final int MAX_RESULT_CHARS = 8000;
@@ -204,6 +212,7 @@ public class TeamDispatchService {
             return;
         }
         String childConvId = "team-task-" + IdUtil.fastSimpleUUID();
+        WorkerDecisionAdapter.Snapshot snapshot = WorkerDecisionAdapter.Snapshot.capture(task).withConversation(childConvId);
         ScheduledFuture<?> heartbeat = null;
         try {
             AgentTeamEntity team = teamService.getTeam(teamId);
@@ -250,8 +259,12 @@ public class TeamDispatchService {
                 return;
             }
 
-            settleOutcome(task, reply);
+            settleOutcome(task, reply, snapshot);
         } catch (Exception e) {
+            if (DecisionRecordingException.find(e) != null) {
+                log.warn("Team task #{} decision recording failed; retaining current state", task.getTaskNumber());
+                return;
+            }
             log.warn("Team {} task #{} member run ended exceptionally: {}", teamId,
                     task.getTaskNumber(), e.getMessage());
             // Only report a failure the guarded transition actually applied — an
@@ -302,18 +315,49 @@ public class TeamDispatchService {
      * otherwise the final reply becomes the task result (auto-completion).
      */
     void settleOutcome(TeamTaskEntity task, String reply) {
+        settleOutcome(task, reply, WorkerDecisionAdapter.Snapshot.capture(task));
+    }
+
+    void settleOutcome(TeamTaskEntity task, String reply, WorkerDecisionAdapter.Snapshot snapshot) {
         TeamTaskEntity current = taskService.getTask(task.getId());
         if (current == null) {
             return;
         }
+        if (decisionAdapter != null && decisionAdapter.enabled() && decisionAdapter.active()
+                && TeamTaskStatus.IN_PROGRESS.equals(current.getStatus()) && !snapshot.matches(current)) {
+            var rejected = decisionAdapter.judge(task, "STALE_ATTEMPT", null);
+            decisionAdapter.outcome(rejected.ticket(), false, "STALE_ATTEMPT");
+            return;
+        }
         if (TeamTaskStatus.IN_PROGRESS.equals(current.getStatus())) {
-            boolean attachedGeneratedFile = attachGeneratedFileDeliverable(current, reply);
+            boolean attachedGeneratedFile = attachGeneratedFileDeliverable(current, reply, snapshot);
             String invalidReason = invalidResultReason(current, reply, attachedGeneratedFile);
             if (invalidReason != null) {
                 int attempts = current.getDispatchCount() == null ? 0 : current.getDispatchCount();
                 int maxAttempts = isResponseGenerationFailure(invalidReason)
                         ? MAX_RESPONSE_FAILURE_DISPATCHES
                         : TeamTaskService.MAX_DISPATCHES;
+                if (decisionAdapter != null && decisionAdapter.enabled()) {
+                    var judgment = decisionAdapter.judge(current, invalidCode(invalidReason), reply);
+                    String actual;
+                    if (decisionAdapter.active()) {
+                        actual = taskService.settleUnusableResult(task.getId(), invalidReason,
+                                attempts < maxAttempts, judgment.ticket(), snapshot);
+                    } else {
+                        actual = attempts < maxAttempts && taskService.requeueUnusableResult(task.getId(), invalidReason)
+                                ? TeamTaskStatus.PENDING : taskService.failTask(task.getId(), invalidReason)
+                                ? TeamTaskStatus.FAILED : null;
+                        decisionAdapter.outcome(judgment.ticket(), actual != null,
+                                actual == null ? "TRANSITION_REJECTED" : actual);
+                    }
+                    if (TeamTaskStatus.PENDING.equals(actual)) {
+                        broadcast(task, "team_task_retrying", Map.of("reason", invalidReason));
+                    } else if (TeamTaskStatus.FAILED.equals(actual)) {
+                        broadcast(task, "team_task_failed", Map.of("reason", invalidReason));
+                        announceService.announceTaskSettled(taskService.getTask(task.getId()));
+                    }
+                    return;
+                }
                 if (attempts < maxAttempts
                         && taskService.requeueUnusableResult(task.getId(), invalidReason)) {
                     log.warn("Team task #{} produced an unusable result on attempt {}/{}; requeued: {}",
@@ -337,8 +381,10 @@ public class TeamDispatchService {
                         .anyMatch(comment -> comment.getContent() != null
                                 && comment.getContent().contains(terminalEvidence));
                 if (terminalAlreadyAcknowledged) {
-                    List<Long> released = taskService.completeTask(task.getId(), null,
-                            truncate(reply, MAX_RESULT_CHARS));
+                    DecisionTicket ticket = (decisionAdapter == null || !decisionAdapter.enabled()) ? null
+                            : decisionAdapter.judge(current, "CHECKPOINT_ACK", reply).ticket();
+                    List<Long> released = completeWorker(task.getId(), truncate(reply, MAX_RESULT_CHARS), ticket, snapshot);
+                    if (released == null) return;
                     TeamTaskEntity completed = taskService.getTask(task.getId());
                     log.info("Team task #{} completed after deferred {} acknowledgement "
                                     + "({} dependents released)",
@@ -349,15 +395,39 @@ public class TeamDispatchService {
                 }
                 int percent = current.getProgressPercent() == null
                         ? 1 : Math.max(1, current.getProgressPercent());
-                taskService.updateProgress(task.getId(), null, percent,
-                        "waiting for " + terminalCheckpoint + " checkpoint");
+                String step = "waiting for " + terminalCheckpoint + " checkpoint";
+                if (decisionAdapter != null && decisionAdapter.enabled()) {
+                    var judgment = decisionAdapter.judge(current, "CHECKPOINT_WAIT", reply);
+                    if (decisionAdapter.active()) {
+                        taskService.parkWorkerCheckpoint(task.getId(), percent, step, judgment.ticket(), snapshot);
+                    } else {
+                        boolean applied = taskService.updateProgress(task.getId(), null, percent, step);
+                        decisionAdapter.outcome(judgment.ticket(), applied,
+                                applied ? TeamTaskStatus.IN_PROGRESS : "TRANSITION_REJECTED");
+                    }
+                } else {
+                    taskService.updateProgress(task.getId(), null, percent, step);
+                }
                 log.info("Team task #{} parked as long-running checkpoint tracker until {}",
                         task.getTaskNumber(), terminalCheckpoint);
                 return;
             }
-            List<Long> released = taskService.completeTask(task.getId(), null,
-                    truncate(reply == null || reply.isBlank() ? "(no output)" : reply,
-                            MAX_RESULT_CHARS));
+            DecisionTicket ticket = null;
+            if (decisionAdapter != null && decisionAdapter.enabled()) {
+                var judgment = decisionAdapter.judge(current, "VALID", reply);
+                ticket = judgment.ticket();
+                if (!judgment.accepted()) {
+                    String reason = "worker result did not satisfy task requirements";
+                    if (taskService.failTask(task.getId(), reason, ticket, snapshot)) {
+                        broadcast(task, "team_task_failed", Map.of("reason", reason));
+                        announceService.announceTaskSettled(taskService.getTask(task.getId()));
+                    }
+                    return;
+                }
+            }
+            List<Long> released = completeWorker(task.getId(),
+                    truncate(reply == null || reply.isBlank() ? "(no output)" : reply, MAX_RESULT_CHARS), ticket, snapshot);
+            if (released == null) return;
             current = taskService.getTask(task.getId());
             log.info("Team task #{} auto-completed ({} dependents released)",
                     task.getTaskNumber(), released.size());
@@ -377,6 +447,22 @@ public class TeamDispatchService {
         }
         broadcast(task, event, payload);
         announceService.announceTaskSettled(current);
+    }
+
+    private List<Long> completeWorker(Long taskId, String result, DecisionTicket ticket,
+                                      WorkerDecisionAdapter.Snapshot snapshot) {
+        if (ticket == null) return taskService.completeTask(taskId, null, result);
+        var completed = taskService.completeTask(taskId, null, result, ticket, snapshot);
+        return completed.applied() ? completed.released() : null;
+    }
+
+    private static String invalidCode(String reason) {
+        return switch (reason) {
+            case "member produced no result" -> "BLANK";
+            case "member response generation failed" -> "PLACEHOLDER";
+            case "required deliverable was not attached" -> "ARTIFACT_MISSING";
+            default -> "CLARIFICATION";
+        };
     }
 
     private String invalidResultReason(TeamTaskEntity task, String reply,
@@ -429,7 +515,7 @@ public class TeamDispatchService {
                 || normalized.contains("请提供");
     }
 
-    private boolean attachGeneratedFileDeliverable(TeamTaskEntity task, String reply) {
+    private boolean attachGeneratedFileDeliverable(TeamTaskEntity task, String reply, WorkerDecisionAdapter.Snapshot snapshot) {
         // A render link is a useful task artifact regardless of how the task
         // was created. The metadata flag controls validation/retry semantics,
         // not whether an otherwise valid generated file is discoverable in UI.
@@ -444,7 +530,11 @@ public class TeamDispatchService {
                 continue;
             }
             try {
-                taskService.addDeliverable(task.getId(), task.getAssigneeAgentId(), name, url);
+                if (decisionAdapter != null && decisionAdapter.enabled() && decisionAdapter.active()) {
+                    if (!taskService.addWorkerDeliverable(snapshot, task.getAssigneeAgentId(), name, url)) return false;
+                } else {
+                    taskService.addDeliverable(task.getId(), task.getAssigneeAgentId(), name, url);
+                }
                 log.info("Team task #{} auto-attached generated deliverable from member reply: {}",
                         task.getTaskNumber(), name);
                 return true;

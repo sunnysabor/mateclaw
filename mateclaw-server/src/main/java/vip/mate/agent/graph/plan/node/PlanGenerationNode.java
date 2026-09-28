@@ -28,6 +28,8 @@ import vip.mate.goal.model.GoalCriterion;
 import vip.mate.goal.model.GoalEntity;
 import vip.mate.goal.service.GoalService;
 import vip.mate.planning.service.PlanningService;
+import vip.mate.planning.service.AgentRoutingDecisionAdapter;
+import vip.mate.decision.api.DecisionRecordingException;
 import vip.mate.team.model.AgentTeamEntity;
 import vip.mate.team.service.TeamPlanBridge;
 
@@ -78,6 +80,10 @@ public class PlanGenerationNode implements NodeAction {
      * pipeline (non-team deployments / tests).
      */
     private TeamPlanBridge teamPlanBridge;
+    private AgentRoutingDecisionAdapter routingAdapter;
+
+    public void setRoutingAdapter(AgentRoutingDecisionAdapter adapter) { this.routingAdapter = adapter; }
+
 
     public void setTeamPlanBridge(TeamPlanBridge teamPlanBridge) {
         this.teamPlanBridge = teamPlanBridge;
@@ -807,10 +813,16 @@ public class PlanGenerationNode implements NodeAction {
             List<Long> stepAgentIds = resolveStepAgents(steps,
                     triage != null ? triage.stepAgents() : null,
                     chatOrigin.workspaceId(), agentId);
-            var plan = planningService.createPlan(agentId, conversationId, persistGoal, steps, stepAgentIds);
+            // A Team whose roster resolution failed must still bypass non-Team routing.
+            var routing = leadTeam == null && routingAdapter != null && routingAdapter.enabled()
+                    ? routingAdapter.select(chatOrigin.workspaceId(), agentId, conversationId,
+                            displayGoal(accessor.goal()), steps.size(), stepAgentIds) : null;
+            var plan = routing == null
+                    ? planningService.createPlan(agentId, conversationId, persistGoal, steps, stepAgentIds)
+                    : planningService.createPlan(agentId, conversationId, persistGoal, steps, stepAgentIds, routing);
             log.info("[PlanGeneration] Plan created: id={}, steps={} ({}){}",
                     plan.getId(), steps.size(), steps.size() == 1 ? "single-step" : "multi-step",
-                    stepAgentIds != null ? ", per-step delegation=" + stepAgentIds : "");
+                    stepAgentIds != null ? ", planner delegation=" + stepAgentIds : "");
 
             events.add(GraphEventPublisher.planCreated(plan.getId(), steps));
 
@@ -847,6 +859,8 @@ public class PlanGenerationNode implements NodeAction {
             return planOut.build();
 
         } catch (Exception e) {
+            DecisionRecordingException recording = DecisionRecordingException.find(e);
+            if (recording != null) throw recording;
             log.error("[PlanGeneration] Triage failed, falling back to single-step plan: {}", e.getMessage(), e);
             // When the triage LLM fails or returns unparseable output we now fall back to
             // a single-step plan (the user's goal verbatim) instead of a direct text
