@@ -76,6 +76,36 @@ class TeamDispatchServiceTest {
         return t;
     }
 
+    @Test
+    void structuredBlockedResultFailsWithoutRetryOrReleasingDependents() {
+        TeamTaskEntity running = task(71L, MEMBER_A);
+        running.setStatus(TeamTaskStatus.IN_PROGRESS);
+        running.setRequireApproval(true);
+        when(taskService.getTask(71L)).thenReturn(running);
+        var adapter = mock(WorkerDecisionAdapter.class);
+        when(adapter.enabled()).thenReturn(true);
+        var ticket = new DecisionTicket("blocked", DecisionMode.SHADOW, new DecisionValue.BooleanValue(false));
+        when(adapter.judge(any(), anyString(), anyString()))
+                .thenReturn(new WorkerDecisionAdapter.Judgment(ticket, false));
+        service.setDecisionAdapter(adapter);
+        String reply = "{\"status\":\"BLOCKED\",\"result\":\"\",\"evidence\":\"Missing total count\"}";
+        service.settleOutcome(running, reply);
+        verify(taskService).failTask(eq(71L), startsWith("BLOCKED:"), eq(ticket), any());
+        verify(taskService, never()).completeTask(any(), any(), anyString(), any(), any());
+        verify(taskService, never()).requeueUnusableResult(any(), anyString());
+        verify(adapter).judge(running, "BLOCKED", reply);
+    }
+
+    @Test
+    void enabledWorkerEnvelopeRequiresStructuredCompletionEvenWithoutTools() {
+        var adapter = mock(WorkerDecisionAdapter.class);
+        when(adapter.enabled()).thenReturn(true);
+        service.setDecisionAdapter(adapter);
+        String prompt = service.buildDispatchContent(task(72L, MEMBER_A));
+        assertTrue(prompt.contains("COMPLETED|BLOCKED|FAILED"));
+        assertTrue(prompt.contains("evidence"));
+    }
+
     // ==================== sweep arbitration ====================
 
     @Test
@@ -152,7 +182,7 @@ class TeamDispatchServiceTest {
         when(taskService.getTask(1L)).thenReturn(running);
         when(adapter.judge(running, "VALID", "analysis finished"))
                 .thenReturn(new WorkerDecisionAdapter.Judgment(ticket, false));
-        service.settleOutcome(running, "analysis finished");
+        service.settleOutcome(running, "{\"status\":\"COMPLETED\",\"result\":\"analysis finished\",\"evidence\":\"measured\"}");
         verify(taskService).failTask(1L, "worker result did not satisfy task requirements", ticket, snapshot);
         verify(taskService, never()).requeueUnusableResult(any(), anyString(), any(), any());
         verify(taskService, never()).completeTask(any(), any(), anyString(), any(), any());

@@ -330,6 +330,21 @@ public class TeamDispatchService {
             return;
         }
         if (TeamTaskStatus.IN_PROGRESS.equals(current.getStatus())) {
+            // Domain guard: a successful model invocation is not a completed business task.
+            // OFF retains the legacy text contract; SHADOW records the corrected baseline.
+            if (decisionAdapter != null && decisionAdapter.enabled()) {
+                var result = vip.mate.agent.runtime.WorkerResultContract.parse(reply, MAX_RESULT_CHARS);
+                if (!result.completed()) {
+                    String reason = result.reason() + ": " + truncate(result.evidence(), 1000);
+                    var judgment = decisionAdapter.judge(current, result.reason(), reply);
+                    if (taskService.failTask(task.getId(), reason, judgment.ticket(), snapshot)) {
+                        broadcast(task, "team_task_failed", Map.of("reason", reason));
+                        announceService.announceTaskSettled(taskService.getTask(task.getId()));
+                    }
+                    return;
+                }
+                reply = result.text();
+            }
             boolean attachedGeneratedFile = attachGeneratedFileDeliverable(current, reply, snapshot);
             String invalidReason = invalidResultReason(current, reply, attachedGeneratedFile);
             if (invalidReason != null) {
@@ -589,6 +604,11 @@ public class TeamDispatchService {
                 - If scope is ambiguous but you can make a reasonable assumption, state the assumption and continue.
                 - If you are missing an input you cannot obtain yourself, call team_tasks(action="comment", taskId=%s, type="blocker", text="what you need") and stop. Do not ask the lead or user for clarification in your final reply.
                 """.formatted(task.getId(), task.getId(), task.getId()));
+        if (decisionAdapter != null && decisionAdapter.enabled()) {
+            sb.append("\n[Final result contract]\n")
+                    .append(vip.mate.agent.runtime.WorkerResultContract.INSTRUCTIONS)
+                    .append("Keep the entire JSON under ").append(MAX_RESULT_CHARS).append(" characters.\n");
+        }
         return sb.toString();
     }
 

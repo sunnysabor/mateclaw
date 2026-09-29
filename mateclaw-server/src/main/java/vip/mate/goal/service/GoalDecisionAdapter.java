@@ -33,6 +33,13 @@ public class GoalDecisionAdapter {
         this.decisions = decisions;
     }
 
+    public boolean enabled() { return decisions.enabled(DecisionType.GOAL_CONTINUATION); }
+
+    /** Runtime blockers are deterministic and cannot be overridden by a provider. */
+    public DecisionTicket guardStop(GoalEntity goal, String reasonCode) {
+        return request(goal, Action.DISABLED, null, reasonCode, true);
+    }
+
     public record Selection(DecisionTicket ticket, GoalContinuationDecision decision) {}
 
     public Selection select(GoalEntity goal, GoalEvaluationResult result, LocalDateTime now,

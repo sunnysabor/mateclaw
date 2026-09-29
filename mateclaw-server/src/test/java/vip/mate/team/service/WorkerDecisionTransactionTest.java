@@ -138,12 +138,12 @@ class WorkerDecisionTransactionTest {
         assertNull(tasks.getTask(1L).getMetadata());
     }
 
-    @Test void offAndShadowPreserveLegacySettlementAcrossGuardsAndObservationFailures() {
+    @Test void offPreservesLegacySettlementAcrossGuardsAndObservationFailures() {
         rejectProvider = true;
         for (int fixture = 0; fixture < 13; fixture++) {
             properties.setMode(DecisionMode.OFF);
             List<Object> expected = settleFixture(fixture, false);
-            for (DecisionMode mode : List.of(DecisionMode.OFF, DecisionMode.SHADOW)) {
+            for (DecisionMode mode : List.of(DecisionMode.OFF)) {
                 for (boolean failingStore : List.of(false, true)) {
                     properties.setMode(mode);
                     if (failingStore) doThrow(new IllegalStateException("unavailable")).when(records).insert(any());
@@ -201,12 +201,33 @@ class WorkerDecisionTransactionTest {
                 jdbc.queryForList("SELECT event_type FROM mate_team_task_event ORDER BY create_time,id", String.class));
     }
 
+    private static String structured(String result) {
+        return JSONUtil.toJsonStr(java.util.Map.of("status", "COMPLETED", "result", result, "evidence", "measured"));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(value = DecisionMode.class, names = {"SHADOW", "ACTIVE"})
+    void structuredBlockNeverCompletesOrEntersReview(DecisionMode mode) throws Exception {
+        properties.setMode(mode);
+        jdbc.update("UPDATE mate_team_task SET require_approval=TRUE WHERE id=1");
+        var observed = new CountDownLatch(1);
+        doAnswer(call -> { call.callRealMethod(); observed.countDown(); return null; })
+                .when(records).outcome(any(), any(), any());
+        dispatch(mock(AgentService.class)).settleOutcome(tasks.getTask(1L),
+                "{\"status\":\"BLOCKED\",\"result\":\"\",\"evidence\":\"missing total\"}");
+        assertTrue(observed.await(5, TimeUnit.SECONDS));
+        assertEquals(TeamTaskStatus.FAILED, tasks.getTask(1L).getStatus());
+        assertTrue(tasks.getTask(1L).getReason().contains("missing total"));
+        assertEquals("FAILED", jdbc.queryForObject("SELECT actual_value FROM mate_decision_outcome", String.class));
+        assertEquals(0, providerCalls.get());
+    }
+
     @Test void healthyShadowActuallyEvaluatesAndObservesCommittedBaseline() throws Exception {
         properties.setMode(DecisionMode.SHADOW); rejectProvider = true;
         var observed = new CountDownLatch(1);
         doAnswer(call -> { call.callRealMethod(); observed.countDown(); return null; })
                 .when(records).outcome(any(), any(), any());
-        dispatch(mock(AgentService.class)).settleOutcome(tasks.getTask(1L), "analysis done");
+        dispatch(mock(AgentService.class)).settleOutcome(tasks.getTask(1L), structured("analysis done"));
         assertTrue(observed.await(5, TimeUnit.SECONDS));
         assertEquals(1, providerCalls.get());
         assertEquals(TeamTaskStatus.COMPLETED, tasks.getTask(1L).getStatus());
@@ -229,7 +250,7 @@ class WorkerDecisionTransactionTest {
     @Test void activeSemanticRejectionCommitsFailureWithoutRetry() {
         rejectProvider = true;
         var dispatch = dispatch(mock(AgentService.class));
-        dispatch.settleOutcome(tasks.getTask(1L), "analysis done");
+        dispatch.settleOutcome(tasks.getTask(1L), structured("analysis done"));
         assertEquals(TeamTaskStatus.FAILED, tasks.getTask(1L).getStatus());
         assertEquals(1, tasks.getTask(1L).getDispatchCount());
         assertEquals("FAILED", jdbc.queryForObject("SELECT actual_value FROM mate_decision_outcome", String.class));
@@ -241,7 +262,7 @@ class WorkerDecisionTransactionTest {
         var agent = mock(AgentService.class);
         when(agent.chatWithUsage(eq(3L), anyString(), anyString())).thenAnswer(call -> {
             if (reassigned) jdbc.update("UPDATE mate_team_task SET owner_agent_id=4,dispatch_count=2,conversation_id='new-run' WHERE id=1");
-            return AgentService.ChatResult.contentOnly("[report](/api/v1/files/generated/12345678-abcd-1234-abcd-123456789abc)");
+            return AgentService.ChatResult.contentOnly(structured("[report](/api/v1/files/generated/12345678-abcd-1234-abcd-123456789abc)"));
         });
         dispatch(agent).runTask(2L, tasks.getTask(1L));
         assertEquals(reassigned ? TeamTaskStatus.IN_PROGRESS : TeamTaskStatus.COMPLETED, tasks.getTask(1L).getStatus());

@@ -32,7 +32,7 @@ class PlanGenerationRoutingTest {
         selection=new AgentRoutingDecisionAdapter.Selection(10L,"1",List.of(
                 new AgentRoutingDecisionAdapter.Step(2L,new DecisionTicket("ticket",DecisionMode.SHADOW,new DecisionValue.Choice("AGENT:2"))),
                 new AgentRoutingDecisionAdapter.Step(null,new DecisionTicket("ticket2",DecisionMode.SHADOW,new DecisionValue.Choice("LOCAL")))));
-        when(adapter.select(any(),any(),any(),any(),anyInt(),any())).thenReturn(selection);
+        when(adapter.select(any(),any(),any(),any(),anyList(),any())).thenReturn(selection);
         var peer=new AgentEntity();peer.setId(2L);peer.setName("Research");peer.setEnabled(true);peer.setWorkspaceId(10L);
         when(agents.listAgentsByWorkspace(10L,true)).thenReturn(List.of(peer));
         var plan=new PlanEntity();plan.setId(50L);
@@ -51,7 +51,7 @@ class PlanGenerationRoutingTest {
         return new OverAllState(values);
     }
     @Test void enabledNonTeamUsesTicketOverloadAndOriginalBaseline() throws Exception {
-        node.apply(state());verify(adapter).select(10L,"1","conversation","Ask Research to summarize",2,Arrays.asList(2L,null));
+        node.apply(state());verify(adapter).select(10L,"1","conversation","Ask Research to summarize",List.of("read","write"),Arrays.asList(2L,null));
         verify(planning).createPlan("1","conversation","Ask Research to summarize",List.of("read","write"),Arrays.asList(2L,null),selection);
         verify(streaming,times(1)).streamCallSilent(any(),any(),any(),any());
     }
@@ -72,13 +72,13 @@ class PlanGenerationRoutingTest {
         verify(planning,never()).createPlan(anyString(),anyString(),anyString(),anyList(),any(),any());
     }
     @Test void missingNamesRetainNullList() throws Exception {
-        reply("[]");node.apply(state());verify(adapter).select(any(),any(),any(),any(),eq(2),isNull());
+        reply("[]");node.apply(state());verify(adapter).select(any(),any(),any(),any(),eq(List.of("read","write")),isNull());
     }
     @Test void duplicateNamesKeepLegacyLastWinnerAndExtraNamesAreIgnored() throws Exception {
         var first=new AgentEntity();first.setId(2L);first.setName("Research");
         var last=new AgentEntity();last.setId(3L);last.setName("Research");
         when(agents.listAgentsByWorkspace(10L,true)).thenReturn(List.of(first,last));reply("[\"Research\",\"unknown\",\"Research\"]");
-        node.apply(state());verify(adapter).select(any(),any(),any(),any(),eq(2),eq(Arrays.asList(3L,null)));
+        node.apply(state());verify(adapter).select(any(),any(),any(),any(),eq(List.of("read","write")),eq(Arrays.asList(3L,null)));
     }
     @ParameterizedTest @ValueSource(booleans={true,false})
     void auditFailureNeverFallsBackToUnrecordedPlan(boolean wrapped) {

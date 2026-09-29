@@ -37,20 +37,23 @@ public class DecisionService implements AutoCloseable {
         return new ThreadPoolExecutor(threads, threads, 30, TimeUnit.SECONDS, new ArrayBlockingQueue<>(capacity),
                 Thread.ofPlatform().daemon(true).name(prefix, 0).factory(), new ThreadPoolExecutor.AbortPolicy());
     }
+    public boolean enabled(DecisionType type) { return properties.modeFor(type) != DecisionMode.OFF; }
+
     public DecisionTicket decide(DecisionRequest request) {
         var mode = properties.modeFor(request.type());
         metrics.counter("mate.decision.requests", "type", request.type().name(), "mode", mode.name()).increment();
         if (mode == DecisionMode.OFF) return new DecisionTicket(null, mode, request.baseline());
+        var policy = properties.policyFor(request.type());
         String id = UUID.randomUUID().toString();
         if (mode == DecisionMode.SHADOW) {
-            submitShadow(() -> evaluateAndRecord(request, mode, id), request.type());
+            submitShadow(() -> evaluateAndRecord(request, mode, id, policy), request.type());
             return new DecisionTicket(id, mode, request.baseline());
         }
-        return new DecisionTicket(id, mode, evaluateAndRecord(request, mode, id));
+        return new DecisionTicket(id, mode, evaluateAndRecord(request, mode, id, policy));
     }
-    private DecisionValue evaluateAndRecord(DecisionRequest request, DecisionMode mode, String id) {
+    private DecisionValue evaluateAndRecord(DecisionRequest request, DecisionMode mode, String id, DecisionProperties.ResolvedPolicy policy) {
         long start = System.nanoTime();
-        var evaluated = evaluate(request);
+        var evaluated = evaluate(request, policy);
         DecisionValue effective = evaluated.value;
         String reason = evaluated.reason;
         String overrideReason = "NONE";
@@ -58,7 +61,7 @@ public class DecisionService implements AutoCloseable {
             effective = request.policyOverride(); overrideReason = "POLICY_OVERRIDE";
         }
         long elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
-        String providerId = request.guardValue() != null ? "none" : providers.containsKey(properties.getProvider()) ? properties.getProvider() : "unavailable";
+        String providerId = request.guardValue() != null ? "none" : providers.containsKey(policy.provider()) ? policy.provider() : "unavailable";
         var record = new DecisionRecord(id, request.type(), request.scope(), request.phase(), request.question().version(), mode,
                 providerId, evaluated.version, kind(request.baseline()), request.baseline().encoded(),
                 evaluated.proposed == null ? null : evaluated.proposed.encoded(), effective.encoded(), evaluated.confidence, reason, overrideReason, elapsed);
@@ -78,9 +81,9 @@ public class DecisionService implements AutoCloseable {
         }
         return effective;
     }
-    private Evaluation evaluate(DecisionRequest request) {
+    private Evaluation evaluate(DecisionRequest request, DecisionProperties.ResolvedPolicy policy) {
         if (request.guardValue() != null) return new Evaluation(request.guardValue(), null, null, "none", "GUARD");
-        DecisionProvider provider = providers.get(properties.getProvider());
+        DecisionProvider provider = providers.get(policy.provider());
         if (provider == null) return fallback(request, "UNAVAILABLE");
         Future<DecisionResult> future = null;
         try {
@@ -88,7 +91,7 @@ public class DecisionService implements AutoCloseable {
                 if (!provider.capability().supports(request)) return new DecisionResult(DecisionResult.Status.UNAVAILABLE, null, null, "unsupported");
                 return provider.decide(request);
             });
-            DecisionResult result = future.get(properties.getTimeoutMs(), TimeUnit.MILLISECONDS);
+            DecisionResult result = future.get(policy.timeoutMs(), TimeUnit.MILLISECONDS);
             if (result == null || result.status() == null) return fallback(request, "INVALID_RESULT");
             String version = DecisionCodes.requireCode(result.version());
             if (result.status() == DecisionResult.Status.BASELINE)
@@ -97,7 +100,7 @@ public class DecisionService implements AutoCloseable {
                 return new Evaluation(request.baseline(), null, null, version, result.status().name());
             if (!request.question().accepts(result.value()) || result.confidence() == null || !Double.isFinite(result.confidence())
                     || result.confidence() < 0 || result.confidence() > 1) return fallback(request, "INVALID_RESULT");
-            if (result.confidence() < properties.getConfidenceThreshold())
+            if (result.confidence() < policy.confidenceThreshold())
                 return new Evaluation(request.baseline(), result.value(), result.confidence(), version, "LOW_CONFIDENCE");
             return new Evaluation(result.value(), result.value(), result.confidence(), version, "PROPOSED");
         } catch (TimeoutException ex) { return fallback(request, "TIMEOUT"); }

@@ -175,6 +175,21 @@ public class GoalEvaluationNode implements NodeAction {
         GoalEntity refreshed;
         try {
             result = evaluationService.evaluate(goal, recent, terminal);
+            // Retry only the judge against identical evidence, never the business execution.
+            int pendingAgentCalls = Math.max(0, accessor.llmCallCount() - accessor.goalAccountedLlmCallCount());
+            int budget = goal.getLlmCallBudget() == null ? 0 : goal.getLlmCallBudget();
+            boolean evaluationRoom = budget <= 0
+                    || goal.totalLlmCallsUsed() + pendingAgentCalls + result.llmCallsConsumed() < budget;
+            if (GoalEvaluationResult.DECISION_FALLBACK.equals(result.decision())
+                    && "evaluator unavailable: empty_response".equals(result.gap())
+                    && !goal.isJsonAcceptanceRequired()
+                    && evaluationRoom && decisionAdapter != null && decisionAdapter.enabled()) {
+                var retry = evaluationService.evaluate(goal, recent, terminal);
+                result = new GoalEvaluationResult(retry.score(), retry.gap(), retry.decision(), retry.completed(),
+                        retry.evaluatorModel(), result.llmCallsConsumed() + retry.llmCallsConsumed(),
+                        result.latencyMs() + retry.latencyMs(), retry.criterionVerdicts(),
+                        retry.bootstrapCriteria(), retry.evaluationRevision());
+            }
 
             // Bill only the NEW agent LLM calls since the last accounted point.
             // The run-to-completion loop evaluates multiple times per graph run
@@ -201,6 +216,15 @@ public class GoalEvaluationNode implements NodeAction {
                 && refreshed.getStatus()!=vip.mate.goal.model.GoalStatus.ACTIVE) {
             return MateClawStateAccessor.output().goalEvaluatedThisRun(true)
                     .events(List.of(skippedEvent(refreshed.getId(), "goal_no_longer_active"))).build();
+        }
+
+        if (GoalEvaluationResult.DECISION_FALLBACK.equals(result.decision())
+                && goalService.suspendRuntime(goal.getId(), "EVALUATION_UNAVAILABLE")) {
+            return MateClawStateAccessor.output().goalEvaluationResult(result.toMap()).goalEvaluatedThisRun(true)
+                    .events(List.of(goalEvent("goal_paused", Map.of("goalId", String.valueOf(goal.getId()),
+                            "reason", "EVALUATION_UNAVAILABLE",
+                            "goal", stateSafeGoal(goalService.toResponse(goalService.getById(goal.getId())))))))
+                    .build();
         }
 
         // Decision branches. Each terminal write is wrapped so a DB hiccup

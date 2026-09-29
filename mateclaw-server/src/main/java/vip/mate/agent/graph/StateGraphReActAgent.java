@@ -704,6 +704,9 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
             try {
                 vip.mate.goal.model.GoalEntity active =
                         goalService.findActiveByConversation(conversationId);
+                var currentGoal = active != null ? active : goalService.findLatestByConversation(conversationId);
+                inputs.put(MateClawStateKeys.SYSTEM_PROMPT, inputs.get(MateClawStateKeys.SYSTEM_PROMPT)
+                        + vip.mate.goal.service.GoalLifecycleHints.render(currentGoal));
                 if (active != null) {
                     inputs.put(MateClawStateKeys.ACTIVE_GOAL, active);
                     if (active.isJsonAcceptanceRequired()) {

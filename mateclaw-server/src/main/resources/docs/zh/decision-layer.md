@@ -66,7 +66,7 @@ SHADOW 永远返回原判断；队列满或后台记录失败只影响观察覆�
 
 Micrometer 指标包括 `mate.decision.total`、`mate.decision.duration`、`mate.decision.comparison`、`mate.decision.failure`。业务 ID 不进入指标标签。比较指标区分 Provider 原始建议与策略后的建议；Guard 和不可用 Provider 不应被算作有效模型比较。
 
-Routing v1 的持久记录通过父 Agent、会话和 PLAN_STEP 阶段关联；步骤序号仅是瞬时事实，尚未保存 plan/subplan ID，因此不能从审计记录精确重建每个子计划的对应关系。实际指派结果仍与计划插入同事务保存。
+Routing v2 的持久记录通过父 Agent、会话和 PLAN_STEP 阶段关联；步骤序号仅是瞬时事实，尚未保存 plan/subplan ID，因此不能从审计记录精确重建每个子计划的对应关系。实际指派结果仍与计划插入同事务保存。
 
 查询记录必须限定工作区和时间范围；当前不新增公开查询接口。分析一致率时还应查看丢弃、失败和缺少 outcome 的数量。Rule 的一致率不能说明新模型质量提高。
 
@@ -75,3 +75,31 @@ Routing v1 的持久记录通过父 Agent、会话和 PLAN_STEP 阶段关联；�
 测试通过受控 Provider 验证新行为，不需要配置真实模型。数据库测试使用 H2，并执行 MySQL/PostgreSQL 兼容模式；这不能代替真实 MySQL/Kingbase 验证。
 
 未来 Provider 可通过 Java SPI 实现规则、远程模型或本地推理。上线前需要协议和版本固定、输入最小化、中文领域数据评测、置信度校准、超时/熔断和逐场景灰度。语言能力元数据目前不等于语言识别或校准能力。工业写操作、未知副作用和重试幂等性仍由原执行与审批机制控制。
+
+## 场景策略与路由输入（第二轮）
+
+模式继续使用 `scenarios`；新增 `scenario-policies` 只覆盖 Provider、置信度阈值和超时。每个省略的字段继承全局值，原有配置无需迁移。以下配置仍使用内置 Rule，不接入新模型：
+
+```yaml
+mate:
+  decision:
+    mode: SHADOW
+    provider: rule
+    confidence-threshold: 0.8
+    timeout-ms: 250
+    scenario-policies:
+      WORKER_RESULT:
+        confidence-threshold: 0.95
+        timeout-ms: 500
+      AGENT_ROUTING:
+        provider: rule
+        timeout-ms: 150
+```
+
+覆盖项在启动时验证；超时范围为 1～60000 毫秒，阈值为有限的 0～1 数值。不存在的 Provider 走 UNAVAILABLE 回退，不偷偷使用全局 Provider。一次请求固定本次策略，SHADOW 排队不改变其 Provider、阈值或超时；不提供配置热更新功能。阈值示例不是经过模型校准的生产建议，Rule 返回基线时不使用置信度阈值。
+
+Routing v2 将当前步骤文本作为瞬时 evidence，将同工作区有效候选和父 Agent 的名称、描述、标签、类型作为选项描述。不传完整会话、原始完整目标、系统提示词、runtime config 或模型凭据；原始目标仅在本地用于保留显式指定 Agent 的约束。描述是未经验证的能力声明，不代表实际工具权限。父 Agent 元数据不可用时使用通用 LOCAL 描述。
+
+当前步骤最多 2048 字符，每个候选描述最多 1024 字符，步骤与全部选项描述合计最多 8192 字符。空步骤或超限走 Guard 并保留原指派，不截断后交给 Provider；旧候选失效时仍优先执行原有 LOCAL 保护。字符预算不等于 tokenizer token 预算。审计只保存结构化结果和问题版本，不保存新增的步骤与候选文本。未来远程 Provider 上线仍须评估这些瞬时文本的数据外发策略。
+
+本轮不增加候选召回、工具能力实时校验或真实语义 Provider；默认 SHADOW/Rule 的一致性不能证明准确率或执行效率提升。

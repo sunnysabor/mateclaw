@@ -29,6 +29,7 @@ import vip.mate.workspace.conversation.model.MessageContentPart;
 import vip.mate.workspace.conversation.model.MessageEntity;
 import vip.mate.workspace.core.service.MemberFileAccess;
 import vip.mate.workspace.core.service.MemberFileIsolation;
+import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -132,6 +133,7 @@ public abstract class BaseAgent {
      */
     protected MultimodalRouter multimodalRouter;
     protected MediaCaptionService mediaCaptionService;
+    protected ChatUploadLocationResolver chatUploadLocationResolver;
 
     /**
      * RFC 48 — wired by {@link AgentGraphBuilder#build} so the agent's
@@ -1007,7 +1009,7 @@ public abstract class BaseAgent {
                         && !contentType.contains("svg");
                 if (!isImage) continue;
                 MediaCaptionService.CaptionResult result = mediaCaptionService.caption(
-                        decision.sidecarModel(), part, userLocale, userQuestion);
+                        decision.sidecarModel(), part, userLocale, userQuestion, ChatOriginHolder.get());
                 if (result.isFailure()) {
                     log.warn("[{}] Sidecar caption failed for {}: {}",
                             agentName, part.getFileName(), result.failure().getMessage());
@@ -1103,8 +1105,8 @@ public abstract class BaseAgent {
             }
 
             // 解析媒体文件路径：先尝试 path，再尝试 mediaId（IM 渠道下载后存在 mediaId 中），再拼接工作目录
-            Path mediaPath = resolveImagePath(part.getPath());
-            if (mediaPath == null && part.getMediaId() != null) {
+            Path mediaPath = resolveAttachmentPath(part);
+            if (mediaPath == null && part.getMediaId() != null && !isWebUpload(part)) {
                 mediaPath = resolveImagePath(part.getMediaId());
             }
             if (mediaPath == null) {
@@ -1362,8 +1364,8 @@ public abstract class BaseAgent {
                 for (int k = parts.size() - 1; k >= 0; k--) {
                     MessageContentPart part = parts.get(k);
                     if (!isResolvableImagePart(part)) continue;
-                    Path imgPath = resolveImagePath(part.getPath());
-                    if (imgPath == null && part.getMediaId() != null) imgPath = resolveImagePath(part.getMediaId());
+                    Path imgPath = resolveAttachmentPath(part);
+                    if (imgPath == null && part.getMediaId() != null && !isWebUpload(part)) imgPath = resolveImagePath(part.getMediaId());
                     if (imgPath == null) continue;
                     String contentType = part.getContentType();
                     if (contentType == null || "image/*".equals(contentType)) contentType = "image/jpeg";
@@ -1417,6 +1419,23 @@ public abstract class BaseAgent {
         Path root = Path.of(MemberFileIsolation.scope(ChatOriginHolder.get()).workspaceBasePath());
         // Snapshot through descriptor-relative access; never defer a host path read to the model client.
         return new ByteArrayResource(MemberFileAccess.read(root, path, 32 * 1024 * 1024));
+    }
+
+    private Path resolveAttachmentPath(MessageContentPart part) {
+        ChatOrigin origin = ChatOriginHolder.get();
+        if (chatUploadLocationResolver != null && origin != null
+                && "web".equals(origin.channelType()) && part.getStoredName() != null) {
+            // The client-visible path is informational; the stored name is resolved
+            // under the authenticated conversation's actual upload root.
+            return chatUploadLocationResolver.resolveExistingFile(origin, part.getStoredName());
+        }
+        return resolveImagePath(part.getPath());
+    }
+
+    private boolean isWebUpload(MessageContentPart part) {
+        ChatOrigin origin = ChatOriginHolder.get();
+        return chatUploadLocationResolver != null && origin != null
+                && "web".equals(origin.channelType()) && part.getStoredName() != null;
     }
 
     protected Path resolveImagePath(String relativePath) {

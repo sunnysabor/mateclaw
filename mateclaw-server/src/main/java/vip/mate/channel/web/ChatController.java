@@ -652,6 +652,9 @@ public class ChatController {
                 List<MessageContentPart> requestParts = regenerateSeed != null
                         ? regenerateSeed.parts()
                         : normalizeRequestParts(request);
+                if (regenerateSeed == null) {
+                    validateUploadedParts(conversationId, selectedTurnOrigin, requestParts);
+                }
                 String promptText = buildPromptText(message, requestParts);
                 Long originMessageId;
                 if (regenerateSeed == null) {
@@ -1207,6 +1210,9 @@ public class ChatController {
             return R.fail(409, "正在生成回复，请先停止或排队后续消息");
         }
         conversationService.getOrCreateConversation(request.getConversationId(), agentId, username, workspaceId);
+        validateUploadedParts(request.getConversationId(),
+                vip.mate.agent.context.ChatOrigin.web(request.getConversationId(), username, workspaceId,
+                        null, null, requesterUserIdOf(auth)), request.getContentParts());
         MessageEntity savedUser = conversationService.saveMessage(
                 request.getConversationId(), "user", request.getMessage(), request.getContentParts());
 
@@ -2131,6 +2137,28 @@ public class ChatController {
         textPart.setType("text");
         textPart.setText(request.getMessage());
         return List.of(textPart);
+    }
+
+    private void validateUploadedParts(String conversationId, vip.mate.agent.context.ChatOrigin origin,
+                                       List<MessageContentPart> parts) {
+        if (parts == null) return;
+        for (MessageContentPart part : parts) {
+            if (part == null || part.getStoredName() == null || part.getStoredName().isBlank()) continue;
+            Path file = uploadLocationResolver.resolveExistingFile(origin, part.getStoredName());
+            if (file == null) {
+                throw new IllegalArgumentException("聊天附件不存在或不属于当前会话");
+            }
+            // Do not let a client-supplied filesystem path become an agent prompt.
+            if (MemberFileIsolation.isEnabled()) {
+                part.setPath(toRelativeUploadPath(uploadLocationResolver.resolveUploadRoot(origin), file));
+            } else {
+                Path root = uploadLocationResolver.resolveCandidateUploadRoots(conversationId).stream()
+                        .filter(candidate -> file.startsWith(candidate))
+                        .findFirst()
+                        .orElseThrow(() -> new IllegalArgumentException("聊天附件目录无效"));
+                part.setPath(toRelativeUploadPath(root, file));
+            }
+        }
     }
 
     private String buildPromptText(String message, List<MessageContentPart> parts) {

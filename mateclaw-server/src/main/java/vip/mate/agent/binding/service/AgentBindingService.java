@@ -737,6 +737,7 @@ public class AgentBindingService implements AgentBindingResolver {
             "publishManagedGoalJson",
             "checkManagedGoalJson",
             "waitForGoalInput",
+            "resumeGoal",
             // Conversation-scoped progress ledger — same rationale as the
             // goal primitives above. Long multi-step research / drafting
             // tasks need it on every business agent, not just the planner,

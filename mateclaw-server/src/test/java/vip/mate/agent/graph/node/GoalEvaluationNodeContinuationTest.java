@@ -69,6 +69,63 @@ class GoalEvaluationNodeContinuationTest {
     // ===== Pure decision helpers =====
 
     @Test
+    void emptyEvaluationDoesNotRetryPastCombinedBudget() throws Exception {
+        Fixture f = new Fixture();
+        var state = f.state(FinishReason.NORMAL.getValue(), 0, 0);
+        state.<GoalEntity>value(MateClawStateKeys.ACTIVE_GOAL).orElseThrow().setLlmCallBudget(11);
+        when(f.evaluationService.evaluate(any(), anyList(), anyString()))
+                .thenReturn(GoalEvaluationResult.fallbackAfterCall("empty_response", "fixture", 2));
+        when(f.goalService.suspendRuntime(1L, "EVALUATION_UNAVAILABLE")).thenReturn(true);
+        var node = f.node(); node.setDecisionAdapter(mock(GoalDecisionAdapter.class));
+        node.apply(state);
+        verify(f.evaluationService).evaluate(any(), anyList(), anyString());
+        verify(f.goalService).recordEvaluation(eq(1L), any(), eq(10), eq(1));
+    }
+
+    @Test
+    void offEmptyEvaluationKeepsSingleJudgeCall() throws Exception {
+        Fixture f = new Fixture();
+        when(f.evaluationService.evaluate(any(), anyList(), anyString()))
+                .thenReturn(GoalEvaluationResult.fallbackAfterCall("empty_response", "fixture", 2));
+        // No adapter and suspendRuntime=false represent the existing OFF domain path.
+        f.node().apply(f.state(FinishReason.NORMAL.getValue(), 0, 0));
+        verify(f.evaluationService).evaluate(any(), anyList(), anyString());
+        verify(f.goalService).recordEvaluation(eq(1L), any(), eq(10), eq(1));
+    }
+
+    @Test
+    void emptyEvaluationRetriesOnlyJudgeAndAccountsBothCalls() throws Exception {
+        Fixture f = new Fixture();
+        var adapter = mock(GoalDecisionAdapter.class); when(adapter.enabled()).thenReturn(true);
+        var first = GoalEvaluationResult.fallbackAfterCall("empty_response", "fixture", 2);
+        var second = new GoalEvaluationResult(1, "done", "completed", true, "fixture", 1, 3, List.of(), null);
+        when(f.evaluationService.evaluate(any(), anyList(), anyString())).thenReturn(first, second);
+        var goal = new GoalEntity(); goal.setId(1L);
+        when(f.goalService.markRuntimeEvaluatedCompleted(any(), any(), any())).thenReturn(goal);
+        var node = f.node(); node.setDecisionAdapter(adapter);
+        var out = node.apply(f.state(FinishReason.NORMAL.getValue(), 0, 0));
+        verify(f.evaluationService, times(2)).evaluate(any(), anyList(), eq("partial answer so far"));
+        verify(f.goalService).recordEvaluation(eq(1L), any(), eq(10), eq(2));
+        verify(f.followupService, never()).maybeBuildFollowup(any(), any());
+        assertEquals(true, out.get(MateClawStateKeys.GOAL_EVALUATED_THIS_RUN));
+    }
+
+    @Test
+    void unavailableJudgePausesInsteadOfReexecutingBusinessWork() throws Exception {
+        Fixture f = new Fixture();
+        var adapter = mock(GoalDecisionAdapter.class); when(adapter.enabled()).thenReturn(true);
+        when(f.evaluationService.evaluate(any(), anyList(), anyString()))
+                .thenReturn(GoalEvaluationResult.fallbackAfterCall("empty_response", "fixture", 2));
+        when(f.goalService.suspendRuntime(1L, "EVALUATION_UNAVAILABLE")).thenReturn(true);
+        var node = f.node(); node.setDecisionAdapter(adapter);
+        var out = node.apply(f.state(FinishReason.NORMAL.getValue(), 0, 0));
+        verify(f.evaluationService, times(2)).evaluate(any(), anyList(), anyString());
+        verify(f.goalService).suspendRuntime(1L, "EVALUATION_UNAVAILABLE");
+        verify(f.followupService, never()).maybeBuildFollowup(any(), any());
+        assertEquals(true, out.get(MateClawStateKeys.GOAL_EVALUATED_THIS_RUN));
+    }
+
+    @Test
     void hardSkip_coversUserAndNonProgressTerminals_only() {
         assertTrue(GoalEvaluationNode.isHardSkipFinishReason(FinishReason.STOPPED.getValue()));
         assertTrue(GoalEvaluationNode.isHardSkipFinishReason(FinishReason.RETURN_DIRECT.getValue()));

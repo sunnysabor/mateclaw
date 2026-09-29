@@ -57,4 +57,16 @@ class MemberFileIntegrationTest {
                 new ChatUploadProperties(), mock(AgentService.class));
         assertThrows(SecurityException.class, () -> resolver.resolveCandidateUploadRoots("missing"));
     }
+    @Test void uploadedMediaLookupStaysInsideTheMemberDirectory() throws Exception {
+        var resolver = new ChatUploadLocationResolver(mock(ConversationMapper.class), mock(WorkspaceService.class),
+                new ChatUploadProperties(), mock(AgentService.class));
+        var alice = ChatOrigin.web("new", "alice", 7L, null, null, 11L);
+        var bob = ChatOrigin.web("new", "bob", 7L, null, null, 22L);
+        Path image = resolver.resolveWriteDir(alice).resolve("image.png");
+        Files.createDirectories(image.getParent());
+        Files.writeString(image, "image");
+
+        assertEquals(image, resolver.resolveExistingFile(alice, "image.png"));
+        assertNull(resolver.resolveExistingFile(bob, "image.png"));
+    }
 }

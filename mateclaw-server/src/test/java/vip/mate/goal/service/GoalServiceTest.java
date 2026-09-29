@@ -478,6 +478,46 @@ class GoalServiceTest {
     // ==================== state transitions ====================
 
     @Test
+    void managedGoalKeepsItsExistingLeaseAndApprovalLifecycle() {
+        var goal = verifiedPersistentGoal(GoalStatus.ACTIVE); goal.setJsonAcceptanceRequired(true);
+        when(goalMapper.selectById(1L)).thenReturn(goal);
+        var adapter = mock(GoalDecisionAdapter.class); service.setDecisionAdapter(adapter);
+        assertFalse(service.suspendRuntime(1L, "EVALUATION_UNAVAILABLE"));
+        assertFalse(service.suspendRuntime(1L, "PLAN_ABORTED"));
+        verify(goalMapper, never()).update(any(), any(LambdaUpdateWrapper.class));
+        verifyNoInteractions(adapter);
+    }
+
+    @Test
+    void offRuntimeBlockerRetainsLegacyState() {
+        when(goalMapper.selectById(1L)).thenReturn(verifiedPersistentGoal(GoalStatus.ACTIVE));
+        var decisions = mock(vip.mate.decision.core.DecisionService.class);
+        when(decisions.decide(any())).thenReturn(new vip.mate.decision.api.DecisionTicket(null,
+                vip.mate.decision.api.DecisionMode.OFF, new vip.mate.decision.api.DecisionValue.Choice("DISABLED")));
+        service.setDecisionAdapter(new GoalDecisionAdapter(mock(GoalFollowupService.class), decisions));
+        assertFalse(service.suspendRuntime(1L, "PLAN_ABORTED"));
+        verify(goalMapper, never()).update(any(), any(LambdaUpdateWrapper.class));
+        verifyNoInteractions(eventMapper);
+    }
+
+    @Test
+    void runtimeBlockerPausesAndRecordsItsActualOutcome() {
+        var active = verifiedPersistentGoal(GoalStatus.ACTIVE);
+        var paused = statusFlipped(active, GoalStatus.PAUSED);
+        when(goalMapper.selectById(1L)).thenReturn(active, active, paused);
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(1);
+        var decisions = mock(vip.mate.decision.core.DecisionService.class);
+        var ticket = new vip.mate.decision.api.DecisionTicket("stop", vip.mate.decision.api.DecisionMode.SHADOW,
+                new vip.mate.decision.api.DecisionValue.Choice("DISABLED"));
+        when(decisions.decide(any())).thenReturn(ticket);
+        service.setDecisionAdapter(new GoalDecisionAdapter(mock(GoalFollowupService.class), decisions));
+        assertTrue(service.suspendRuntime(1L, "PLAN_ABORTED"));
+        verify(decisions).recordOutcome(eq(ticket), eq(vip.mate.decision.api.DecisionOutcome.OBSERVED),
+                eq(new vip.mate.decision.api.DecisionValue.Choice("PAUSED")));
+        verify(goalMapper).update(any(), any(LambdaUpdateWrapper.class));
+    }
+
+    @Test
     void pause_flipsActiveToPaused_andWritesEvent() {
         GoalEntity g = persisted(1L, GoalStatus.ACTIVE);
         when(goalMapper.selectById(1L)).thenReturn(g, statusFlipped(g, GoalStatus.PAUSED));

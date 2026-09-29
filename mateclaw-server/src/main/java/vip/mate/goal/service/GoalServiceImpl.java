@@ -337,6 +337,37 @@ public class GoalServiceImpl implements GoalService {
 
     @Override
     @Transactional
+    public boolean suspendRuntime(Long id, String reasonCode) {
+        if (decisionAdapter == null) return false;
+        if (!java.util.Set.of("PLAN_ABORTED", "EVALUATION_UNAVAILABLE").contains(reasonCode)) {
+            throw new IllegalArgumentException("Unknown runtime stop reason");
+        }
+        GoalEntity goal = getById(id);
+        // Managed JSON goals have their own owner/lease/approval state machine.
+        // Generic runtime guardrails must not mutate them on stale or unselected turns.
+        if (goal.getStatus() != GoalStatus.ACTIVE || goal.isJsonAcceptanceRequired()) return false;
+        var ticket = decisionAdapter.guardStop(goal, reasonCode);
+        if (ticket.mode() == vip.mate.decision.api.DecisionMode.OFF) return false;
+        // Transaction + optimistic version checks keep the transition and its audit atomic.
+        GoalEntity paused = retryOptimistic(id, "suspendRuntime", fresh -> {
+            if (fresh.getStatus() != GoalStatus.ACTIVE) {
+                throw new MateClawException("err.goal.not_active", 409, "Goal is no longer active");
+            }
+            LambdaUpdateWrapper<GoalEntity> update = baseLockedUpdate(fresh)
+                    .set(GoalEntity::getStatus, GoalStatus.PAUSED)
+                    .set(GoalEntity::getProgressSummary, "Runtime paused: " + reasonCode + "; review and explicitly resume.");
+            bumpVersionAndTime(update);
+            return update;
+        });
+        Map<String, Object> detail = Map.of("reason", reasonCode, "from", "active", "to", "paused");
+        writeEvent(id, GoalEventType.PAUSED, null, detail);
+        recordAudit("goal.runtime_paused", paused, detail);
+        decisionAdapter.outcome(ticket, true, "PAUSED");
+        return true;
+    }
+
+    @Override
+    @Transactional
     public GoalEntity pause(Long id, String username) {
         return flipStatus(id, GoalStatus.ACTIVE, GoalStatus.PAUSED,
                 GoalEventType.PAUSED, "goal.paused", username);

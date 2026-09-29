@@ -66,7 +66,7 @@ Graph-local `FOLLOWUP_SUBMITTED` means a followup output was constructed and sub
 
 Micrometer metrics include `mate.decision.total`, `mate.decision.duration`, `mate.decision.comparison`, and `mate.decision.failure`. Business identifiers are excluded from metric tags. Comparison metrics distinguish raw Provider suggestions from effective suggestions; guards and unavailable Providers are not valid model comparisons.
 
-Routing v1 records correlate by parent Agent, conversation and PLAN_STEP phase. Step index is transient and plan/subplan IDs are not persisted in the audit, so exact audit-to-subplan reconstruction is not available. Actual assignment outcomes still commit with plan insertion.
+Routing v2 records correlate by parent Agent, conversation and PLAN_STEP phase. Step index is transient and plan/subplan IDs are not persisted in the audit, so exact audit-to-subplan reconstruction is not available. Actual assignment outcomes still commit with plan insertion.
 
 Queries must be scoped to workspace and time range. No new public query API is provided. Agreement rates must be considered alongside dropped work, failures, and missing outcomes. Agreement from the Rule stub does not establish improved model quality.
 
@@ -75,3 +75,31 @@ Queries must be scoped to workspace and time range. No new public query API is p
 Tests use controlled Providers and do not require real models. Database tests use H2 with MySQL/PostgreSQL compatibility modes; these do not replace native MySQL/Kingbase validation.
 
 Future Providers can implement the Java SPI for rules, remote models, or local inference. Rollout requires fixed protocol/model versions, minimized input, domain evaluation including Chinese, confidence calibration, timeout/circuit-breaking policies, and gradual enablement by scenario. Language capability metadata does not currently implement language detection or calibration. Industrial writes, uncertain side effects, and retry idempotency remain governed by existing execution and approval mechanisms.
+
+## Scenario policies and routing inputs (second iteration)
+
+Keep mode overrides in `scenarios`. Optional `scenario-policies` overrides provider, confidence threshold and timeout independently; omitted fields inherit globals, so existing configuration needs no migration. This example still uses the built-in Rule provider:
+
+```yaml
+mate:
+  decision:
+    mode: SHADOW
+    provider: rule
+    confidence-threshold: 0.8
+    timeout-ms: 250
+    scenario-policies:
+      WORKER_RESULT:
+        confidence-threshold: 0.95
+        timeout-ms: 500
+      AGENT_ROUTING:
+        provider: rule
+        timeout-ms: 150
+```
+
+Overrides are validated at startup: timeouts are 1–60000 ms and thresholds are finite numbers in [0,1]. Unknown providers fall back with UNAVAILABLE rather than selecting the global provider. Each request snapshots its policy before SHADOW queuing. Dynamic configuration refresh is not provided. Example thresholds are not calibrated production recommendations; Rule baseline results do not use confidence thresholds.
+
+Routing v2 supplies the current step as transient evidence and eligible same-workspace candidates' and parent's name, description, tags and agent type as option descriptions. It excludes the full conversation, full original goal, system prompts, runtime configuration and model credentials. The original goal is only inspected locally for explicit Agent selection. Descriptions are unverified capability claims, not tool authorization. Missing parent metadata uses a generic LOCAL description.
+
+Limits: 2048 characters per step, 1024 per option description, and 8192 across step and option descriptions. Missing steps or excessive inputs guard the baseline instead of silently truncating meaning; stale candidates retain the existing LOCAL guard priority. Character limits are not tokenizer limits. Audit records contain typed results and question versions, never these transient texts. Future remote providers still require an outbound-data policy for transient inputs.
+
+This iteration adds no candidate retrieval, live tool capability verification or semantic model provider. Agreement under default SHADOW/Rule does not establish better accuracy or execution efficiency.
