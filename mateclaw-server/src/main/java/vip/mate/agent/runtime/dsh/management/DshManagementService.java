@@ -33,7 +33,9 @@ public class DshManagementService {
     }
 
     public Map<String, Object> status() {
-        DshRuntimeConfiguration configuration = configService.resolve();
+        DshRuntimeConfiguration configuration;
+        try { configuration = configService.resolve(); }
+        catch (IllegalArgumentException invalid) { return invalidConfigurationStatus(); }
         boolean executableAvailable = isExecutable(configuration.executablePath());
         // An empty managed key is valid: DshRuntimeService can reuse the
         // existing DeepSeek provider key. The page may still store a managed
@@ -68,6 +70,23 @@ public class DshManagementService {
         return result;
     }
 
+    private Map<String, Object> invalidConfigurationStatus() {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("state", DshManagementState.CONFIG_INVALID.name());
+        result.put("installed", false);
+        result.put("enabled", settings.getBool(ENABLED_KEY, false));
+        result.put("config", Map.of());
+        // Keep masked raw fields editable even when the resolved configuration cannot be parsed.
+        result.put("managed", configService.managedValues());
+        result.put("configRevision", configService.revision());
+        result.put("fileCheck", Map.of("success", false));
+        result.put("handshake", Map.of());
+        result.put("taskCheck", Map.of());
+        result.put("versionStatus", "UNVERIFIED_VERSION");
+        result.put("checkedAt", Instant.now().toString());
+        return result;
+    }
+
     public Map<String, Object> saveConfig(Map<String, String> values) {
         configService.save(values);
         return status();
@@ -86,17 +105,22 @@ public class DshManagementService {
 
     private Map<String, Object> check(boolean task) {
         DshGenerationStore.Lease lease = null;
+        String revision = "";
+        if (task) taskCheck = Map.of(); else handshake = Map.of();
         try {
             if (configService.generations() != null) lease = configService.generations().acquireLease("health", "health");
-            String revision = Objects.toString(configService.revision(), "0");
+            revision = Objects.toString(configService.revision(), "0");
             DshRuntimeConfiguration configuration = configService.resolve();
-            if (runtime == null) return Map.of("success", false, "message", "DSH health service unavailable");
+            if (runtime == null) throw new IllegalStateException("DSH health service unavailable");
             Map<String, Object> result = new LinkedHashMap<>(task ? runtime.testTask(configuration) : runtime.testConnection(configuration));
             result.put("configRevision", revision);
             if (task) taskCheck = Map.copyOf(result); else handshake = Map.copyOf(result);
             return result;
         } catch (Exception error) {
-            return Map.of("success", false, "message", "DSH health check unavailable");
+            Map<String, Object> failed = Map.of("success", false, "message", "DSH health check unavailable",
+                    "configRevision", revision, "checkedAt", Instant.now().toString());
+            if (task) taskCheck = failed; else handshake = failed;
+            return failed;
         } finally { if (lease != null) lease.close(); }
     }
 

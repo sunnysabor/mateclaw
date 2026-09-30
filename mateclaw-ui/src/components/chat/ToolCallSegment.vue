@@ -5,6 +5,7 @@ import { useToolLabel } from '@/composables/useToolLabel'
 import type { MessageSegment } from '@/types'
 import DelegationNodeView from './DelegationNodeView.vue'
 import ExecutionDetailDialog from './ExecutionDetailDialog.vue'
+import ToolResultView from './tool-results/ToolResultView.vue'
 
 const props = defineProps<{
   segment: MessageSegment
@@ -198,6 +199,8 @@ const detailStatus = computed<'running' | 'completed' | 'error'>(() => {
         <pre v-if="segment.toolResult">{{ resultPreview }}</pre>
       </div>
     </Transition>
+
+    <ToolResultView v-if="isSuccess && segment.structuredContent" :structured-content="segment.structuredContent" />
 
     <ExecutionDetailDialog
       v-if="canViewDetail"

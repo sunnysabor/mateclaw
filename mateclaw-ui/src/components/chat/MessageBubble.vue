@@ -1198,6 +1198,7 @@ const segments = computed<MessageSegment[]>(() => {
       id: `tc-${i}`, type: 'tool_call', status: 'completed',
       toolName: tc.name, toolArgs: tc.arguments,
       toolResult: tc.result, toolSuccess: tc.success,
+      toolCallId: tc.toolCallId, structuredContent: tc.structuredContent,
     })
   })
   if (props.message.content) {
@@ -1208,7 +1209,8 @@ const segments = computed<MessageSegment[]>(() => {
 
 /**
  * Use segmented rendering when there are multiple segments, OR when the turn
- * contains a delegation segment. Delegations live in `segments` but not in
+ * contains structured output or a delegation segment. Structured output must
+ * remain visible even when it is the only segment. Delegations live in `segments` but not in
  * `metadata.toolCalls`, so the fallback path (which only reads toolCalls)
  * renders nothing for them — a single-step plan that delegates to a subagent
  * would otherwise show the subagent call as completely invisible. Forcing
@@ -1216,7 +1218,7 @@ const segments = computed<MessageSegment[]>(() => {
  */
 const useSegmentedView = computed(() =>
   segments.value.length > 1 ||
-  segments.value.some(s => s.type === 'tool_call' && (s.toolName || '').startsWith('→'))
+  segments.value.some(s => s.type === 'tool_call' && (s.structuredContent || (s.toolName || '').startsWith('→')))
 )
 
 /**

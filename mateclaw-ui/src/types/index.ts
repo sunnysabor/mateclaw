@@ -165,6 +165,8 @@ export interface ChatAttachment {
 }
 
 export interface ToolCallMeta {
+  toolCallId?: string
+  structuredContent?: Record<string, unknown>
   name: string
   arguments?: string
   status: 'running' | 'completed' | 'awaiting_approval'
@@ -247,6 +249,7 @@ export interface MessageSegment {
   toolName?: string
   toolArgs?: string
   toolResult?: string
+  structuredContent?: Record<string, unknown>
   toolSuccess?: boolean
   /** LLM-provided tool call id, used to pair tool_call_started ↔ tool_call_completed */
   toolCallId?: string
