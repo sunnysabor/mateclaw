@@ -1874,7 +1874,7 @@ export default {
       toolsTagline: 'A tool is one call, one thing. The LLM decides when to invoke each tool autonomously.',
       toolsHint: 'Select tools this agent can use. Leave empty to use all enabled tools.',
       disableAllTools: 'This agent uses no user-pickable tools',
-      disableAllToolsHint: 'Saving with this on clears the agent\'s tool bindings and marks it as "explicitly no tools": neither user-pickable tools nor any enabled MCP tools enter the allowlist. System-level primitives (structured memory, workspace memory files, delegation, etc.) remain available so the agent can still operate. When off, picking nothing still falls back to "inherit global default".',
+      disableAllToolsHint: 'Saving clears tool bindings and stops automatically providing general file access, code or shell execution, network access, delegation, document generation and MCP tools. Only internal memory, time and task-state capabilities remain. Enabled skills can still contribute their declared tools; also turn on Disable all skills to disable those. When off, picking nothing inherits global defaults.',
       disableAllToolsBadge: 'Off',
       searchSkills: 'Search skill name, description, or version',
       searchTools: 'Search tool name, description, source, or group',
