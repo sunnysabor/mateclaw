@@ -576,7 +576,7 @@ Subprocesses are cleaned up on normal shutdown. If HHAIOS was force-killed (`kil
 
 ## Structured charts, tables and product cards
 
-The web console can render a successful MCP tool's `structuredContent` directly, without asking the model to rewrite it into Markdown. Results stay attached to the tool call and are restored when reopening the conversation. Existing text responses remain supported.
+The web console can render a successful MCP tool's `structuredContent` directly, without asking the model to rewrite it into Markdown. Structured tool results appear below the answer after the turn ends, rather than inside the reasoning/tool timeline. Stopped or failed turns retain results from successful tool calls; failed or unfinished calls are excluded. The same metadata restores these results when reopening a conversation. Existing text responses remain supported.
 
 Return a normal MCP `tools/call` result with a text summary and the following application-specific UI envelope:
 

@@ -7,9 +7,11 @@ import DelegationNodeView from './DelegationNodeView.vue'
 import ExecutionDetailDialog from './ExecutionDetailDialog.vue'
 import ToolResultView from './tool-results/ToolResultView.vue'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   segment: MessageSegment
-}>()
+  /** MessageBubble presents rich output in the answer instead of the timeline. */
+  showStructuredResult?: boolean
+}>(), { showStructuredResult: true })
 
 const { getToolLabel } = useToolLabel()
 
@@ -200,7 +202,7 @@ const detailStatus = computed<'running' | 'completed' | 'error'>(() => {
       </div>
     </Transition>
 
-    <ToolResultView v-if="isSuccess && segment.structuredContent" :structured-content="segment.structuredContent" />
+    <ToolResultView v-if="showStructuredResult && isSuccess && segment.structuredContent" :structured-content="segment.structuredContent" />
 
     <ExecutionDetailDialog
       v-if="canViewDetail"

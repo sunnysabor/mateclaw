@@ -73,7 +73,7 @@
               <template v-else>
                 <template v-for="seg in iter.items" :key="seg.id">
                 <ThinkingSegment v-if="seg.type === 'thinking' && showThinking" :segment="seg" />
-                <ToolCallSegment v-else-if="seg.type === 'tool_call'" :segment="seg" />
+                <ToolCallSegment v-else-if="seg.type === 'tool_call'" :segment="seg" :show-structured-result="false" />
                 <template v-else-if="seg.type === 'content'">
                   <div v-if="seg.repetitionWarning" class="repetition-warning">
                     <el-icon><WarningFilled /></el-icon>
@@ -221,6 +221,14 @@
         </div>
 
         </template><!-- /传统合并渲染模式 -->
+
+        <!-- Tool payloads remain in metadata; only their presentation moves.
+             Wait for this turn to finish, including stop/error, so results do
+             not interrupt reasoning and do not disappear on interrupted turns. -->
+        <div v-if="!isGenerating && answerToolResults.length" class="answer-tool-results">
+          <ToolResultView v-for="result in answerToolResults" :key="result.toolCallId || result.id"
+            :structured-content="result.structuredContent" />
+        </div>
 
         <!-- Stopped/interrupted status lives outside the rendering fork so
              segmented history turns with only thinking/tool output still make
@@ -594,6 +602,7 @@ import { previewKindOf } from './preview/previewKind'
 import { openFilePreview } from './preview/previewBus'
 import BrowserTimeline from './BrowserTimeline.vue'
 import ToolCallSegment from './ToolCallSegment.vue'
+import ToolResultView from './tool-results/ToolResultView.vue'
 import ThinkingSegment from './ThinkingSegment.vue'
 import ContentSegment from './ContentSegment.vue'
 import GoalAvatarRing from '@/components/goal/GoalAvatarRing.vue'
@@ -1195,7 +1204,9 @@ const segments = computed<MessageSegment[]>(() => {
   const toolCalls = meta?.toolCalls || []
   toolCalls.forEach((tc: ToolCallMeta, i: number) => {
     segs.push({
-      id: `tc-${i}`, type: 'tool_call', status: 'completed',
+      id: `tc-${i}`, type: 'tool_call',
+      status: tc.success === false ? 'error'
+        : (!tc.status || tc.status === 'completed' ? 'completed' : 'running'),
       toolName: tc.name, toolArgs: tc.arguments,
       toolResult: tc.result, toolSuccess: tc.success,
       toolCallId: tc.toolCallId, structuredContent: tc.structuredContent,
@@ -1205,6 +1216,20 @@ const segments = computed<MessageSegment[]>(() => {
     segs.push({ id: 'ct-0', type: 'content', status: 'completed', text: props.message.content })
   }
   return segs
+})
+
+// Use the same deduplicated source for live and reloaded messages. Never
+// concatenate toolCalls with segments: they are two copies of the same calls.
+const answerToolResults = computed(() => {
+  const seen = new Set<string>()
+  return segments.value.filter(seg => {
+    if (seg.type !== 'tool_call' || seg.status !== 'completed'
+        || seg.toolSuccess === false || !seg.structuredContent) return false
+    const key = seg.toolCallId || seg.id
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 })
 
 /**

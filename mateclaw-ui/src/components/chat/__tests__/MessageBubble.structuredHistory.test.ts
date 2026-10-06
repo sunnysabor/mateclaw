@@ -1,4 +1,4 @@
-import { createApp, defineComponent, h } from 'vue'
+import { createApp, defineComponent, h, reactive, nextTick } from 'vue'
 import { createI18n } from 'vue-i18n'
 import { createPinia } from 'pinia'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -108,5 +108,60 @@ describe('structured tool history', () => {
     const host = mountMessage({ id: 'saved', conversationId: 'conv', role: 'assistant', content: '', contentParts: [], status: 'completed', metadata } as Message)
     expect(host.querySelector('td')?.textContent).toBe('Saved result')
     expect(host.querySelector('.seg-tool__body')).toBeNull()
+    expect(host.querySelector('.seg-tool .tool-result-view')).toBeNull()
+    expect(host.querySelector('.answer-tool-results td')?.textContent).toBe('Saved result')
   })
+})
+
+const richResult = { mateclawUi: { version: 1, blocks: [{ type: 'table', data: {
+  columns: [{ key: 'a', label: 'A' }], rows: [{ a: 'Quarterly sales' }],
+} }] } }
+const successfulTool = (id: string) => ({ id, toolCallId: id, type: 'tool_call', status: 'completed',
+  toolName: 'sales', toolSuccess: true, structuredContent: richResult })
+const answerMessage = (status = 'completed', metadata: unknown = {}) => ({
+  id: 'answer', conversationId: 'conv', role: 'assistant', content: 'Sales grew 50%',
+  contentParts: [], status, metadata,
+}) as Message
+
+it('shows rich results once after the final content when a live turn completes', async () => {
+  const message = reactive(answerMessage('generating', { segments: [successfulTool('a'),
+    { id: 'text', type: 'content', status: 'running', text: 'Sales grew 50%' }],
+    toolCalls: [{ name: 'sales', toolCallId: 'a', status: 'completed', structuredContent: richResult }],
+  }))
+  const host = mountMessage(message)
+  expect(host.querySelector('.tool-result-view')).toBeNull()
+  message.status = 'completed'
+  await nextTick()
+  expect(host.querySelectorAll('.tool-result-view')).toHaveLength(1)
+  const results = host.querySelector('.answer-tool-results')!
+  const timeline = host.querySelector('.segments-view')!
+  expect(timeline.textContent).toContain('Sales grew 50%')
+  expect(timeline.compareDocumentPosition(results) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  expect(host.querySelector('.seg-tool .tool-result-view')).toBeNull()
+})
+
+it.each(['completed', 'stopped', 'interrupted', 'failed'])('retains successful output for %s turns', (status) => {
+  const metadata = { segments: [successfulTool('a'),
+    { ...successfulTool('b'), status: 'error', toolSuccess: false },
+    { ...successfulTool('c'), status: 'running' }],
+  }
+  const host = mountMessage(answerMessage(status, JSON.stringify(metadata)))
+  expect(host.querySelectorAll('.answer-tool-results table')).toHaveLength(1)
+})
+
+it('deduplicates repeated IDs but preserves separate calls of the same tool', () => {
+  const host = mountMessage(answerMessage('completed', { segments: [
+    successfulTool('a'), successfulTool('a'), successfulTool('b'),
+  ] }))
+  expect(host.querySelectorAll('.answer-tool-results table')).toHaveLength(2)
+})
+
+it('does not promote unfinished or failed legacy toolCalls to successful results', () => {
+  const host = mountMessage(answerMessage('stopped', { toolCalls: [
+    { name: 'running', status: 'running', structuredContent: richResult },
+    { name: 'approval', status: 'awaiting_approval', structuredContent: richResult },
+    { name: 'failed', status: 'completed', success: false, structuredContent: richResult },
+    { name: 'done', status: 'completed', success: true, structuredContent: richResult },
+  ] }))
+  expect(host.querySelectorAll('.answer-tool-results table')).toHaveLength(1)
 })
