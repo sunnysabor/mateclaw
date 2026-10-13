@@ -1,6 +1,6 @@
 package vip.mate.agent.graph.plan.node;
 
-import com.alibaba.cloud.ai.graph.OverAllState;
+import vip.mate.agent.runtime.state.RunState;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -53,13 +53,13 @@ class PlanSummaryEmptyResultTest {
         return new NodeStreamingChatHelper.StreamResult(text, thinking, null, List.of(), false, 0, 0);
     }
 
-    private OverAllState state() {
+    private RunState state() {
         Map<String, Object> vals = new HashMap<>();
         vals.put(PlanStateKeys.PLAN_ID, 42L);
         vals.put(PlanStateKeys.GOAL, "对订单数据做质量体检");
         vals.put(PlanStateKeys.COMPLETED_RESULTS,
                 List.of("第 1 步：主键唯一性，发现 3 条重复", "第 2 步：缺失率统计完成"));
-        return new OverAllState(vals);
+        return new RunState(vals);
     }
 
     private String summaryOf(Map<String, Object> out) {
@@ -150,7 +150,7 @@ class PlanSummaryEmptyResultTest {
         vals.put(PlanStateKeys.GOAL, "空计划");
         vals.put(PlanStateKeys.COMPLETED_RESULTS, List.of());
 
-        String summary = summaryOf(node.apply(new OverAllState(vals)));
+        String summary = summaryOf(node.apply(new RunState(vals)));
 
         assertFalse(summary.isBlank());
         assertTrue(summary.contains("没有已完成的步骤结果"), summary);

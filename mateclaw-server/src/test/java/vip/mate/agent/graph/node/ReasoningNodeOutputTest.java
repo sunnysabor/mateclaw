@@ -1,6 +1,6 @@
 package vip.mate.agent.graph.node;
 
-import com.alibaba.cloud.ai.graph.OverAllState;
+import vip.mate.agent.runtime.state.RunState;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -56,7 +56,7 @@ class ReasoningNodeOutputTest {
     }
 
     /** 构建包含前一轮残留标志的 stale state */
-    private OverAllState buildStaleState() {
+    private RunState buildStaleState() {
         Map<String, Object> map = new HashMap<>();
         map.put(CONVERSATION_ID, "test-conv");
         map.put(SYSTEM_PROMPT, "you are a helper");
@@ -69,7 +69,7 @@ class ReasoningNodeOutputTest {
         // 前一轮残留标志
         map.put(NEEDS_TOOL_CALL, true);
         map.put(SHOULD_SUMMARIZE, true);
-        return new OverAllState(map);
+        return new RunState(map);
     }
 
     // ===== 控制流标志断言辅助 =====
@@ -120,7 +120,7 @@ class ReasoningNodeOutputTest {
 
         Map<String, Object> state = baseStateMap();
         state.put(USER_MESSAGE, "帮我写个 5000 字的玄幻短篇小说，角色和剧情都你自己编。");
-        Map<String, Object> output = createNode().apply(new OverAllState(state));
+        Map<String, Object> output = createNode().apply(new RunState(state));
 
         assertEquals(false, output.get(NEEDS_TOOL_CALL));
         assertEquals(true, output.get(CONTINUE_REASONING));
@@ -137,7 +137,7 @@ class ReasoningNodeOutputTest {
 
         Map<String, Object> state = baseStateMap();
         state.put(ACTION_COMPLETION_REQUIRED, true);
-        Map<String, Object> output = createNode().apply(new OverAllState(state));
+        Map<String, Object> output = createNode().apply(new RunState(state));
 
         assertEquals(true, output.get(CONTINUE_REASONING));
         assertEquals(1, output.get(ACTION_COMPLETION_RETRY_COUNT));
@@ -156,7 +156,7 @@ class ReasoningNodeOutputTest {
         Map<String, Object> state = baseStateMap();
         state.put(ACTION_COMPLETION_REQUIRED, true);
         state.put(ACTION_COMPLETION_RETRY_COUNT, 1);
-        Map<String, Object> output = createNode().apply(new OverAllState(state));
+        Map<String, Object> output = createNode().apply(new RunState(state));
 
         assertEquals(false, output.get(CONTINUE_REASONING));
         assertEquals("action_unverified", output.get(FINISH_REASON));
@@ -175,7 +175,7 @@ class ReasoningNodeOutputTest {
         Map<String, Object> state = baseStateMap();
         state.put(USER_MESSAGE, "帮我写个 10000 字的玄幻小说，角色和剧情都你自己编。");
         state.put(MAX_ITERATIONS, 100);
-        Map<String, Object> output = createNode().apply(new OverAllState(state));
+        Map<String, Object> output = createNode().apply(new RunState(state));
 
         assertEquals(true, output.get(CONTINUE_REASONING));
         assertEquals("", output.get(FINAL_ANSWER));
@@ -202,7 +202,7 @@ class ReasoningNodeOutputTest {
         Map<String, Object> state = baseStateMap();
         state.put(USER_MESSAGE, "请输出不少于 8000 字的技术报告");
         state.put(MAX_ITERATIONS, 150);
-        Map<String, Object> output = createNode().apply(new OverAllState(state));
+        Map<String, Object> output = createNode().apply(new RunState(state));
 
         assertEquals(false, output.get(CONTINUE_REASONING));
         assertEquals("error_fallback", output.get(FINISH_REASON));
@@ -226,7 +226,7 @@ class ReasoningNodeOutputTest {
         state.put(CURRENT_ITERATION, 1);
         state.put("long_form_draft", firstChunk);
 
-        Map<String, Object> output = createNode().apply(new OverAllState(state));
+        Map<String, Object> output = createNode().apply(new RunState(state));
 
         assertEquals(false, output.get(CONTINUE_REASONING));
         assertEquals(firstChunk + finalChunk, output.get(FINAL_ANSWER));
@@ -247,7 +247,7 @@ class ReasoningNodeOutputTest {
         state.put(USER_MESSAGE, "帮我写个 10000 字的玄幻小说，角色和剧情都你自己编。");
         state.put(MAX_ITERATIONS, 1);
 
-        Map<String, Object> output = createNode().apply(new OverAllState(state));
+        Map<String, Object> output = createNode().apply(new RunState(state));
 
         assertEquals(false, output.get(CONTINUE_REASONING));
         assertEquals(partial, output.get(FINAL_ANSWER));
@@ -323,7 +323,7 @@ class ReasoningNodeOutputTest {
         state.put(ACTION_COMPLETION_REQUIRED, true);
         state.put(ACTION_EXECUTION_LEDGER, ActionExecutionLedger.fromEvents(List.of(
                 GraphEventPublisher.toolComplete("call-1", "schedule_meeting", "HTTP 500", false))));
-        Map<String, Object> output = createNode().apply(new OverAllState(state));
+        Map<String, Object> output = createNode().apply(new RunState(state));
 
         assertEquals("action_failed", output.get(FINISH_REASON));
         assertTrue(((String) output.get(FINAL_ANSWER)).contains("执行失败"));
@@ -349,7 +349,7 @@ class ReasoningNodeOutputTest {
         stateMap.put(SOURCE_EVIDENCE_LEDGER, SourceEvidenceLedger.empty()
                 .withSourcePath("src/main/java/vip/mate/skill/controller/SkillController.java"));
 
-        Map<String, Object> output = createNode().apply(new OverAllState(stateMap));
+        Map<String, Object> output = createNode().apply(new RunState(stateMap));
 
         assertControlFlagsCleared(output, "evidenceInsufficientFinalAnswer");
         assertEquals("evidence_insufficient", output.get(FINISH_REASON));

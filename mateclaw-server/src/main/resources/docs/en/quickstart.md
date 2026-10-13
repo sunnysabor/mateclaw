@@ -78,7 +78,7 @@ First run should Just Work. If it didn't:
 ## Other ways to run HHAIOS
 
 - **Docker** — `cp .env.example .env`, set the passwords, then `docker compose up -d --build`. Full prerequisites, Maven mirror selection (China vs US), browser-tool self-check, and upgrade flow live in [Docker Deployment](./docker-deploy).
-- **From source** — `mvn spring-boot:run` in `mateclaw-server/` and `npm run dev` in `mateclaw-ui/`. See [Contributing](./contributing).
+- **From source** — start the backend from the repository root with explicit root `data/` database/workspace paths, and run `npm run dev -- --host 127.0.0.1` in `mateclaw-ui/`. See [Contributing](./contributing).
 - **Desktop internals** — packaging, code signing, auto-update. See [Desktop App](./desktop).
 
 ---

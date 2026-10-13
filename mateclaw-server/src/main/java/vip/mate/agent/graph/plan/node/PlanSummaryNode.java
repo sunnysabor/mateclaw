@@ -1,7 +1,7 @@
 package vip.mate.agent.graph.plan.node;
 
-import com.alibaba.cloud.ai.graph.OverAllState;
-import com.alibaba.cloud.ai.graph.action.NodeAction;
+import vip.mate.agent.runtime.state.RunState;
+import vip.mate.agent.runtime.state.NodeAction;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
@@ -52,7 +52,7 @@ public class PlanSummaryNode implements NodeAction {
     }
 
     @Override
-    public Map<String, Object> apply(OverAllState state) throws Exception {
+    public Map<String, Object> apply(RunState state) throws Exception {
         PlanStateAccessor accessor = new PlanStateAccessor(state);
         Long planId = accessor.planId();
         String goal = accessor.goal();

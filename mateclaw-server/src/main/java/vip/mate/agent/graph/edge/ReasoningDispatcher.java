@@ -1,7 +1,7 @@
 package vip.mate.agent.graph.edge;
 
-import com.alibaba.cloud.ai.graph.OverAllState;
-import com.alibaba.cloud.ai.graph.action.EdgeAction;
+import vip.mate.agent.runtime.state.RunState;
+import vip.mate.agent.runtime.state.EdgeAction;
 import lombok.extern.slf4j.Slf4j;
 import vip.mate.agent.graph.state.MateClawStateAccessor;
 
@@ -31,7 +31,7 @@ public class ReasoningDispatcher implements EdgeAction {
     private static final int LLM_CALL_MULTIPLIER = 5;
 
     @Override
-    public String apply(OverAllState state) throws Exception {
+    public String apply(RunState state) throws Exception {
         MateClawStateAccessor accessor = new MateClawStateAccessor(state);
 
         // 1. 迭代超限检查

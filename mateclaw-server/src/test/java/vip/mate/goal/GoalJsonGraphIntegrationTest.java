@@ -1,6 +1,6 @@
 package vip.mate.goal;
 
-import com.alibaba.cloud.ai.graph.CompiledGraph;
+import vip.mate.agent.runtime.AgentRuntime;
 import com.baomidou.mybatisplus.core.toolkit.IdWorker;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -14,7 +14,7 @@ import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -50,9 +50,9 @@ import static org.mockito.Mockito.*;
         "mateclaw.skill.workspace.root=${java.io.tmpdir}/mateclaw-json-graph-skills-${random.uuid}"
 })
 class GoalJsonGraphIntegrationTest {
-    @MockBean private MemoryManager memory;
-    @MockBean private GoalEvaluationService evaluator;
-    @MockBean private GoalContinuationSupervisor supervisor;
+    @MockitoBean private MemoryManager memory;
+    @MockitoBean private GoalEvaluationService evaluator;
+    @MockitoBean private GoalContinuationSupervisor supervisor;
     @Autowired private GoalService goals;
     @Autowired private GoalJsonAcceptanceService requirements;
     @Autowired private GoalJsonBindingService bindings;
@@ -190,6 +190,12 @@ class GoalJsonGraphIntegrationTest {
         assertEquals("NO_ARTIFACT", bindings.state(fixture.goal().getId(), fixture.username()).getFirst().status());
         assertTrue(goals.listEvents(fixture.goal().getId(), 30).stream().noneMatch(e -> "completed".equals(e.getEventType())));
         if (scheduled) {
+            // This raw-graph fixture bypasses GoalSegmentRunner, so persist and acknowledge
+            // its normally completed stream before asking the coordinator to retry evaluation.
+            var saved = conversations.saveMessage(fixture.conversation(), "assistant",
+                    "PASS. All requirements are completed.");
+            assertTrue(coordinator.checkpoint(fixture.run(), "resolved", "message_saved",
+                    saved.getId(), java.time.LocalDateTime.now()));
             assertTrue(coordinator.settle(fixture.run(), new SegmentOutcome.Retry("evaluation", "evaluation_unavailable"), java.time.LocalDateTime.now()));
             assertEquals("retry", continuations.get(fixture.goal().getId()).state());
         }
@@ -235,7 +241,7 @@ class GoalJsonGraphIntegrationTest {
     }
 
     private vip.mate.agent.BaseAgent graphAgent(boolean plan, vip.mate.agent.AgentToolSet toolSet, ChatModel model) {
-        CompiledGraph graph = ReflectionTestUtils.invokeMethod(builder, plan ? "buildPlanExecuteGraph" : "buildReActGraph", toolSet, model, 12, null);
+        AgentRuntime graph = ReflectionTestUtils.invokeMethod(builder, plan ? "buildPlanExecuteGraph" : "buildReActGraph", toolSet, model, 12, null);
         assertNotNull(graph);
         vip.mate.agent.BaseAgent agent = plan
                 ? new vip.mate.agent.graph.plan.StateGraphPlanExecuteAgent(mock(ChatClient.class), conversations, graph, planning, model, window, toolSet)

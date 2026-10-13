@@ -1,5 +1,7 @@
 package vip.mate.goal;
 
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+
 import com.baomidou.mybatisplus.core.toolkit.IdWorker;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -9,7 +11,7 @@ import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
 import reactor.core.publisher.Flux;
@@ -37,11 +39,11 @@ import static org.mockito.Mockito.*;
     "mateclaw.skill.workspace.root=${java.io.tmpdir}/mateclaw-json-http-skills-${random.uuid}"
 })
 class GoalJsonHttpRuntimeIntegrationTest {
-    @MockBean private MemoryManager memory;
-    @MockBean private GoalEvaluationService evaluator;
+    @MockitoBean private MemoryManager memory;
+    @MockitoBean private GoalEvaluationService evaluator;
     @Autowired private GoalContinuationSupervisor supervisor;
-    @MockBean private ProviderChatModelFactory modelFactory;
-    @org.springframework.boot.test.mock.mockito.SpyBean private vip.mate.workspace.conversation.ConversationService conversationService;
+    @MockitoBean private ProviderChatModelFactory modelFactory;
+    @MockitoSpyBean private vip.mate.workspace.conversation.ConversationService conversationService;
     @Autowired private JdbcTemplate jdbc;
     @Autowired private vip.mate.config.LoginRateLimitFilter loginLimiter;
     @Autowired private vip.mate.llm.failover.AvailableProviderPool providerPool;

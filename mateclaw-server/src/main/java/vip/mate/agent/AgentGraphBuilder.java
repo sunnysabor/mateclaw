@@ -4,16 +4,20 @@ import vip.mate.goal.service.GoalDecisionAdapter;
 import vip.mate.planning.service.AgentRoutingDecisionAdapter;
 
 // PR-0b: DashScope imports moved with the construction code into DashScopeChatModelBuilder.
-import com.alibaba.cloud.ai.graph.CompiledGraph;
-import com.alibaba.cloud.ai.graph.CompileConfig;
-import com.alibaba.cloud.ai.graph.KeyStrategy;
-import com.alibaba.cloud.ai.graph.KeyStrategyFactory;
-import com.alibaba.cloud.ai.graph.StateGraph;
-import com.alibaba.cloud.ai.graph.action.AsyncEdgeAction;
-import com.alibaba.cloud.ai.graph.action.AsyncNodeAction;
+import vip.mate.agent.runtime.AgentRuntime;
+import vip.mate.agent.runtime.agentscope.NativePolicyDriver;
+import vip.mate.agent.runtime.agentscope.SpringToolSchemaAdapter;
+import vip.mate.agent.runtime.agentscope.ToolBatchResultAdapter;
+import vip.mate.agent.runtime.plan.ExplicitPlanRuntime;
+import vip.mate.agent.runtime.state.EdgeAction;
+import vip.mate.agent.runtime.state.NodeAction;
+import vip.mate.agent.runtime.state.RuntimeExecutionScope;
+import vip.mate.agent.graph.edge.GoalEvaluationDispatcher;
+
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.retry.support.RetryTemplate;
@@ -24,7 +28,6 @@ import vip.mate.agent.graph.executor.ToolExecutionExecutor;
 import vip.mate.execution.evidence.service.ExecutionEvidenceRecorder;
 import vip.mate.agent.graph.edge.ObservationDispatcher;
 import vip.mate.agent.graph.edge.ReasoningDispatcher;
-import vip.mate.agent.graph.lifecycle.ReActLifecycleListener;
 import vip.mate.agent.graph.node.*;
 import vip.mate.agent.graph.state.MateClawStateAccessor;
 import vip.mate.agent.graph.observation.ObservationProcessor;
@@ -40,6 +43,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import vip.mate.config.GraphObservationProperties;
 import vip.mate.config.ReasoningRetentionProperties;
 import vip.mate.exception.MateClawException;
+import vip.mate.agent.graph.executor.ToolExecutionCheckpoint;
 import vip.mate.llm.chatmodel.HttpTimeouts;
 import vip.mate.llm.chatmodel.OpenAiCompatibleChatModelBuilder;
 import vip.mate.llm.chatmodel.ProviderGenerateKwargs;
@@ -107,6 +111,13 @@ public class AgentGraphBuilder {
     @org.springframework.beans.factory.annotation.Value(
             "${mateclaw.skill.disclosure.load-skill-tool.enabled:true}")
     private boolean loadSkillToolEnabled;
+
+    private ToolExecutionCheckpoint executionCheckpoint;
+
+    @Autowired
+    public void setExecutionCheckpoint(ToolExecutionCheckpoint checkpoint) {
+        this.executionCheckpoint = checkpoint;
+    }
 
     private ExecutionEvidenceRecorder executionEvidenceRecorder;
 
@@ -620,7 +631,7 @@ public class AgentGraphBuilder {
         ChatModel chatModel = buildRuntimeChatModel(runtimeModel);
         ChatClient chatClient = ChatClient.create(chatModel);
         String reasoningEffort = resolveReasoningEffortForModel(runtimeModel);
-        CompiledGraph compiledGraph = buildReActGraph(toolSet, chatModel, maxIter, reasoningEffort,
+        AgentRuntime compiledGraph = buildReActGraph(toolSet, chatModel, maxIter, reasoningEffort,
                 runtimeModel, agentId, skillCatalogRenderer, prefixBudgetPlan, autoDemotedTools);
         StateGraphReActAgent agent = new StateGraphReActAgent(chatClient, conversationService, compiledGraph,
                 chatModel, conversationWindowManager, toolSet);
@@ -653,36 +664,36 @@ public class AgentGraphBuilder {
         ChatModel chatModel = buildRuntimeChatModel(runtimeModel);
         ChatClient chatClient = ChatClient.create(chatModel);
         String reasoningEffort = resolveReasoningEffortForModel(runtimeModel);
-        CompiledGraph graph = buildPlanExecuteGraph(toolSet, chatModel, maxIter, reasoningEffort,
+        AgentRuntime graph = buildPlanExecuteGraph(toolSet, chatModel, maxIter, reasoningEffort,
                 runtimeModel, agentId, skillCatalogRenderer, autoDemotedTools);
         return new StateGraphPlanExecuteAgent(chatClient, conversationService, graph, planningService,
                 chatModel, conversationWindowManager, toolSet);
     }
 
-    CompiledGraph buildPlanExecuteGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations, String reasoningEffort) {
+    AgentRuntime buildPlanExecuteGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations, String reasoningEffort) {
         return buildPlanExecuteGraph(toolSet, chatModel, maxIterations, reasoningEffort, null, null);
     }
 
-    CompiledGraph buildPlanExecuteGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
+    AgentRuntime buildPlanExecuteGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
                                          String reasoningEffort, ModelConfigEntity primaryModelConfig) {
         return buildPlanExecuteGraph(toolSet, chatModel, maxIterations, reasoningEffort, primaryModelConfig, null);
     }
 
-    CompiledGraph buildPlanExecuteGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
+    AgentRuntime buildPlanExecuteGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
                                          String reasoningEffort, ModelConfigEntity primaryModelConfig,
                                          Long agentId) {
         return buildPlanExecuteGraph(toolSet, chatModel, maxIterations, reasoningEffort,
                 primaryModelConfig, agentId, null);
     }
 
-    CompiledGraph buildPlanExecuteGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
+    AgentRuntime buildPlanExecuteGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
                                          String reasoningEffort, ModelConfigEntity primaryModelConfig,
                                          Long agentId, SkillCatalogRenderer skillCatalogRenderer) {
         return buildPlanExecuteGraph(toolSet, chatModel, maxIterations, reasoningEffort,
                 primaryModelConfig, agentId, skillCatalogRenderer, Set.of());
     }
 
-    CompiledGraph buildPlanExecuteGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
+    AgentRuntime buildPlanExecuteGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
                                          String reasoningEffort, ModelConfigEntity primaryModelConfig,
                                          Long agentId, SkillCatalogRenderer skillCatalogRenderer,
                                          Set<String> autoDemotedTools) {
@@ -713,6 +724,7 @@ public class AgentGraphBuilder {
             executor.setUsageRecencyTracker(toolUsageRecencyTracker);
             executor.setProgressContext(progressContext);
             executor.setExecutionEvidenceRecorder(executionEvidenceRecorder);
+            executor.setExecutionCheckpoint(executionCheckpoint);
             // Optional: route child-agent denied-tool audit events through
             // the audit pipeline. Null when audit is not wired (legacy / test).
             if (auditEventService != null) {
@@ -739,114 +751,7 @@ public class AgentGraphBuilder {
             planSummaryNode.setGoalService(goalService);
             DirectAnswerNode directAnswerNode = new DirectAnswerNode();
 
-            KeyStrategyFactory keyStrategyFactory = KeyStrategy.builder()
-                    // 共享键
-                    .addStrategy(MateClawStateKeys.PENDING_EVENTS, KeyStrategy.APPEND)
-                    .addStrategy(MateClawStateKeys.CURRENT_PHASE, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.SYSTEM_PROMPT, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.CONVERSATION_ID, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.TRACE_ID, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.AGENT_ID, KeyStrategy.REPLACE)
-                    // 会话消息（复用 ReAct 的 MESSAGES key，APPEND 策略）
-                    .addStrategy(MateClawStateKeys.MESSAGES, KeyStrategy.APPEND)
-                    // Plan 特有键
-                    .addStrategy(PlanStateKeys.GOAL, KeyStrategy.REPLACE)
-                    .addStrategy(PlanStateKeys.PLAN_ID, KeyStrategy.REPLACE)
-                    .addStrategy(PlanStateKeys.PLAN_STEPS, KeyStrategy.REPLACE)
-                    .addStrategy(PlanStateKeys.PLAN_VALID, KeyStrategy.REPLACE)
-                    .addStrategy(PlanStateKeys.NEEDS_PLANNING, KeyStrategy.REPLACE)
-                    .addStrategy(PlanStateKeys.CURRENT_STEP_INDEX, KeyStrategy.REPLACE)
-                    .addStrategy(PlanStateKeys.CURRENT_STEP_TITLE, KeyStrategy.REPLACE)
-                    .addStrategy(PlanStateKeys.CURRENT_STEP_RESULT, KeyStrategy.REPLACE)
-                    .addStrategy(PlanStateKeys.COMPLETED_RESULTS, KeyStrategy.APPEND)
-                    .addStrategy(PlanStateKeys.PLAN_REPLAN_COUNT, KeyStrategy.REPLACE)
-                    .addStrategy(PlanStateKeys.FINAL_SUMMARY, KeyStrategy.REPLACE)
-                    .addStrategy(PlanStateKeys.DIRECT_ANSWER, KeyStrategy.REPLACE)
-                    // 工作上下文（REPLACE 策略，每次重新生成）
-                    .addStrategy(PlanStateKeys.WORKING_CONTEXT, KeyStrategy.REPLACE)
-                    // Thinking 键
-                    .addStrategy(PlanStateKeys.FINAL_SUMMARY_THINKING, KeyStrategy.REPLACE)
-                    .addStrategy(PlanStateKeys.CURRENT_STEP_THINKING, KeyStrategy.REPLACE)
-                    .addStrategy(PlanStateKeys.PLAN_THINKING, KeyStrategy.REPLACE)
-                    // 流式防重键
-                    .addStrategy(MateClawStateKeys.CONTENT_STREAMED, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.THINKING_STREAMED, KeyStrategy.REPLACE)
-                    // 流式内容暂存（AWAITING_APPROVAL 路径持久化使用）
-                    .addStrategy(MateClawStateKeys.STREAMED_CONTENT, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.STREAMED_THINKING, KeyStrategy.REPLACE)
-                    // 请求者身份（审批身份校验使用）
-                    .addStrategy(MateClawStateKeys.REQUESTER_ID, KeyStrategy.REPLACE)
-                    // 审批重放键
-                    .addStrategy(MateClawStateKeys.FORCED_TOOL_CALL, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.PRE_APPROVED_TOOL_CALL, KeyStrategy.REPLACE)
-                    // RFC-063r §2.5: ChatOrigin must survive every node merge so
-                    // sub-graph nodes (StepExecutionNode + DelegateAgentTool's
-                    // child agents) can read the originating channel binding.
-                    // Without explicit REPLACE the framework's merge drops it
-                    // on multi-iteration paths — root cause of the channel-binding
-                    // flakiness reported on first deployment.
-                    .addStrategy(MateClawStateKeys.CHAT_ORIGIN, KeyStrategy.REPLACE)
-                    // Caught by StateKeyRegistrationCoverageTest — these state keys
-                    // were silently unregistered before the post-deploy audit.
-                    // WORKSPACE_BASE_PATH: written by buildInitialState; sub-graph
-                    //   tools read it via WorkspacePathGuard.
-                    // STOP_REQUESTED: external cancel flag checked by every node.
-                    // RETURN_DIRECT_TRIGGERED / DIRECT_TOOL_OUTPUTS (RFC-052):
-                    //   Plan-Execute itself doesn't trigger returnDirect, but
-                    //   DelegateAgentTool sub-agents could; register defensively.
-                    .addStrategy(MateClawStateKeys.WORKSPACE_BASE_PATH, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.STOP_REQUESTED, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.RETURN_DIRECT_TRIGGERED, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.DIRECT_TOOL_OUTPUTS, KeyStrategy.REPLACE)
-                    // Token Usage
-                    .addStrategy(MateClawStateKeys.PROMPT_TOKENS, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.COMPLETION_TOKENS, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.CACHE_READ_TOKENS, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.CACHE_WRITE_TOKENS, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.REASONING_TOKENS, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.LLM_CALL_COUNT, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.RUNTIME_MODEL_NAME, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.RUNTIME_PROVIDER_ID, KeyStrategy.REPLACE)
-                    // SourceEvidenceLedger: ActionNode 把每轮 ToolResponse 抽取出的
-                    // (sourcePaths, sourceSymbols, failedPaths) merge 进这个 ledger，
-                    // 后续 ReasoningNode / FinalAnswerNode 调 validateAnswer 校验
-                    // 模型引用是否有真实证据。漏注册时框架在多 node merge 时会偶发
-                    // 丢这个键，evidence_insufficient 检查会"静默地不生效" ——
-                    // StateKeyRegistrationCoverageTest 专门兜这条。
-                    .addStrategy(MateClawStateKeys.SOURCE_EVIDENCE_LEDGER, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.ACTION_EXECUTION_LEDGER, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.ACTION_COMPLETION_REQUIRED, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.ACTION_COMPLETION_RETRY_COUNT, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.CONTINUE_REASONING, KeyStrategy.REPLACE)
-                    // Multimodal sidecar routing decision for the current turn.
-                    .addStrategy(MateClawStateKeys.ROUTING_DECISION, KeyStrategy.REPLACE)
-                    // RFC 48 — persistent goal state keys must be registered in
-                    // BOTH graph KeyStrategyFactory blocks. The architecture
-                    // coverage test only checks "appears somewhere"; the
-                    // GoalStateKeyDoubleRegistrationTest below verifies the
-                    // double registration explicitly.
-                    .addStrategy(MateClawStateKeys.ACTIVE_GOAL, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.GOAL_EVALUATION_RESULT, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_INJECTED, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_PROMPT, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.GOAL_EVALUATED_THIS_RUN, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_COUNT, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.GOAL_ACCOUNTED_LLM_CALL_COUNT, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.GOAL_HARD_CONTINUATION_COUNT, KeyStrategy.REPLACE)
-                    // Skill progressive disclosure — pinned skills loaded this
-                    // run. Registered in BOTH graphs so the read-merge-write in
-                    // ActionNode is not dropped on multi-node merges.
-                    .addStrategy(MateClawStateKeys.LOADED_SKILLS, KeyStrategy.REPLACE)
-                    // Tool progressive disclosure — extensions enabled this run.
-                    // Registered in BOTH graphs for the same merge-safety reason.
-                    .addStrategy(MateClawStateKeys.ENABLED_EXTENSION_TOOLS, KeyStrategy.REPLACE)
-                    // Tool-call loop guard counters + one-shot post-mutation
-                    // verification reminder flag. Read-merge-write by
-                    // ObservationNode; registered in BOTH graphs so the
-                    // counters survive multi-node merges.
-                    .addStrategy(MateClawStateKeys.TOOL_LOOP_STATS, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.MUTATION_REMINDER_INJECTED, KeyStrategy.REPLACE)
-                    .build();
+
 
             // Graph 拓扑：
             // START → PLAN_GENERATION → (PlanGenerationDispatcher)
@@ -866,84 +771,20 @@ public class AgentGraphBuilder {
                     vip.mate.goal.service.GraphFlavor.PLAN_EXECUTE);
             goalEvalNode.setDecisionAdapter(goalDecisionAdapter);
 
-            StateGraph graph = new StateGraph("plan-execute-agent", keyStrategyFactory)
-                    .addNode(PlanStateKeys.PLAN_GENERATION_NODE,
-                            AsyncNodeAction.node_async(planGenerationNode))
-                    .addNode(PlanStateKeys.STEP_EXECUTION_NODE,
-                            AsyncNodeAction.node_async(stepExecutionNode))
-                    .addNode(PlanStateKeys.PLAN_SUMMARY_NODE,
-                            AsyncNodeAction.node_async(planSummaryNode))
-                    .addNode(PlanStateKeys.DIRECT_ANSWER_NODE,
-                            AsyncNodeAction.node_async(directAnswerNode))
-                    .addNode(MateClawStateKeys.GOAL_EVALUATION_NODE,
-                            AsyncNodeAction.node_async(goalEvalNode))
-                    .addEdge(StateGraph.START, PlanStateKeys.PLAN_GENERATION_NODE)
-                    .addConditionalEdges(PlanStateKeys.PLAN_GENERATION_NODE,
-                            AsyncEdgeAction.edge_async(new PlanGenerationDispatcher()),
-                            Map.of(
-                                    PlanStateKeys.STEP_EXECUTION_NODE, PlanStateKeys.STEP_EXECUTION_NODE,
-                                    PlanStateKeys.DIRECT_ANSWER_NODE, PlanStateKeys.DIRECT_ANSWER_NODE,
-                                    // Board-delegated plan settled: step results were
-                                    // rebuilt from team tasks — summarize directly.
-                                    PlanStateKeys.PLAN_SUMMARY_NODE, PlanStateKeys.PLAN_SUMMARY_NODE))
-                    .addConditionalEdges(PlanStateKeys.STEP_EXECUTION_NODE,
-                            AsyncEdgeAction.edge_async(new StepProgressDispatcher(goalService)),
-                            Map.of(
-                                    PlanStateKeys.STEP_EXECUTION_NODE, PlanStateKeys.STEP_EXECUTION_NODE,
-                                    PlanStateKeys.PLAN_SUMMARY_NODE, PlanStateKeys.PLAN_SUMMARY_NODE,
-                                    // Step-failure recovery: re-plan the remaining work
-                                    // (StepProgressDispatcher returns this on phase=plan_replan).
-                                    PlanStateKeys.PLAN_GENERATION_NODE, PlanStateKeys.PLAN_GENERATION_NODE,
-                                    StateGraph.END, StateGraph.END))
-                    .addConditionalEdges(PlanStateKeys.PLAN_SUMMARY_NODE,
-                            AsyncEdgeAction.edge_async(state -> {
-                                MateClawStateAccessor a = new MateClawStateAccessor(state);
-                                // Same-turn activation: fall back to a DB lookup (gated on the
-                                // feature flag) so a goal the agent set THIS turn is evaluated now,
-                                // not only from the next message. See GoalEvaluationNode.resolveActiveGoal.
-                                boolean hasGoal = goalProperties.isEnabled()
-                                        && GoalEvaluationNode.resolveActiveGoal(state, goalService).isPresent();
-                                boolean already = a.goalEvaluatedThisRun();
-                                return (hasGoal && !already)
-                                        ? MateClawStateKeys.GOAL_EVALUATION_NODE
-                                        : StateGraph.END;
-                            }),
-                            Map.of(
-                                    MateClawStateKeys.GOAL_EVALUATION_NODE, MateClawStateKeys.GOAL_EVALUATION_NODE,
-                                    StateGraph.END, StateGraph.END))
-                    .addConditionalEdges(MateClawStateKeys.GOAL_EVALUATION_NODE,
-                            AsyncEdgeAction.edge_async(new vip.mate.agent.graph.edge.GoalEvaluationDispatcher(
-                                    PlanStateKeys.PLAN_GENERATION_NODE, StateGraph.END)),
-                            Map.of(
-                                    PlanStateKeys.PLAN_GENERATION_NODE, PlanStateKeys.PLAN_GENERATION_NODE,
-                                    StateGraph.END, StateGraph.END))
-                    // DIRECT_ANSWER_NODE handles trivial requests that bypass the
-                    // multi-step plan. For active goals, the direct answer is still
-                    // a turn — without this edge, turns_used / score / completion
-                    // would never tick on plan-execute conversations whose every
-                    // reply happened to be simple enough to short-circuit through
-                    // the direct path. Mirror PLAN_SUMMARY_NODE's gate so non-goal
-                    // turns still go straight to END (no goal node invocation).
-                    .addConditionalEdges(PlanStateKeys.DIRECT_ANSWER_NODE,
-                            AsyncEdgeAction.edge_async(state -> {
-                                MateClawStateAccessor a = new MateClawStateAccessor(state);
-                                // Same-turn activation: fall back to a DB lookup (gated on the
-                                // feature flag) so a goal the agent set THIS turn is evaluated now,
-                                // not only from the next message. See GoalEvaluationNode.resolveActiveGoal.
-                                boolean hasGoal = goalProperties.isEnabled()
-                                        && GoalEvaluationNode.resolveActiveGoal(state, goalService).isPresent();
-                                boolean already = a.goalEvaluatedThisRun();
-                                return (hasGoal && !already)
-                                        ? MateClawStateKeys.GOAL_EVALUATION_NODE
-                                        : StateGraph.END;
-                            }),
-                            Map.of(
-                                    MateClawStateKeys.GOAL_EVALUATION_NODE, MateClawStateKeys.GOAL_EVALUATION_NODE,
-                                    StateGraph.END, StateGraph.END));
-
-            return graph.compile(CompileConfig.builder()
-                    .recursionLimit(frameworkRecursionLimit())
-                    .build());
+            EdgeAction goalGate = state -> {
+                MateClawStateAccessor accessor = new MateClawStateAccessor(state);
+                boolean hasGoal = goalProperties.isEnabled()
+                        && GoalEvaluationNode.resolveActiveGoal(state, goalService).isPresent();
+                return hasGoal && !accessor.goalEvaluatedThisRun()
+                        ? MateClawStateKeys.GOAL_EVALUATION_NODE : ExplicitPlanRuntime.END;
+            };
+            return new ExplicitPlanRuntime(new ExplicitPlanRuntime.Policies(
+                    planGenerationNode, new PlanGenerationDispatcher(),
+                    stepExecutionNode, new StepProgressDispatcher(goalService),
+                    planSummaryNode, directAnswerNode, goalGate,
+                    goalEvalNode, new GoalEvaluationDispatcher(
+                            PlanStateKeys.PLAN_GENERATION_NODE, ExplicitPlanRuntime.END)),
+                    frameworkRecursionLimit());
         } catch (Exception e) {
             throw new MateClawException("err.agent.plan_compile_failed", "Plan-Execute StateGraph 编译失败: " + e.getMessage());
         }
@@ -988,30 +829,30 @@ public class AgentGraphBuilder {
         return HttpTimeouts.resolveStreamIdleTimeout(override).toSeconds();
     }
 
-    CompiledGraph buildReActGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations, String reasoningEffort) {
+    AgentRuntime buildReActGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations, String reasoningEffort) {
         return buildReActGraph(toolSet, chatModel, maxIterations, reasoningEffort, null, null);
     }
 
-    CompiledGraph buildReActGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
+    AgentRuntime buildReActGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
                                    String reasoningEffort, ModelConfigEntity primaryModelConfig) {
         return buildReActGraph(toolSet, chatModel, maxIterations, reasoningEffort, primaryModelConfig, null);
     }
 
-    CompiledGraph buildReActGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
+    AgentRuntime buildReActGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
                                    String reasoningEffort, ModelConfigEntity primaryModelConfig,
                                    Long agentId) {
         return buildReActGraph(toolSet, chatModel, maxIterations, reasoningEffort,
                 primaryModelConfig, agentId, null);
     }
 
-    CompiledGraph buildReActGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
+    AgentRuntime buildReActGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
                                    String reasoningEffort, ModelConfigEntity primaryModelConfig,
                                    Long agentId, SkillCatalogRenderer skillCatalogRenderer) {
         return buildReActGraph(toolSet, chatModel, maxIterations, reasoningEffort,
                 primaryModelConfig, agentId, skillCatalogRenderer, null, Set.of());
     }
 
-    CompiledGraph buildReActGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
+    AgentRuntime buildReActGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
                                    String reasoningEffort, ModelConfigEntity primaryModelConfig,
                                    Long agentId, SkillCatalogRenderer skillCatalogRenderer,
                                    PrefixBudgetPlan prefixBudgetPlan, Set<String> autoDemotedTools) {
@@ -1042,6 +883,7 @@ public class AgentGraphBuilder {
             executor.setUsageRecencyTracker(toolUsageRecencyTracker);
             executor.setProgressContext(progressContext);
             executor.setExecutionEvidenceRecorder(executionEvidenceRecorder);
+            executor.setExecutionCheckpoint(executionCheckpoint);
             // Optional: route child-agent denied-tool audit events through
             // the audit pipeline. Null when audit is not wired (legacy / test).
             if (auditEventService != null) {
@@ -1087,121 +929,7 @@ public class AgentGraphBuilder {
                     chatModel, observationProcessor, streamingHelper, i18nService, progressLedgerService);
             FinalAnswerNode finalAnswerNode = new FinalAnswerNode(generatedFileCache, markdownNormalizeEnabled);
 
-            KeyStrategyFactory keyStrategyFactory = KeyStrategy.builder()
-                    // 输入字段
-                    .addStrategy(MateClawStateKeys.USER_MESSAGE, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.CONVERSATION_ID, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.SYSTEM_PROMPT, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.AGENT_ID, KeyStrategy.REPLACE)
-                    // 消息列表（追加策略）
-                    .addStrategy(MateClawStateKeys.MESSAGES, KeyStrategy.APPEND)
-                    // 迭代控制
-                    .addStrategy(MateClawStateKeys.CURRENT_ITERATION, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.ITERATION_REFUND_COUNT, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.MAX_ITERATIONS, KeyStrategy.REPLACE)
-                    // 工具调用
-                    .addStrategy(MateClawStateKeys.TOOL_CALLS, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.TOOL_RESULTS, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.TOOL_CALL_COUNT, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.LLM_CALL_COUNT, KeyStrategy.REPLACE)
-                    // 控制流
-                    .addStrategy(MateClawStateKeys.FINAL_ANSWER, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.NEEDS_TOOL_CALL, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.ERROR, KeyStrategy.REPLACE)
-                    // 观察历史（REPLACE 策略，由 ObservationNode 手动累加，SummarizingNode 可清空）
-                    .addStrategy(MateClawStateKeys.OBSERVATION_HISTORY, KeyStrategy.REPLACE)
-                    // Summarizing
-                    .addStrategy(MateClawStateKeys.SUMMARIZED_CONTEXT, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.FINAL_ANSWER_DRAFT, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.LONG_FORM_DRAFT, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.SHOULD_SUMMARIZE, KeyStrategy.REPLACE)
-                    // 终止控制
-                    .addStrategy(MateClawStateKeys.FINISH_REASON, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.LIMIT_EXCEEDED, KeyStrategy.REPLACE)
-                    // 统计与追踪
-                    .addStrategy(MateClawStateKeys.ERROR_COUNT, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.TRACE_ID, KeyStrategy.REPLACE)
-                    // 事件流
-                    .addStrategy(MateClawStateKeys.PENDING_EVENTS, KeyStrategy.APPEND)
-                    .addStrategy(MateClawStateKeys.CURRENT_PHASE, KeyStrategy.REPLACE)
-                    // Thinking
-                    .addStrategy(MateClawStateKeys.FINAL_THINKING, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.CURRENT_THINKING, KeyStrategy.REPLACE)
-                    // 流式防重
-                    .addStrategy(MateClawStateKeys.CONTENT_STREAMED, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.THINKING_STREAMED, KeyStrategy.REPLACE)
-                    // 审批控制
-                    .addStrategy(MateClawStateKeys.AWAITING_APPROVAL, KeyStrategy.REPLACE)
-                    // 流式内容暂存（AWAITING_APPROVAL 路径持久化使用）
-                    .addStrategy(MateClawStateKeys.STREAMED_CONTENT, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.STREAMED_THINKING, KeyStrategy.REPLACE)
-                    // 请求者身份（审批身份校验使用）
-                    .addStrategy(MateClawStateKeys.REQUESTER_ID, KeyStrategy.REPLACE)
-                    // 审批重放
-                    .addStrategy(MateClawStateKeys.FORCED_TOOL_CALL, KeyStrategy.REPLACE)
-                    // RFC-063r §2.5: ChatOrigin must survive every node merge so
-                    // ActionNode (and DelegateAgentTool's child agents) can read
-                    // the originating channel binding across multi-iteration ReAct
-                    // loops. Without explicit REPLACE the framework's merge drops
-                    // it after the first node transition — root cause of the
-                    // channel-binding flakiness reported on first deployment.
-                    .addStrategy(MateClawStateKeys.CHAT_ORIGIN, KeyStrategy.REPLACE)
-                    // Caught by StateKeyRegistrationCoverageTest — silently
-                    // unregistered before the audit. WORKSPACE_BASE_PATH from
-                    // initial state; STOP_REQUESTED is the external cancel flag;
-                    // RETURN_DIRECT_TRIGGERED / DIRECT_TOOL_OUTPUTS are RFC-052
-                    // returnDirect short-circuit signals consumed by ObservationDispatcher.
-                    .addStrategy(MateClawStateKeys.WORKSPACE_BASE_PATH, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.STOP_REQUESTED, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.RETURN_DIRECT_TRIGGERED, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.DIRECT_TOOL_OUTPUTS, KeyStrategy.REPLACE)
-                    // Token Usage
-                    .addStrategy(MateClawStateKeys.PROMPT_TOKENS, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.COMPLETION_TOKENS, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.CACHE_READ_TOKENS, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.CACHE_WRITE_TOKENS, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.REASONING_TOKENS, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.RUNTIME_MODEL_NAME, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.RUNTIME_PROVIDER_ID, KeyStrategy.REPLACE)
-                    // SourceEvidenceLedger: ActionNode 把每轮 ToolResponse 抽取出的
-                    // (sourcePaths, sourceSymbols, failedPaths) merge 进这个 ledger，
-                    // 后续 ReasoningNode / FinalAnswerNode 调 validateAnswer 校验
-                    // 模型引用是否有真实证据。漏注册时框架在多 node merge 时会偶发
-                    // 丢这个键，evidence_insufficient 检查会"静默地不生效" ——
-                    // StateKeyRegistrationCoverageTest 专门兜这条。
-                    .addStrategy(MateClawStateKeys.SOURCE_EVIDENCE_LEDGER, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.ACTION_EXECUTION_LEDGER, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.ACTION_COMPLETION_REQUIRED, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.ACTION_COMPLETION_RETRY_COUNT, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.CONTINUE_REASONING, KeyStrategy.REPLACE)
-                    // Multimodal sidecar routing decision for the current turn.
-                    .addStrategy(MateClawStateKeys.ROUTING_DECISION, KeyStrategy.REPLACE)
-                    // RFC 48 — persistent goal state keys must be registered in
-                    // BOTH graph KeyStrategyFactory blocks. See
-                    // GoalStateKeyDoubleRegistrationTest for the strict
-                    // double-registration check.
-                    .addStrategy(MateClawStateKeys.ACTIVE_GOAL, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.GOAL_EVALUATION_RESULT, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_INJECTED, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_PROMPT, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.GOAL_EVALUATED_THIS_RUN, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_COUNT, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.GOAL_ACCOUNTED_LLM_CALL_COUNT, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.GOAL_HARD_CONTINUATION_COUNT, KeyStrategy.REPLACE)
-                    // Skill progressive disclosure — pinned skills loaded this
-                    // run. Registered in BOTH graphs so the read-merge-write in
-                    // ActionNode is not dropped on multi-node merges.
-                    .addStrategy(MateClawStateKeys.LOADED_SKILLS, KeyStrategy.REPLACE)
-                    // Tool progressive disclosure — extensions enabled this run.
-                    // Registered in BOTH graphs for the same merge-safety reason.
-                    .addStrategy(MateClawStateKeys.ENABLED_EXTENSION_TOOLS, KeyStrategy.REPLACE)
-                    // Tool-call loop guard counters + one-shot post-mutation
-                    // verification reminder flag. Read-merge-write by
-                    // ObservationNode; registered in BOTH graphs so the
-                    // counters survive multi-node merges.
-                    .addStrategy(MateClawStateKeys.TOOL_LOOP_STATS, KeyStrategy.REPLACE)
-                    .addStrategy(MateClawStateKeys.MUTATION_REMINDER_INJECTED, KeyStrategy.REPLACE)
-                    .build();
+
 
             GoalEvaluationNode goalEvalNode = new GoalEvaluationNode(
                     goalEvaluationService, goalFollowupService, goalService, goalProperties,
@@ -1209,67 +937,28 @@ public class AgentGraphBuilder {
                     vip.mate.goal.service.GraphFlavor.REACT);
             goalEvalNode.setDecisionAdapter(goalDecisionAdapter);
 
-            StateGraph graph = new StateGraph("react-agent-v2", keyStrategyFactory)
-                    .addNode(MateClawStateKeys.REASONING_NODE,
-                            AsyncNodeAction.node_async(reasoningNode))
-                    .addNode(MateClawStateKeys.ACTION_NODE,
-                            AsyncNodeAction.node_async(actionNode))
-                    .addNode(MateClawStateKeys.OBSERVATION_NODE,
-                            AsyncNodeAction.node_async(observationNode))
-                    .addNode(MateClawStateKeys.SUMMARIZING_NODE,
-                            AsyncNodeAction.node_async(summarizingNode))
-                    .addNode(MateClawStateKeys.LIMIT_EXCEEDED_NODE,
-                            AsyncNodeAction.node_async(limitExceededNode))
-                    .addNode(MateClawStateKeys.FINAL_ANSWER_NODE,
-                            AsyncNodeAction.node_async(finalAnswerNode))
-                    .addNode(MateClawStateKeys.GOAL_EVALUATION_NODE,
-                            AsyncNodeAction.node_async(goalEvalNode))
-                    .addEdge(StateGraph.START, MateClawStateKeys.REASONING_NODE)
-                    .addConditionalEdges(MateClawStateKeys.REASONING_NODE,
-                            AsyncEdgeAction.edge_async(new ReasoningDispatcher()),
-                            Map.of(MateClawStateKeys.REASONING_NODE, MateClawStateKeys.REASONING_NODE,
-                                    MateClawStateKeys.ACTION_NODE, MateClawStateKeys.ACTION_NODE,
-                                    MateClawStateKeys.SUMMARIZING_NODE, MateClawStateKeys.SUMMARIZING_NODE,
-                                    MateClawStateKeys.FINAL_ANSWER_NODE, MateClawStateKeys.FINAL_ANSWER_NODE,
-                                    MateClawStateKeys.LIMIT_EXCEEDED_NODE, MateClawStateKeys.LIMIT_EXCEEDED_NODE))
-                    .addEdge(MateClawStateKeys.ACTION_NODE, MateClawStateKeys.OBSERVATION_NODE)
-                    .addConditionalEdges(MateClawStateKeys.OBSERVATION_NODE,
-                            AsyncEdgeAction.edge_async(new ObservationDispatcher()),
-                            Map.of(MateClawStateKeys.REASONING_NODE, MateClawStateKeys.REASONING_NODE,
-                                    MateClawStateKeys.SUMMARIZING_NODE, MateClawStateKeys.SUMMARIZING_NODE,
-                                    MateClawStateKeys.LIMIT_EXCEEDED_NODE, MateClawStateKeys.LIMIT_EXCEEDED_NODE,
-                                    MateClawStateKeys.FINAL_ANSWER_NODE, MateClawStateKeys.FINAL_ANSWER_NODE))
-                    .addEdge(MateClawStateKeys.SUMMARIZING_NODE, MateClawStateKeys.REASONING_NODE)
-                    .addEdge(MateClawStateKeys.LIMIT_EXCEEDED_NODE, MateClawStateKeys.FINAL_ANSWER_NODE)
-                    // FinalAnswer -> (active goal && not yet evaluated this run) ? GoalEvaluation : END
-                    .addConditionalEdges(MateClawStateKeys.FINAL_ANSWER_NODE,
-                            AsyncEdgeAction.edge_async(state -> {
-                                MateClawStateAccessor a = new MateClawStateAccessor(state);
-                                // Same-turn activation: fall back to a DB lookup (gated on the
-                                // feature flag) so a goal the agent set THIS turn is evaluated now,
-                                // not only from the next message. See GoalEvaluationNode.resolveActiveGoal.
-                                boolean hasGoal = goalProperties.isEnabled()
-                                        && GoalEvaluationNode.resolveActiveGoal(state, goalService).isPresent();
-                                boolean already = a.goalEvaluatedThisRun();
-                                return (hasGoal && !already)
-                                        ? MateClawStateKeys.GOAL_EVALUATION_NODE
-                                        : StateGraph.END;
-                            }),
-                            Map.of(
-                                    MateClawStateKeys.GOAL_EVALUATION_NODE, MateClawStateKeys.GOAL_EVALUATION_NODE,
-                                    StateGraph.END, StateGraph.END))
-                    // GoalEvaluation -> (followup injected) ? Reasoning : END
-                    .addConditionalEdges(MateClawStateKeys.GOAL_EVALUATION_NODE,
-                            AsyncEdgeAction.edge_async(new vip.mate.agent.graph.edge.GoalEvaluationDispatcher(
-                                    MateClawStateKeys.REASONING_NODE, StateGraph.END)),
-                            Map.of(
-                                    MateClawStateKeys.REASONING_NODE, MateClawStateKeys.REASONING_NODE,
-                                    StateGraph.END, StateGraph.END));
-
-            return graph.compile(CompileConfig.builder()
-                    .recursionLimit(frameworkRecursionLimit())
-                    .withLifecycleListener(new ReActLifecycleListener())
-                    .build());
+            EdgeAction goalGate = state -> {
+                MateClawStateAccessor accessor = new MateClawStateAccessor(state);
+                boolean hasGoal = goalProperties.isEnabled()
+                        && GoalEvaluationNode.resolveActiveGoal(state, goalService).isPresent();
+                return hasGoal && !accessor.goalEvaluatedThisRun()
+                        ? MateClawStateKeys.GOAL_EVALUATION_NODE : NativePolicyDriver.END;
+            };
+            NodeAction guardedBatch = state -> {
+                List<AssistantMessage.ToolCall> calls =
+                        state.value(MateClawStateKeys.TOOL_CALLS, List.of());
+                ToolExecutionExecutor.ToolExecutionResult result = actionNode.executeBatch(state);
+                Map<String, Object> projection = new LinkedHashMap<>(actionNode.completeBatch(state, result));
+                projection.put(NativePolicyDriver.BATCH_RESULT, ToolBatchResultAdapter.project(calls, result));
+                return projection;
+            };
+            return new NativePolicyDriver(new NativePolicyDriver.Policies(
+                    reasoningNode, new ReasoningDispatcher(), guardedBatch, observationNode,
+                    new ObservationDispatcher(), summarizingNode, limitExceededNode,
+                    finalAnswerNode, goalGate, goalEvalNode,
+                    new GoalEvaluationDispatcher(MateClawStateKeys.REASONING_NODE, NativePolicyDriver.END)),
+                    SpringToolSchemaAdapter.convert(toolSet.callbacks()), frameworkRecursionLimit(),
+                    RuntimeExecutionScope::open, NativePolicyDriver.ToolNamePolicy.APPLICATION_OWNER);
         } catch (Exception e) {
             throw new MateClawException("err.agent.graph_compile_failed", "StateGraph v2 编译失败: " + e.getMessage());
         }
@@ -1672,8 +1361,8 @@ public class AgentGraphBuilder {
     static final String ABOUT_YOU_BLOCK = """
 
             ## About You
-            You are powered by HHAIOS — a multi-user AI Agent platform built on
-            Spring Boot 3.5 and Spring AI Alibaba Graph. You are reachable through
+            You are powered by MateClaw — a multi-user AI Agent platform built on
+            Java 21, Spring Boot 4, Spring AI 2 and AgentScope 2. You are reachable through
             WebChat and 8+ IM channels (DingTalk, Feishu, WeCom, WeChat, Telegram,
             Discord, QQ, Slack). If asked who you are or what you are based on,
             answer with HHAIOS and the technology stack above.

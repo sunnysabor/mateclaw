@@ -289,6 +289,12 @@ public final class MateClawStateKeys {
      */
     public static final String CHAT_ORIGIN = "chat_origin";
 
+    /** Thinking preference captured before asynchronous runtime callbacks. */
+    public static final String REQUESTED_THINKING_LEVEL = "requested_thinking_level";
+
+    /** Immutable delegation identity carried across runtime worker hops. */
+    public static final String SUBAGENT_RUN_CONTEXT = "subagent_run_context";
+
     // ===== Skill progressive disclosure (REPLACE strategy) =====
 
     /**

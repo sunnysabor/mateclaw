@@ -1,7 +1,8 @@
 package vip.mate.agent.graph.node;
 
-import com.alibaba.cloud.ai.graph.OverAllState;
-import com.alibaba.cloud.ai.graph.action.NodeAction;
+import vip.mate.llm.chatmodel.ChatModelDefaults;
+import vip.mate.agent.runtime.state.RunState;
+import vip.mate.agent.runtime.state.NodeAction;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -13,6 +14,9 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
+import org.springframework.ai.anthropic.AnthropicChatOptions;
+import vip.mate.llm.dashscope.NativeDashScopeChatModel;
+import vip.mate.llm.dashscope.NativeDashScopeChatOptions;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.util.StringUtils;
@@ -46,7 +50,7 @@ import static vip.mate.agent.graph.state.MateClawStateKeys.*;
  * 推理节点（ReAct Thought 阶段）
  * <p>
  * 调用 LLM 进行单次推理，判断是否需要工具调用。
- * 关键：通过 internalToolExecutionEnabled=false 禁用 ChatModel 内部工具循环，
+ * Tool execution remains owned by the application runtime; model calls return tool requests.
  * 使 StateGraph 完全控制 ReAct 循环。
  * <p>
  * 支持 forced_tool_call 机制：当审批通过后的重放请求到达时，
@@ -726,7 +730,7 @@ public class ReasoningNode implements NodeAction {
 
     @Override
     @SuppressWarnings("unchecked")
-    public Map<String, Object> apply(OverAllState state) throws Exception {
+    public Map<String, Object> apply(RunState state) throws Exception {
         MateClawStateAccessor accessor = new MateClawStateAccessor(state);
 
         // ======= 取消检查（LLM 调用前，尚未计数） =======
@@ -1630,16 +1634,13 @@ public class ReasoningNode implements NodeAction {
      */
     private ChatOptions buildChatOptions(String effectiveReasoning, List<ToolCallback> activeCallbacks) {
         // Anthropic 协议模型（AnthropicChatModel）：MiniMax 也用此协议但不支持 thinking
-        if (chatModel instanceof org.springframework.ai.anthropic.AnthropicChatModel anthropicModel) {
-            org.springframework.ai.anthropic.AnthropicChatOptions.Builder builder =
-                    org.springframework.ai.anthropic.AnthropicChatOptions.builder()
-                    .toolCallbacks(activeCallbacks)
-                    .internalToolExecutionEnabled(false);
+        if (ChatModelDefaults.optionsFor(chatModel) instanceof AnthropicChatOptions defaults) {
+            AnthropicChatOptions.Builder builder = defaults.mutate().toolCallbacks(activeCallbacks);
 
             // 仅对真正的 Claude 模型启用 extended thinking（MiniMax 等走 Anthropic 协议但不支持）
             String thinkingLevel = ThinkingLevelHolder.get();
             boolean thinkingOn = thinkingLevel != null && !"off".equalsIgnoreCase(thinkingLevel);
-            String currentModel = getAnthropicModelName(anthropicModel);
+            String currentModel = defaults.getModel();
             boolean isClaudeModel = currentModel != null && currentModel.toLowerCase().contains("claude");
 
             if (thinkingOn && isClaudeModel) {
@@ -1650,12 +1651,12 @@ public class ReasoningNode implements NodeAction {
                     case "max" -> 32768;
                     default -> 16384;
                 };
-                builder.thinking(org.springframework.ai.anthropic.api.AnthropicApi.ThinkingType.ENABLED, budgetTokens);
+                builder.thinkingEnabled(budgetTokens);
                 builder.maxTokens(budgetTokens + effectiveMaxOutputTokens());
                 builder.temperature(1.0);
                 log.info("[ReasoningNode] Anthropic extended thinking enabled: model={}, budget={}", currentModel, budgetTokens);
             } else {
-                builder.maxTokens(effectiveMaxOutputTokens());
+                builder.thinkingDisabled().maxTokens(effectiveMaxOutputTokens());
                 if (thinkingOn && !isClaudeModel) {
                     log.debug("[ReasoningNode] Anthropic protocol model {} does not support thinking, skipping", currentModel);
                 }
@@ -1671,22 +1672,30 @@ public class ReasoningNode implements NodeAction {
         // the failover layer misreads as "model not found"; clamp so a
         // DashScope-backed model never overflows the provider limit.
         int effectiveMaxTokens = effectiveMaxOutputTokens();
-        if (chatModel instanceof com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel
+        if (chatModel instanceof NativeDashScopeChatModel
                 && effectiveMaxTokens > DASHSCOPE_MAX_OUTPUT_TOKENS) {
             log.debug("[ReasoningNode] Clamping max_tokens {} -> {} for DashScope-backed model",
                     effectiveMaxTokens, DASHSCOPE_MAX_OUTPUT_TOKENS);
             effectiveMaxTokens = DASHSCOPE_MAX_OUTPUT_TOKENS;
         }
-        OpenAiChatOptions.Builder oaiBuilder = OpenAiChatOptions.builder()
-                .toolCallbacks(activeCallbacks)
-                .maxTokens(effectiveMaxTokens);
-        if (StringUtils.hasText(effectiveReasoning)) {
-            oaiBuilder.reasoningEffort(effectiveReasoning);
+        if (ChatModelDefaults.optionsFor(chatModel) instanceof NativeDashScopeChatOptions defaults) {
+            NativeDashScopeChatOptions.Builder nativeBuilder = defaults.mutate()
+                    .toolCallbacks(activeCallbacks).maxTokens(effectiveMaxTokens);
+            String thinkingLevel = ThinkingLevelHolder.get();
+            if (thinkingLevel != null) nativeBuilder.enableThinking(!"off".equalsIgnoreCase(thinkingLevel));
+            return nativeBuilder.build();
         }
-        OpenAiChatOptions oaiOpts = oaiBuilder.build();
-        oaiOpts.setInternalToolExecutionEnabled(false);
-        oaiOpts.setStreamUsage(true);
-        return oaiOpts;
+        if (ChatModelDefaults.optionsFor(chatModel) instanceof OpenAiChatOptions defaults) {
+            OpenAiChatOptions.Builder builder = defaults.mutate()
+                    .toolCallbacks(activeCallbacks).maxTokens(effectiveMaxTokens).streamUsage(true);
+            if (StringUtils.hasText(effectiveReasoning)) builder.reasoningEffort(effectiveReasoning);
+            if ("off".equalsIgnoreCase(ThinkingLevelHolder.get())) builder.reasoningEffort(null);
+            return builder.build();
+        }
+        ToolCallingChatOptions.Builder<?> builder = ToolCallingChatOptions.builder();
+        ChatOptions defaults = ChatModelDefaults.optionsFor(chatModel);
+        if (defaults != null) builder.combineWith(defaults.mutate());
+        return builder.toolCallbacks(activeCallbacks).maxTokens(effectiveMaxTokens).build();
     }
 
     /**
@@ -1725,19 +1734,4 @@ public class ReasoningNode implements NodeAction {
         return this.reasoningEffort;
     }
 
-    /**
-     * 从 AnthropicChatModel 的 defaultOptions 中提取模型名称。
-     * 用于判断是否为真正的 Claude 模型（vs MiniMax 等走 Anthropic 协议的非 Claude 模型）。
-     */
-    private String getAnthropicModelName(org.springframework.ai.anthropic.AnthropicChatModel model) {
-        try {
-            var options = model.getDefaultOptions();
-            if (options instanceof org.springframework.ai.anthropic.AnthropicChatOptions aOpts) {
-                return aOpts.getModel();
-            }
-        } catch (Exception e) {
-            log.debug("[ReasoningNode] Failed to extract Anthropic model name: {}", e.getMessage());
-        }
-        return null;
-    }
 }

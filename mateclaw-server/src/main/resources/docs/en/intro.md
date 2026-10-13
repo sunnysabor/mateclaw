@@ -1,10 +1,10 @@
 ---
 title: MateClaw Introduction — Self-hosted Multi-Agent AI Operating System
-description: MateClaw is an open-source multi-agent AI OS built on Spring AI Alibaba. ReAct + Plan-and-Execute engines, LLM Wiki knowledge base, 4-layer memory lifecycle, MCP tool protocol, 8-channel integration. One self-hosted JAR with operator-controlled data and outbound integrations.
+description: MateClaw is an open-source multi-agent AI OS built on Spring AI + AgentScope. ReAct + Plan-and-Execute engines, LLM Wiki knowledge base, 4-layer memory lifecycle, MCP tool protocol, 8-channel integration. One self-hosted JAR with operator-controlled data and outbound integrations.
 head:
   - - meta
     - name: keywords
-      content: HHAIOS,multi-agent AI,self-hosted AI,AI operating system,Spring AI Alibaba,ReAct,Plan-and-Execute,MCP,LLM Wiki,memory lifecycle,Tool Guard,open source
+      content: MateClaw,multi-agent AI,self-hosted AI,AI operating system,Spring AI + AgentScope,ReAct,Plan-and-Execute,MCP,LLM Wiki,memory lifecycle,Tool Guard,open source
 ---
 
 # HHAIOS — Self-hosted Multi-Agent AI Operating System
@@ -69,7 +69,7 @@ Running HHAIOS on your own hardware is not a compliance checkbox. It changes wha
 
 ## What's under the hood
 
-- **Backend** — Spring Boot 3.5 + Spring AI Alibaba 1.1. Agent runtime built on a StateGraph with nodes for reasoning, action, observation, plan generation, and step execution. MyBatis Plus for persistence. SSE for streaming — WebFlux is explicitly excluded.
+- **Backend** — Java 21, Spring Boot 4.1.1, Spring AI 2.0.1 and AgentScope Java 2.0.4. Native ReAct owns reasoning/action iteration; explicit application phases own Plan-and-Execute. MyBatis Plus persists product data. Streaming uses servlet MVC SSE.
 - **Frontend** — Vue 3 + TypeScript. Pinia for state, Element Plus + Tailwind for UI, full dark mode. Built into the backend JAR's `static/` so one process serves both.
 - **Desktop** — Electron with bundled JRE 21 and the packaged server JAR. Launches, initializes, and your users never know Java is underneath.
 - **Channels** — Each channel is a `ChannelAdapter` SPI implementation. Web streams over SSE. IM channels run on their platform's long-connection or webhook mode.

@@ -10,7 +10,7 @@ import java.time.LocalDateTime;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
-import com.alibaba.cloud.ai.graph.OverAllState;
+import vip.mate.agent.runtime.state.RunState;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
@@ -150,7 +150,7 @@ class GoalEvaluationNodeContinuationTest {
         GoalService goalService = mock(GoalService.class);
         GoalEntity snap = new GoalEntity();
         snap.setId(7L);
-        OverAllState s = new OverAllState(Map.of(
+        RunState s = new RunState(Map.of(
                 MateClawStateKeys.ACTIVE_GOAL, snap,
                 MateClawStateKeys.CONVERSATION_ID, "c1"));
 
@@ -168,7 +168,7 @@ class GoalEvaluationNodeContinuationTest {
         GoalEntity fromDb = new GoalEntity();
         fromDb.setId(9L);
         when(goalService.findActiveByConversation("c1")).thenReturn(fromDb);
-        OverAllState s = new OverAllState(Map.of(MateClawStateKeys.CONVERSATION_ID, "c1"));
+        RunState s = new RunState(Map.of(MateClawStateKeys.CONVERSATION_ID, "c1"));
 
         Optional<GoalEntity> out = GoalEvaluationNode.resolveActiveGoal(s, goalService);
 
@@ -180,7 +180,7 @@ class GoalEvaluationNodeContinuationTest {
     void resolveActiveGoal_emptyWhenNoSnapshotNoDbGoal() {
         GoalService goalService = mock(GoalService.class);
         when(goalService.findActiveByConversation(anyString())).thenReturn(null);
-        OverAllState s = new OverAllState(Map.of(MateClawStateKeys.CONVERSATION_ID, "c1"));
+        RunState s = new RunState(Map.of(MateClawStateKeys.CONVERSATION_ID, "c1"));
         assertTrue(GoalEvaluationNode.resolveActiveGoal(s, goalService).isEmpty());
     }
 
@@ -445,7 +445,7 @@ class GoalEvaluationNodeContinuationTest {
          * @param followupCount         goal_followup_count already this run
          * @param hardContinuationCount goal_hard_continuation_count already this run
          */
-        OverAllState state(String finishReason, int followupCount, int hardContinuationCount) {
+        RunState state(String finishReason, int followupCount, int hardContinuationCount) {
             GoalEntity goal = new GoalEntity();
             goal.setId(1L);
             goal.setTitle("ship the feature");
@@ -460,7 +460,7 @@ class GoalEvaluationNodeContinuationTest {
             vals.put(MateClawStateKeys.GOAL_ACCOUNTED_LLM_CALL_COUNT, 0);
             vals.put(MateClawStateKeys.GOAL_FOLLOWUP_COUNT, followupCount);
             vals.put(MateClawStateKeys.GOAL_HARD_CONTINUATION_COUNT, hardContinuationCount);
-            return new OverAllState(vals);
+            return new RunState(vals);
         }
     }
 }

@@ -410,7 +410,7 @@ grep "wecom-keepalive" logs/mateclaw.log | tail
                       │
                       ▼
                 ┌──────────┐
-                │  Agent   │  ← StateGraph + ReAct
+                │  Agent   │  ← AgentScope ReAct
                 └─────┬────┘
                       │ finalAnswer / tool_calls
                       ▼

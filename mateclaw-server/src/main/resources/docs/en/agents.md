@@ -4,7 +4,7 @@ description: HHAIOS's multi-agent system runs in two modes — ReAct for real-ti
 head:
   - - meta
     - name: keywords
-      content: multi-agent,ReAct,Plan-and-Execute,agent delegation,Spring AI Alibaba,AI agent
+      content: multi-agent,ReAct,Plan-and-Execute,agent delegation,Spring AI,AgentScope,AI agent
 ---
 
 # Multi-Agent Engine
@@ -507,4 +507,4 @@ You'll see node-by-node execution: state transitions, dispatcher routing, iterat
 - [Memory](./memory) — how agents remember across conversations
 - [Workflow](./workflow) (1.3.0+) — orchestrate multiple digital employees and system actions into a business process
 - [Triggers](./triggers) (1.3.0+) — let events automatically start workflows or agent conversations
-- [Architecture](./architecture) — the StateGraph runtime in depth
+- [Architecture](./architecture) — native ReAct and plan runtime in depth

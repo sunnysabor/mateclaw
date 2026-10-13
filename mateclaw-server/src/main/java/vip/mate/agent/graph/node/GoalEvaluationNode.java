@@ -1,7 +1,7 @@
 package vip.mate.agent.graph.node;
 
-import com.alibaba.cloud.ai.graph.OverAllState;
-import com.alibaba.cloud.ai.graph.action.NodeAction;
+import vip.mate.agent.runtime.state.RunState;
+import vip.mate.agent.runtime.state.NodeAction;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
@@ -83,7 +83,7 @@ public class GoalEvaluationNode implements NodeAction {
     public void setDecisionAdapter(GoalDecisionAdapter decisionAdapter) { this.decisionAdapter = decisionAdapter; }
 
     @Override
-    public Map<String, Object> apply(OverAllState state) throws Exception {
+    public Map<String, Object> apply(RunState state) throws Exception {
         // Master kill switch — when disabled the node stays inert.
         if (!properties.isEnabled()) {
             return Map.of();
@@ -509,7 +509,7 @@ public class GoalEvaluationNode implements NodeAction {
      * is empty; callers should additionally gate on {@code properties.isEnabled()}
      * to skip it when the feature is off.
      */
-    public static Optional<GoalEntity> resolveActiveGoal(OverAllState state, GoalService goalService) {
+    public static Optional<GoalEntity> resolveActiveGoal(RunState state, GoalService goalService) {
         MateClawStateAccessor a = new MateClawStateAccessor(state);
         Optional<Object> snapshot = a.activeGoal();
         if (snapshot.isPresent() && snapshot.get() instanceof GoalEntity ge) {
