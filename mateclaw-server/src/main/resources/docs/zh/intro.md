@@ -7,9 +7,14 @@ head:
       content: MateClaw,多智能体,AI操作系统,自部署AI,Spring AI + AgentScope,ReAct,Plan-and-Execute,MCP,LLM Wiki,记忆系统,Tool Guard,开源
 ---
 
-# HHAIOS — 自部署多智能体 AI 操作系统
+3.0.0-SNAPSHOT 升级到 Java 21、Spring Boot 4 和 Spring AI 2，AgentScope 2 驱动 ReAct 与计划单步执行循环。工具审批、权限、Goal、SSE 与持久化继续由 MateClaw 统一治理；这是开发快照。
 
-**v2.3.0（2026-09-20 发布）——持久目标的 JSON 验收与执行证据。** 用户可配置 JSON 必需字段，将检查结果绑定到当前要求和不可变产物版本；同时加入团队成员受控干预、技能文档及文件夹上传，并修复 DSH 历史与输出预算、vLLM 推理内容和 SSE 分帧。 [v2.3.0](./releases/2.3.0)
+[升级说明与 changelog](./changelog)
+
+
+# MateClaw — 自部署多智能体 AI 操作系统
+
+**上一正式版 v2.3.0（2026-09-20 发布）——持久目标的 JSON 验收与执行证据。** 用户可配置 JSON 必需字段，将检查结果绑定到当前要求和不可变产物版本；同时加入团队成员受控干预、技能文档及文件夹上传，并修复 DSH 历史与输出预算、vLLM 推理内容和 SSE 分帧。 [v2.3.0](./releases/2.3.0)
 
 **你的多智能体 AI，跑在你自己的机器上，按你自己的规则。**
 

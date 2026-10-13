@@ -817,7 +817,7 @@ function showAboutDialog(): void {
     detail: [
       `Version: ${app.getVersion()}`,
       '',
-      'HHAIOS AI Operating System.',
+      'Your intelligent AI assistant powered by Spring AI 2 + AgentScope 2.',
       '',
       `Copyright © 2026 HHAIOS Team`,
     ].join('\n'),

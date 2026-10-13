@@ -1,5 +1,10 @@
 <div align="center">
 
+> 当前开发版本：**3.0.0-SNAPSHOT**。Java 21 / Spring Boot 4.1.1 / Spring AI 2.0.1 / AgentScope 2.0.4。AgentScope 驱动执行循环，MateClaw 保留工具审批、权限、Goal、SSE 与持久化。正式发行版请查看 Releases。
+> [3.0.0 架构升级日志](CHANGELOG.md)
+> 包含 2.3.0 之后全部累计更新：结构化决策、成员文件隔离、DSH SDK 升级、朗读音色试听和结构化 MCP 展示。
+
+
 <p align="center">
   <img src="mateclaw-ui/public/logo/mateclaw_logo_s.png" alt="MateClaw Logo" width="120">
 </p>

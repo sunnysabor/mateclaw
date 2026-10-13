@@ -7,9 +7,14 @@ head:
       content: MateClaw,multi-agent AI,self-hosted AI,AI operating system,Spring AI + AgentScope,ReAct,Plan-and-Execute,MCP,LLM Wiki,memory lifecycle,Tool Guard,open source
 ---
 
-# HHAIOS — Self-hosted Multi-Agent AI Operating System
+3.0.0-SNAPSHOT upgrades to Java 21, Spring Boot 4 and Spring AI 2. AgentScope 2 drives ReAct and plan-step execution loops; MateClaw retains approvals, permissions, Goals, SSE and persistence. This is a development snapshot.
 
-**v2.3.0 (released 2026-09-20) — JSON acceptance and execution evidence for persistent Goals.** Users can configure required JSON fields and bind checks to current requirements and immutable artifact versions. This release also adds controlled worker intervention and skill document/folder uploads, with fixes for DSH history and output budgets, vLLM reasoning, and SSE framing. [v2.3.0](./releases/2.3.0)
+[Upgrade guidance and changelog](./changelog)
+
+
+# MateClaw — Self-hosted Multi-Agent AI Operating System
+
+**Previous stable release v2.3.0 (released 2026-09-20) — JSON acceptance and execution evidence for persistent Goals.** Users can configure required JSON fields and bind checks to current requirements and immutable artifact versions. This release also adds controlled worker intervention and skill document/folder uploads, with fixes for DSH history and output budgets, vLLM reasoning, and SSE framing. [v2.3.0](./releases/2.3.0)
 
 **Your multi-agent AI. On your hardware. Under your rules.**
 

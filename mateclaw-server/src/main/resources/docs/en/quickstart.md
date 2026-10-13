@@ -1,5 +1,8 @@
 # Quick Start
 
+The source development branch is `3.0.0-SNAPSHOT`; stable installers remain the versions published in Releases. Read the [upgrade guidance](./changelog#upgrade-and-validation) before migrating.
+
+
 Sixty seconds to first message. **One path. Desktop app.**
 
 If you want Docker or local development instead, those live in [Configuration](./config) and [Contributing](./contributing). This page does one thing only — get you from zero to a working agent as fast as humanly possible.

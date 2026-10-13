@@ -508,3 +508,7 @@ You'll see node-by-node execution: state transitions, dispatcher routing, iterat
 - [Workflow](./workflow) (1.3.0+) — orchestrate multiple digital employees and system actions into a business process
 - [Triggers](./triggers) (1.3.0+) — let events automatically start workflows or agent conversations
 - [Architecture](./architecture) — native ReAct and plan runtime in depth
+
+## Execution and tool boundaries (3.0.0)
+
+AgentScope 2 drives native ReAct and plan-step loops. MateClaw retains actual tool execution through approvals, permissions and audit. Explicit tool opt-out remains effective and employee-draft JSON may follow reasoning blocks.
