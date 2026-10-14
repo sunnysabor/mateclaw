@@ -7,6 +7,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.ToolResponseMessage;
+import vip.mate.agent.context.ConversationWindowManager;
+import vip.mate.config.ConversationWindowProperties;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.tool.ToolCallback;
@@ -309,6 +312,62 @@ class ReasoningNodeOutputTest {
         when(definition.name()).thenReturn(name);
         when(callback.getToolDefinition()).thenReturn(definition);
         return callback;
+    }
+
+    @Test
+    void successfulNumericFactsSurviveActualAgedHistoryCompactionBeforeStreaming() throws Exception {
+        String numericResult = "{\"k\":3,\"n\":3300,\"sum\":11984445550}";
+        var result = new NodeStreamingChatHelper.StreamResult(numericResult, "", new AssistantMessage(numericResult),
+                List.of(), false, 100, 50);
+        when(streamingHelper.streamCall(any(), any(), anyString(), anyString())).thenReturn(result);
+        var history = new java.util.ArrayList<Message>();
+        for (int i = 0; i < 4; i++) {
+            String id = "call-" + i;
+            history.add(AssistantMessage.builder().content("").toolCalls(List.of(
+                    new AssistantMessage.ToolCall(id, "function", "execute_code", "{}"))).build());
+            history.add(ToolResponseMessage.builder().responses(List.of(new ToolResponseMessage.ToolResponse(
+                    id, "execute_code", i == 0 ? numericResult + "x".repeat(1000) : "latest"))).build());
+        }
+        Map<String, Object> state = baseStateMap();
+        state.put(MESSAGES, history);
+        state.put(ACTION_EXECUTION_LEDGER, ActionExecutionLedger.fromEvents(List.of(
+                GraphEventPublisher.toolComplete("call-0", "execute_code", numericResult, true))));
+        var manager = new ConversationWindowManager(new ConversationWindowProperties(), null, null);
+        var node = new ReasoningNode(chatModel, toolSet, null, streamingHelper, manager, streamTracker);
+
+        Map<String, Object> output = node.apply(new RunState(state));
+
+        var prompt = forClass(Prompt.class);
+        verify(streamingHelper).streamCall(any(), prompt.capture(), anyString(), anyString());
+        assertFalse(prompt.getValue().getInstructions().stream().filter(ToolResponseMessage.class::isInstance)
+                .map(ToolResponseMessage.class::cast).flatMap(message -> message.getResponses().stream())
+                .anyMatch(response -> response.responseData().contains("11984445550")));
+        assertTrue(prompt.getValue().getInstructions().stream().anyMatch(message ->
+                message instanceof SystemMessage && message.getText().contains("11984445550")));
+        assertEquals(result.text(), output.get(FINAL_ANSWER));
+        assertEquals(true, output.get(CONTENT_STREAMED));
+    }
+
+    @Test
+    void failedExecutionFactsAreIncludedBeforeAnswerStreaming() throws Exception {
+        var result = new NodeStreamingChatHelper.StreamResult(
+                "Finished with an earlier failed attempt.", "", new AssistantMessage("Finished with an earlier failed attempt."),
+                List.of(), false, 100, 50);
+        when(streamingHelper.streamCall(any(), any(), anyString(), anyString())).thenReturn(result);
+        Map<String, Object> state = baseStateMap();
+        state.put(ACTION_EXECUTION_LEDGER, ActionExecutionLedger.fromEvents(List.of(
+                GraphEventPublisher.toolComplete("failed-call", "tool_call", "missing language", false),
+                GraphEventPublisher.toolComplete("other-call", "tool_call", "ok", true))));
+
+        Map<String, Object> output = createNode().apply(new RunState(state));
+
+        var prompt = forClass(Prompt.class);
+        verify(streamingHelper).streamCall(any(), prompt.capture(), anyString(), anyString());
+        assertTrue(prompt.getValue().getInstructions().stream().anyMatch(message ->
+                message instanceof SystemMessage && message.getText().contains("failed-call")
+                        && message.getText().contains("does not establish recovery")));
+        assertEquals(result.text(), output.get(FINAL_ANSWER));
+        assertEquals(true, output.get(CONTENT_STREAMED));
     }
 
     @Test

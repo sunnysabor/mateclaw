@@ -12,6 +12,62 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ActionExecutionLedgerTest {
 
     @Test
+    void oversizedReceiptIdentifiersDoNotInflateAnswerFacts() {
+        var ledger = ActionExecutionLedger.fromEvents(java.util.List.of(
+                vip.mate.agent.GraphEventPublisher.toolComplete("x".repeat(10000), "y".repeat(10000), "failed", false)));
+        assertTrue(ledger.renderAnswerFacts().length() < 2000);
+    }
+
+    @Test
+    void answerFactsPreserveFailuresWithoutInferringRecoveryFromSameToolSuccess() {
+        ActionExecutionLedger ledger = ActionExecutionLedger.fromEvents(List.of(
+                GraphEventPublisher.toolComplete("failed-1", "tool_call",
+                        "{\"error\":true,\"code\":\"TOOL_ARGUMENTS_INCOMPLETE\"}", false),
+                GraphEventPublisher.toolComplete("success-2", "tool_call", "different task succeeded", true)));
+
+        String facts = ledger.renderAnswerFacts();
+        assertTrue(facts.contains("failed-1"));
+        assertTrue(facts.contains("TOOL_ARGUMENTS_INCOMPLETE"));
+        assertTrue(facts.contains("success-2"));
+        assertTrue(facts.contains("Do not claim that every execution succeeded"));
+        assertTrue(facts.contains("does not establish recovery"));
+    }
+
+    @Test
+    void successfulOnlyRunPreservesNumericResultsWithoutFailureInstruction() {
+        ActionExecutionLedger ledger = ActionExecutionLedger.fromEvents(List.of(
+                GraphEventPublisher.toolComplete("success", "execute_code", "{\"k\":3,\"n\":3300,\"sum\":11984445550}", true)));
+        assertTrue(ledger.renderAnswerFacts().contains("11984445550"));
+        assertTrue(ledger.renderAnswerFacts().contains("Copy numeric values verbatim"));
+        assertFalse(ledger.renderAnswerFacts().contains("failed calls occurred"));
+        assertEquals("", ActionExecutionLedger.empty().renderAnswerFacts());
+    }
+
+    @Test
+    void successfulResultSamplesKeepLatestSubstantiveCallsAndExactOmittedCounts() {
+        var events = new java.util.ArrayList<GraphEventPublisher.GraphEvent>();
+        for (int i = 0; i < 30; i++) {
+            events.add(new GraphEventPublisher.GraphEvent(GraphEventPublisher.EVENT_TOOL_COMPLETE,
+                    java.util.Map.of("toolCallId", "call-" + i, "toolName", "execute_code",
+                            "result", "value-" + i, "success", true), i));
+        }
+        events.add(GraphEventPublisher.toolComplete("progress", "progress_update", "do not preserve", true));
+        String facts = ActionExecutionLedger.fromEvents(events).renderAnswerFacts();
+        assertTrue(facts.contains("value-29"));
+        assertFalse(facts.contains("value-0\""));
+        assertFalse(facts.contains("do not preserve"));
+        assertTrue(facts.contains("\"omittedSuccessfulSubstantiveCallCount\":6"));
+    }
+
+    @Test
+    void disclosureOnlyRunAddsNoAnswerFacts() {
+        var ledger = ActionExecutionLedger.fromEvents(List.of(
+                GraphEventPublisher.toolComplete("load", "load_skill", "skill", true),
+                GraphEventPublisher.toolComplete("describe", "tool_describe", "schema", true)));
+        assertEquals("", ledger.renderAnswerFacts());
+    }
+
+    @Test
     void successfulBusinessToolSatisfiesActionCompletion() {
         ActionExecutionLedger ledger = ActionExecutionLedger.fromEvents(List.of(
                 GraphEventPublisher.toolComplete("call-1", "schedule_meeting", "created", true)));

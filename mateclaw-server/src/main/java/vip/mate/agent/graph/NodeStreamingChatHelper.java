@@ -352,16 +352,14 @@ public class NodeStreamingChatHelper {
 
     // ==================== 重试配置 ====================
 
+    /** Start checking for repeated reasoning only after a substantial transcript. */
+    private static final int THINKING_REPEAT_MIN_CHARS = 32768;
     /**
-     * Soft upper bound on per-call thinking ({@code reasoning_content}) chars
-     * with zero visible content and zero tool calls. Beyond this the helper
-     * disposes the upstream subscription and returns a partial result so the
-     * graph can advance instead of streaming thinking forever. Calibrated
-     * against typical Claude/DeepSeek extended-thinking budgets — well above
-     * normal long-form reasoning, low enough to bound a runaway loop in under
-     * ~30 seconds of wall clock.
+     * Memory safety fallback, distinct from repetition. The local highest
+     * Anthropic thinking tier allows 32768 tokens, not characters; reserve
+     * conservative character headroom and honor larger configured output budgets.
      */
-    private static final int THINKING_ONLY_HARD_CAP_CHARS = 32768;
+    private static final long THINKING_ONLY_MIN_SAFETY_CAP_CHARS = 32768L * 16;
 
     /**
      * Narrow content-repetition guard — fires when the buffer ends with
@@ -1205,11 +1203,17 @@ public class NodeStreamingChatHelper {
         AtomicInteger cacheWriteTokens = new AtomicInteger(0);
         AtomicInteger reasoningTokens = new AtomicInteger(0);
 
-        // thinking-only soft cap 触发后设为 true，外层轮询线程据此 dispose 订阅。
-        // 注意：内容流的字符级 / 句子级重复检测已整体移除（设计取舍：
-        // agent 不替模型审核输出退化，靠 max_tokens + max_iterations 兜底）；
-        // 仅保留 thinking-only 这条体积兜底，处理 volcengine-plan 等 provider
-        // 在 thinking 通道堆字符不出 content 的死循环（生产 trace c1eefa45）。
+        // Detect actual reasoning loops; retain a budget-aware volume fallback.
+        long thinkingSafetyCapChars = THINKING_ONLY_MIN_SAFETY_CAP_CHARS;
+        var defaultOptions = ChatModelDefaults.optionsFor(chatModel);
+        if (defaultOptions != null && defaultOptions.getMaxTokens() != null) {
+            thinkingSafetyCapChars = Math.max(thinkingSafetyCapChars, defaultOptions.getMaxTokens().longValue() * 16);
+        }
+        if (prompt.getOptions() != null && prompt.getOptions().getMaxTokens() != null) {
+            thinkingSafetyCapChars = Math.max(thinkingSafetyCapChars, prompt.getOptions().getMaxTokens().longValue() * 16);
+        }
+        final long thinkingOnlySafetyCapChars = thinkingSafetyCapChars;
+        AtomicInteger lastThinkingRepeatCheckLen = new AtomicInteger(0);
         AtomicBoolean thinkingOnlyCapTriggered = new AtomicBoolean(false);
         // Content-repetition guard: trips when the same paragraph-sized
         // suffix appears CONTENT_REPEAT_MAX_OCCURRENCES+ times in
@@ -1397,17 +1401,25 @@ public class NodeStreamingChatHelper {
                     // would trip the guard before we observe the tool_call —
                     // the user would see "INCOMPLETE: thinking-only" on a
                     // request that was actually about to dispatch a tool.
-                    // Pattern-agnostic; fires on volume alone. Outer poll
-                    // tears the subscription down within 500ms once the
-                    // flag flips.
-                    if (thinkingAccum.length() >= THINKING_ONLY_HARD_CAP_CHARS
+                    // Long, diverse reasoning is progress: length alone must
+                    // not classify it as a loop. Throttle suffix scans as for content.
+                    int thinkingLen = thinkingAccum.length();
+                    boolean repeatingThinking = false;
+                    if (thinkingLen >= THINKING_REPEAT_MIN_CHARS
+                            && thinkingLen - lastThinkingRepeatCheckLen.get() >= CONTENT_REPEAT_CHECK_INTERVAL) {
+                        lastThinkingRepeatCheckLen.set(thinkingLen);
+                        repeatingThinking = hasRepeatingSuffix(thinkingAccum, CONTENT_REPEAT_MIN_PERIOD,
+                                CONTENT_REPEAT_MAX_PERIOD, CONTENT_REPEAT_MAX_OCCURRENCES);
+                    }
+                    if ((repeatingThinking || thinkingLen >= thinkingOnlySafetyCapChars)
                             && contentAccum.length() == 0
                             && toolCallAccumulators.isEmpty()
                             && !msg.hasToolCalls()) {
-                        log.warn("[{}] Thinking-only soft cap reached " +
-                                        "({} thinking chars, no content/tool yet) " +
+                        log.warn("[{}] Thinking-only guard reached " +
+                                        "(trigger={}, {} thinking chars, safety limit={} chars, no content/tool yet) " +
                                         "— disposing stream for conversation {}",
-                                phase, thinkingAccum.length(), conversationId);
+                                phase, repeatingThinking ? "repetition" : "safety_limit",
+                                thinkingLen, thinkingOnlySafetyCapChars, conversationId);
                         broadcastContentTruncated(conversationId,
                                 "thinking_only_no_content",
                                 thinkingAccum.length());

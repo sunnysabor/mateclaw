@@ -218,7 +218,7 @@ mateclaw:
     prefix-budget:
       # Ratio remains useful for small contexts; this hard ceiling is what keeps
       # a provider-declared 1M window from advertising ~30k schema tokens forever.
-      tool-schema-max-tokens: ${MATECLAW_TOOL_SCHEMA_MAX_TOKENS:12000}
+      tool-schema-max-tokens: ${MATECLAW_TOOL_SCHEMA_MAX_TOKENS:4000}
   workspace:
     sandbox:
       # Global fallback filesystem boundary for file/shell tools. When a
