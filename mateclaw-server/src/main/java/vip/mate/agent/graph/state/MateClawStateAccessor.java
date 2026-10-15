@@ -228,6 +228,8 @@ public final class MateClawStateAccessor {
         return state.value(ACTION_COMPLETION_REQUIRED, false);
     }
 
+    public int finalizationAttempts() { return state.value(FINALIZATION_ATTEMPTS, 0); }
+
     public int actionCompletionRetryCount() {
         return state.value(ACTION_COMPLETION_RETRY_COUNT, 0);
     }
@@ -554,6 +556,8 @@ public final class MateClawStateAccessor {
         public OutputBuilder actionCompletionRequired(boolean required) {
             return put(ACTION_COMPLETION_REQUIRED, required);
         }
+
+        public OutputBuilder finalizationAttempts(int count) { return put(FINALIZATION_ATTEMPTS, count); }
 
         public OutputBuilder actionCompletionRetryCount(int count) {
             return put(ACTION_COMPLETION_RETRY_COUNT, count);

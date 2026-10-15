@@ -193,6 +193,7 @@ public final class MateClawStateKeys {
     public static final String ACTION_COMPLETION_REQUIRED = "action_completion_required";
 
     /** Number of completion-gate continuations consumed in the current run. */
+    public static final String FINALIZATION_ATTEMPTS = "finalization_attempts";
     public static final String ACTION_COMPLETION_RETRY_COUNT = "action_completion_retry_count";
 
     /** One-shot edge signal routing a rejected final candidate back to ReasoningNode. */

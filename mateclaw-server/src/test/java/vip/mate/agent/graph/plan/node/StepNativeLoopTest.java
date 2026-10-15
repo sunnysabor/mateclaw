@@ -18,6 +18,9 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
 
 import vip.mate.agent.AgentToolSet;
+import vip.mate.agent.GraphEventPublisher;
+import vip.mate.agent.graph.state.ActionExecutionLedger;
+import vip.mate.tool.guard.ToolGuardResult;
 import vip.mate.agent.context.ChatOrigin;
 import vip.mate.agent.context.ConversationWindowManager;
 import vip.mate.agent.graph.NodeStreamingChatHelper;
@@ -163,6 +166,74 @@ class StepNativeLoopTest {
                             "conversation",
                             MateClawStateKeys.AGENT_ID,
                             "agent"));
+        }
+    }
+
+    @Test
+    void replayStartAndReceiptDescribeActuallyExecutedStoredArguments() throws Exception {
+        assertReplayProvenance("{\"index\":0}");
+    }
+
+    @Test
+    void replayWithoutStoredArgumentsDescribesCurrentArgumentsFallback() throws Exception {
+        assertReplayProvenance(null);
+    }
+
+    @Test
+    void replayEmptyStoredStringRemainsEmptyLikeExecutorPayload() throws Exception {
+        assertReplayProvenance("");
+    }
+
+    @SuppressWarnings("unchecked")
+    private void assertReplayProvenance(String storedArguments) throws Exception {
+        var fixture = new Fixture();
+        fixture.modelRounds(1);
+        var executedArguments = new ArrayList<String>();
+        ToolCallback callback = new ToolCallback() {
+            public ToolDefinition getToolDefinition() {
+                return ToolDefinition.builder().name("first").description("replay provenance")
+                        .inputSchema("{\"type\":\"object\"}").build();
+            }
+            public String call(String input) {
+                executedArguments.add(input);
+                return "approved";
+            }
+            public String call(String input, ToolContext context) { return call(input); }
+        };
+        var tools = AgentToolSet.fromCallbacks(List.of(), List.of(callback));
+        var executor = new ToolExecutionExecutor(tools,
+                (name, arguments) -> ToolGuardResult.allow(), null, null);
+        var node = new StepExecutionNode(fixture.model, tools, executor, fixture.planning,
+                null, null, fixture.helper, null, 600_000);
+        var state = fixture.state();
+        Map<String, String> approval = storedArguments == null ? Map.of("name", "first")
+                : Map.of("name", "first", "arguments", storedArguments);
+        state.replace(MateClawStateKeys.PRE_APPROVED_TOOL_CALL,
+                new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(approval));
+
+        var output = node.apply(state);
+
+        String actual = storedArguments != null ? storedArguments : call(1).arguments();
+        assertEquals(List.of(actual), executedArguments, "The real callback must receive the approved payload");
+        var events = (List<GraphEventPublisher.GraphEvent>) output.get(MateClawStateKeys.PENDING_EVENTS);
+        var start = events.stream().filter(event -> GraphEventPublisher.EVENT_TOOL_START.equals(event.type())
+                && "call-1".equals(event.data().get("toolCallId"))).findFirst().orElseThrow();
+        assertEquals(actual, start.data().get("arguments"),
+                "Receipt provenance must describe actual execution, not the model's replacement request");
+        var actualReceipt = ActionExecutionLedger.fromEvents(events).receipts().get("call-1");
+        assertNotNull(actualReceipt);
+        var expectedReceipt = ActionExecutionLedger.fromEvents(List.of(
+                GraphEventPublisher.toolStart("expected", "first", actual),
+                GraphEventPublisher.toolComplete("expected", "first", "approved", true)))
+                .receipts().get("expected");
+        assertEquals(expectedReceipt.operationIdentity(), actualReceipt.operationIdentity());
+        if (storedArguments != null && !storedArguments.isBlank()) {
+            var failedReplacement = ActionExecutionLedger.fromEvents(List.of(
+                    GraphEventPublisher.toolStart("failed", "first", call(1).arguments()),
+                    GraphEventPublisher.toolComplete("failed", "first", "failed", false)))
+                    .receipts().get("failed");
+            assertNotEquals(failedReplacement.operationIdentity(), actualReceipt.operationIdentity(),
+                    "Approved A must not look like recovery of failed model request B");
         }
     }
 

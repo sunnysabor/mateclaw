@@ -69,10 +69,9 @@ class ServletJsonContractTest {
         try (var context =
                 new SpringApplicationBuilder(Application.class)
                         .properties(
-                                "server.port=0",
                                 "spring.main.banner-mode=off",
                                 "spring.http.converters.preferred-json-mapper=jackson2")
-                        .run()) {
+                        .run("--server.port=0")) {
             int port = ((WebServerApplicationContext) context).getWebServer().getPort();
             var response =
                     HttpClient.newHttpClient()

@@ -20,6 +20,38 @@ import static org.mockito.Mockito.*;
 import static org.mockito.ArgumentMatchers.*;
 import static vip.mate.agent.graph.state.MateClawStateKeys.*;
 class ReasoningNodeProgressBudgetTest {
+ @Test void authoritativeExecutionBudgetFactsAreInSystemPrefixAcrossPayloadRetry() throws Exception {
+  for(int configuredCap:List.of(0,-1,7,Integer.MAX_VALUE)) {
+   var helper=mock(NodeStreamingChatHelper.class);
+   var rejected=new NodeStreamingChatHelper.StreamResult(null,"",null,List.of(),false,0,0,false,"HTTP 413",NodeStreamingChatHelper.ErrorType.PAYLOAD_TOO_LARGE);
+   var answer=new NodeStreamingChatHelper.StreamResult("answer","",new AssistantMessage("answer"),List.of(),false,0,0);
+   when(helper.streamCall(any(),any(),anyString(),anyString())).thenReturn(rejected,answer);
+   var node=new ReasoningNode(mock(ChatModel.class),AgentToolSet.fromCallbacks(List.of(),List.of()),null,false,helper,null,null,1024,null,null,null,null);
+   List<Message> history=new ArrayList<>();history.add(new UserMessage("ANCHOR"));
+   for(int i=0;i<10;i++)history.add(new AssistantMessage("old history "+i));
+   node.apply(new RunState(Map.of(CONVERSATION_ID,"conv",SYSTEM_PROMPT,"system",USER_MESSAGE,"ANCHOR",MESSAGES,history,MAX_ITERATIONS,configuredCap)));
+   var captured=org.mockito.ArgumentCaptor.forClass(Prompt.class);
+   verify(helper,times(2)).streamCall(any(),captured.capture(),anyString(),anyString());
+   List<String> facts=new ArrayList<>();
+   for(Prompt prompt:captured.getAllValues()) {
+    String block=prompt.getInstructions().stream().filter(SystemMessage.class::isInstance)
+      .map(Message::getText).filter(text->text.contains("Runtime execution budget facts")).findFirst().orElse("");
+    assertTrue(block.contains("max_iterations="+configuredCap));
+    assertTrue(block.contains(configuredCap<=0 ? "no configured iteration soft cap" : "configured iteration soft cap="+configuredCap));
+    if(configuredCap<=0) assertTrue(block.contains("UNLIMITED"));
+    assertTrue(block.contains("Context trimming and ledger record counts do not mean execution budget is exhausted"));
+    assertTrue(block.contains("Context window and per-response output token limits are not whole-task iteration budgets"));
+    assertTrue(block.contains("Only an explicit runtime termination signal"));
+    assertTrue(block.contains("Current execution state: ACTIVE"));
+    assertTrue(block.contains("This reasoning call has been admitted by the runtime; tools may continue"));
+    assertTrue(block.contains("No runtime termination has been requested for this reasoning call"));
+    assertTrue(block.contains("Do not self-terminate unfinished work merely because of a configured cap, history trimming, token limits, or ledger size"));
+    assertTrue(block.contains("Cancellation and timeout protections still apply"));
+    facts.add(block);
+   }
+   assertEquals(facts.get(0),facts.get(1),"recovery must preserve authoritative prefix");
+  }
+ }
  @Test void compressedRetryIsCheckedAgainstActualWindowBeforeProviderCall() throws Exception {
   var helper=mock(NodeStreamingChatHelper.class);var window=mock(ConversationWindowManager.class);
   when(window.compactAgedToolResponses(anyList(),anyInt())).thenAnswer(inv->inv.getArgument(0));

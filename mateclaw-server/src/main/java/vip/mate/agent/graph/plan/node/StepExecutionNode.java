@@ -280,6 +280,7 @@ public class StepExecutionNode implements NodeAction {
         // burning the whole tool-call budget and advancing with junk.
         StepProgressTracker progressTracker = new StepProgressTracker();
         boolean preApprovedConsumed = false;
+        boolean payloadRejected = false;
 
         try {
             StepSession session = new StepSession(state, messages, events, stepDirectOutputs, loadedSkills,
@@ -287,6 +288,7 @@ public class StepExecutionNode implements NodeAction {
             try {
                 session.run();
             } finally {
+                payloadRejected = session.result != null && session.result.isPayloadTooLarge();
                 preApprovedConsumed = session.preApprovedConsumed;
                 finalResult = session.finalResult;
                 stepThinking = session.stepThinking;
@@ -355,6 +357,20 @@ public class StepExecutionNode implements NodeAction {
                                 stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
                         .events(events)
                         .build();
+            }
+
+            if (payloadRejected) {
+                String diagnosis = vip.mate.agent.graph.PayloadReduction.INCOMPLETE;
+                planningService.updateSubPlanFailure(planId, stepIndex, diagnosis);
+                planningService.markPlanFailed(planId, diagnosis);
+                events.add(GraphEventPublisher.finishReason("incomplete"));
+                return PlanStateAccessor.output().currentStepResult(diagnosis)
+                        .put(MateClawStateKeys.FINISH_REASON, "incomplete")
+                        .currentPhase("plan_aborted").finalSummary(diagnosis).contentStreamed(false)
+                        .loadedSkills(Set.copyOf(loadedSkills))
+                        .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
+                                stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
+                        .events(events).build();
             }
 
             // Step-failure recovery WITHOUT an exception: the inner loop ended
@@ -723,7 +739,17 @@ public class StepExecutionNode implements NodeAction {
             }
             result = streamingHelper.streamCall(chatModel, new Prompt(messages, options), conversationId,
                     "step_execution[" + stepIndex + "]");
-            if (result.isPromptTooLong() && conversationWindowManager != null) {
+            boolean payloadRecovery = result.isPayloadTooLarge();
+            if (payloadRecovery) {
+                List<Message> reduced = vip.mate.agent.graph.PayloadReduction.reduce(messages);
+                if (reduced != null) {
+                    result = streamingHelper.streamCall(chatModel, new Prompt(reduced, options), conversationId,
+                            "step_execution_payload_retry[" + stepIndex + "]");
+                    messages = reduced;
+                }
+                if (result.isPayloadTooLarge()) result = vip.mate.agent.graph.PayloadReduction.incomplete(result);
+            }
+            if (!payloadRecovery && result.isPromptTooLong() && conversationWindowManager != null) {
                 List<Message> systemPrompts = messages.stream().filter(SystemMessage.class::isInstance).toList();
                 List<Message> history = messages.stream()
                         .filter(message -> !(message instanceof SystemMessage)).toList();
@@ -735,6 +761,7 @@ public class StepExecutionNode implements NodeAction {
                             "step_execution_compact_retry[" + stepIndex + "]");
                 }
             }
+            if (result.isPayloadTooLarge()) result = vip.mate.agent.graph.PayloadReduction.incomplete(result);
             stepPromptTokens += result.promptTokens(); stepCompletionTokens += result.completionTokens();
             stepCacheReadTokens += result.cacheReadTokens(); stepCacheWriteTokens += result.cacheWriteTokens();
             stepReasoningTokens += result.reasoningTokens();
@@ -757,7 +784,10 @@ public class StepExecutionNode implements NodeAction {
                         String storedArguments = extractArgumentsFromPayload(preApprovedPayload);
                         preApprovedPayload = "";
                         preApprovedConsumed = true;
-                        events.add(GraphEventPublisher.toolStart(toolCall.id(), toolCall.name(), toolCall.arguments()));
+                        // Match executePreApproved's exact payload selection, including
+                        // preserving a stored empty string rather than substituting model args.
+                        String executionArguments = storedArguments != null ? storedArguments : toolCall.arguments();
+                        events.add(GraphEventPublisher.toolStart(toolCall.id(), toolCall.name(), executionArguments));
                         // RFC-052: pass the directOutputs collector so that an
                         // approved direct tool's full content is captured here
                         // (instead of leaking into the next LLM round).

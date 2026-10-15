@@ -50,6 +50,48 @@ class ReasoningNodeRetryBudgetTest {
         when(window.pruneOldToolResultsForModelInput(anyList(),anyString(),anyString())).thenAnswer(inv->inv.getArgument(0));
         return window;
     }
+    private static NodeStreamingChatHelper.StreamResult payload() {
+        return new NodeStreamingChatHelper.StreamResult(null,"",new AssistantMessage(""),List.of(),false,0,0,false,"HTTP 413",NodeStreamingChatHelper.ErrorType.PAYLOAD_TOO_LARGE);
+    }
+    @Test void payloadRecoveryIsLocalStrictlySmallerAndOnlyOnce() throws Exception {
+        var helper=mock(NodeStreamingChatHelper.class); var window=window(); var provider=mock(ChatModel.class);
+        when(helper.streamCall(any(),any(),anyString(),anyString())).thenReturn(payload(),payload());
+        var output=nodeWithModel(helper,window,100,provider).apply(state(history(),100,0));
+        var cap=org.mockito.ArgumentCaptor.forClass(Prompt.class);
+        verify(helper,times(2)).streamCall(any(),cap.capture(),anyString(),anyString());
+        assertTrue(cap.getAllValues().get(1).getInstructions().size()<cap.getAllValues().get(0).getInstructions().size());
+        assertTrue(cap.getAllValues().get(1).getContents().contains("ORIGINAL_OBJECTIVE"));
+        verify(window,never()).compactForRetry(anyList(),any(),anyString(),any());
+        verify(provider,never()).call(any(Prompt.class));
+        assertEquals("incomplete",output.get(FINISH_REASON));
+        assertEquals(2,output.get(LLM_CALL_COUNT));
+        assertEquals(false,output.get(CONTENT_STREAMED));
+    }
+    @Test void payloadMandatoryOnlyStopsWithoutRetry() throws Exception {
+        var helper=mock(NodeStreamingChatHelper.class);
+        when(helper.streamCall(any(),any(),anyString(),anyString())).thenReturn(payload());
+        var output=node(helper,null,100).apply(state(List.of(new UserMessage("ORIGINAL_OBJECTIVE")),100,0));
+        verify(helper,times(1)).streamCall(any(),any(),anyString(),anyString());
+        assertEquals("incomplete",output.get(FINISH_REASON));
+    }
+    @Test void payloadRetryCancellationStopsWithoutSummaryOrFurtherCalls() throws Exception {
+        var helper=mock(NodeStreamingChatHelper.class); var window=window();
+        when(helper.streamCall(any(),any(),anyString(),anyString())).thenReturn(payload())
+                .thenThrow(new java.util.concurrent.CancellationException("stop"));
+        var output=node(helper,window,100).apply(state(history(),100,0));
+        verify(helper,times(2)).streamCall(any(),any(),anyString(),anyString());
+        verify(window,never()).compactForRetry(anyList(),any(),anyString(),any());
+        assertEquals("stopped",output.get(FINISH_REASON));
+        assertEquals(2,output.get(LLM_CALL_COUNT));
+    }
+    @Test void payloadRetryRespectsCallCeiling() throws Exception {
+        var helper=mock(NodeStreamingChatHelper.class);
+        when(helper.streamCall(any(),any(),anyString(),anyString())).thenReturn(payload());
+        var output=node(helper,null,100).apply(state(history(),1,4));
+        verify(helper,times(1)).streamCall(any(),any(),anyString(),anyString());
+        assertEquals("incomplete",output.get(FINISH_REASON));
+    }
+
     @Test void anthropicHighAndOffReserveActualMaxTokensForInitialAndNudgeCalls() throws Exception {
         for(String thinking:List.of("high","off")) {
             var helper=mock(NodeStreamingChatHelper.class);var model=mock(ChatModel.class);

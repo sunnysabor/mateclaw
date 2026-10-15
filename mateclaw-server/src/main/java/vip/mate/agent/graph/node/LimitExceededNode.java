@@ -46,6 +46,10 @@ public class LimitExceededNode implements NodeAction {
     private static final String SYSTEM_TEMPLATE = PromptLoader.loadPrompt("graph/limit-exceeded-system");
     private static final String USER_TEMPLATE = PromptLoader.loadPrompt("graph/limit-exceeded-user");
 
+    private vip.mate.agent.graph.guard.TaskFinalizationCoordinator finalizationCoordinator;
+    public void setFinalizationCoordinator(vip.mate.agent.graph.guard.TaskFinalizationCoordinator coordinator) {
+        this.finalizationCoordinator=java.util.Objects.requireNonNull(coordinator);
+    }
     private final ChatModel chatModel;
     private final ObservationProcessor observationProcessor;
     private final NodeStreamingChatHelper streamingHelper;
@@ -98,6 +102,21 @@ public class LimitExceededNode implements NodeAction {
     public Map<String, Object> apply(RunState state) throws Exception {
         MateClawStateAccessor accessor = new MateClawStateAccessor(state);
 
+        if (finalizationCoordinator != null && vip.mate.agent.graph.guard.TaskFinalizationCoordinator
+                .eligible(accessor.actionCompletionRequired(),accessor.actionExecutionLedger())) {
+            // This boundary is authoritative and terminal. No model-authored prose or restart is allowed.
+            int window = prefixBudgetPlan != null ? prefixBudgetPlan.effectiveMaxTokens() : 16000;
+            var facts=accessor.actionExecutionLedger().projectAnswerFacts(Math.min(2000,Math.max(128,window/8)));
+            long successful=accessor.actionExecutionLedger().receipts().values().stream()
+                    .filter(receipt->receipt.substantive() && receipt.status()==vip.mate.agent.graph.state.ActionExecutionLedger.Status.SUCCEEDED).count();
+            String draft="任务尚未完成：已达到运行时推理次数上限。已保留原始工具记录。"
+                    + "本轮已确认实质工具调用成功 " + successful + " 次，失败 "
+                    + accessor.actionExecutionLedger().failedCallCount() + " 次；这些调用记录不能证明整个任务完成。"
+                    + (facts.coreFactsFit() ? "" : "必需执行事实无法安全容纳，无法提供已验证总结。");
+            return MateClawStateAccessor.output().finalAnswerDraft(draft)
+                    .llmCallCount(accessor.llmCallCount()).limitExceeded(true).contentStreamed(false)
+                    .thinkingStreamed(accessor.thinkingStreamed()).finishReason(FinishReason.MAX_ITERATIONS_REACHED).build();
+        }
         int maxIterations = accessor.maxIterations();
         String userInput = accessor.userMessage();
         String conversationId = accessor.conversationId();

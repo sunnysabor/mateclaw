@@ -80,6 +80,10 @@ class ActionNodeBatchBoundaryTest {
         assertTrue(
                 ((ActionExecutionLedger) output.get(ACTION_EXECUTION_LEDGER))
                         .hasSuccessfulTool("once"));
+        var ledger = (ActionExecutionLedger) output.get(ACTION_EXECUTION_LEDGER);
+        assertTrue(ledger.renderAnswerFacts().contains("sha256:"),
+                "Real executor start arguments must join the completed receipt by call id");
+        assertFalse(ledger.renderAnswerFacts().contains("\"value\":"));
         assertEquals(executed.events(), output.get(PENDING_EVENTS));
     }
 }

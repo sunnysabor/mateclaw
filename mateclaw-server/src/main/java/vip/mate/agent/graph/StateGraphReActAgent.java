@@ -333,9 +333,7 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
 
                         lastIteration.set(output.state().value(CURRENT_ITERATION, 0));
                         lastSoftCap.set(output.state().value(MAX_ITERATIONS, 0));
-                        if (hasFinalAnswer(output)
-                                || Boolean.TRUE.equals(output.state().value(LIMIT_EXCEEDED, false))
-                                || !output.state().<String>value(FINISH_REASON).orElse("").isBlank()) {
+                        if (isFinalAnswerOutput(output)) {
                             sawLegitimateExit.set(true);
                         }
 
@@ -535,9 +533,7 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
                         // 4. Silent-termination guard inputs
                         lastIteration.set(output.state().value(CURRENT_ITERATION, 0));
                         lastSoftCap.set(output.state().value(MAX_ITERATIONS, 0));
-                        if (hasFinalAnswer(output)
-                                || Boolean.TRUE.equals(output.state().value(LIMIT_EXCEEDED, false))
-                                || !output.state().<String>value(FINISH_REASON).orElse("").isBlank()) {
+                        if (isFinalAnswerOutput(output)) {
                             sawLegitimateExit.set(true);
                         }
 
@@ -847,8 +843,14 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
                 || !finalAnswer.contains(streamed);
     }
 
+    /** Reasoning candidates still require final-node cleanup before publication/persistence. */
+    private boolean isFinalAnswerOutput(RunStep output) {
+        return output != null && (FINAL_ANSWER_NODE.equals(output.node())
+                || "finalAnswer".equals(output.node()) && output.state().value(PRE_RUN_ABORTED,false));
+    }
+
     private boolean hasFinalAnswer(RunStep output) {
-        if (output == null || output.state() == null) {
+        if (!isFinalAnswerOutput(output)) {
             return false;
         }
         return output.state().<String>value(FINAL_ANSWER)

@@ -309,7 +309,7 @@ public class NodeStreamingChatHelper {
      */
     public StreamResult streamCall(ChatModel chatModel, Prompt prompt,
                                    String conversationId, String phase) {
-        return streamCallInternal(chatModel, prompt, conversationId, phase, true);
+        return streamCallInternal(chatModel, prompt, conversationId, phase, PublicationMode.LIVE);
     }
 
     /**
@@ -326,7 +326,20 @@ public class NodeStreamingChatHelper {
      */
     public StreamResult streamCallSilent(ChatModel chatModel, Prompt prompt,
                                           String conversationId, String phase) {
-        return streamCallInternal(chatModel, prompt, conversationId, phase, false);
+        return streamCallInternal(chatModel, prompt, conversationId, phase, PublicationMode.SILENT);
+    }
+
+    /**
+     * Accumulate a candidate answer without publishing content deltas. Thinking
+     * and lifecycle/error events remain live while the caller validates it.
+     */
+    public StreamResult streamCallBufferedContent(ChatModel chatModel, Prompt prompt,
+                                                  String conversationId, String phase) {
+        return streamCallInternal(chatModel, prompt, conversationId, phase, PublicationMode.BUFFER_CONTENT);
+    }
+
+    private enum PublicationMode {
+        LIVE, BUFFER_CONTENT, SILENT
     }
 
     /**
@@ -489,6 +502,23 @@ public class NodeStreamingChatHelper {
      */
     private static ErrorType classifyError(Throwable error) {
         String msg = extractFullErrorChain(error);
+        // Trust structured transport status before body text (which can mention
+        // unrelated context/token errors). Bound malformed cyclic cause chains.
+        Throwable current = error;
+        int transportStatus = 0;
+        for (int depth = 0; current != null && depth < 32; depth++, current = current.getCause()) {
+            int status = current instanceof WebClientResponseException response
+                    ? response.getStatusCode().value() : ProviderHttpError.status(current);
+            if (status == 413) return ErrorType.PAYLOAD_TOO_LARGE;
+            if (transportStatus == 0 && status != 0) transportStatus = status;
+        }
+        String payloadText = msg.toLowerCase(Locale.ROOT);
+        if (transportStatus == 0 && (hasHttpStatus(0, msg, 413)
+                || payloadText.contains("payload too large")
+                || payloadText.contains("request entity too large")
+                || payloadText.contains("请求体过大"))) {
+            return ErrorType.PAYLOAD_TOO_LARGE;
+        }
         // PTL: prompt too long / context length exceeded
         if (msg.contains("prompt is too long")
                 || msg.contains("context_length_exceeded")
@@ -520,7 +550,7 @@ public class NodeStreamingChatHelper {
                 || msg.contains("certificate_unknown")) {
             return ErrorType.AUTH_ERROR;
         }
-        if (msg.contains("401") || msg.contains("Unauthorized") || msg.contains("Invalid API Key")
+        if (hasHttpStatus(transportStatus, msg, 401) || msg.contains("Unauthorized") || msg.contains("Invalid API Key")
                 || msg.contains("authentication") || msg.contains("AuthenticationError")) {
             return ErrorType.AUTH_ERROR;
         }
@@ -534,13 +564,13 @@ public class NodeStreamingChatHelper {
                 || msg.contains("overloaded_error")     // Anthropic 529 body type
                 || msg.contains("Overloaded")           // Anthropic 529 message
                 || msg.contains("model is overloaded")  // Gemini / OpenAI-compatible
-                || msg.contains("529")
+                || hasHttpStatus(transportStatus, msg, 529)
                 || msg.contains("server is busy")
                 || msg.contains("当前分组上游负载已饱和")) { // SiliconFlow group saturation
             return ErrorType.OVERLOADED;
         }
         // Rate limit
-        if (msg.contains("429") || msg.contains("rate_limit") || msg.contains("RateLimitError")
+        if (hasHttpStatus(transportStatus, msg, 429) || msg.contains("rate_limit") || msg.contains("RateLimitError")
                 || msg.contains("Too Many Requests")) {
             return ErrorType.RATE_LIMIT;
         }
@@ -557,7 +587,7 @@ public class NodeStreamingChatHelper {
         // Chinese provider patterns (Zhipu 1113, DashScope, general) — same hard
         // failure semantics: retrying the same provider won't refill the balance.
         String lowerMsg = msg.toLowerCase(Locale.ROOT);
-        if (msg.contains("402") || msg.contains("insufficient_quota")
+        if (hasHttpStatus(transportStatus, msg, 402) || msg.contains("insufficient_quota")
                 || msg.contains("credit balance is too low")
                 || msg.contains("billing_error") || msg.contains("billing_hard_limit_reached")
                 || msg.contains("You exceeded your current quota")
@@ -613,7 +643,7 @@ public class NodeStreamingChatHelper {
         // to the user as "LLM 调用失败" with no recovery attempt. These are
         // network-layer transients that almost always succeed on retry, so
         // they belong in the same retryable bucket as 5xx/timeouts.
-        if (msg.contains("500") || msg.contains("502") || msg.contains("503") || msg.contains("504")
+        if (hasHttpStatus(transportStatus, msg, 500) || hasHttpStatus(transportStatus, msg, 502) || hasHttpStatus(transportStatus, msg, 503) || hasHttpStatus(transportStatus, msg, 504)
                 || msg.contains("APITimeoutError") || msg.contains("APIConnectionError")
                 || msg.contains("Connection reset") || msg.contains("Connection refused")
                 || msg.contains("timeout") || msg.contains("Timeout")
@@ -649,13 +679,26 @@ public class NodeStreamingChatHelper {
         // parameter. These fail identically on every provider, so classifying them as CLIENT_ERROR
         // (rather than MODEL_NOT_FOUND) keeps the model in the failover pool and surfaces the real
         // cause instead of a misleading "model not available" message.
-        if (msg.contains("400") || msg.contains("Bad Request")
+        if (hasHttpStatus(transportStatus, msg, 400) || msg.contains("Bad Request")
                 || msg.contains("invalid_request_error") || msg.contains("unsupported")
                 || msg.contains("Tool names are not allowed")
                 || msg.contains("InvalidParameter")) {
             return ErrorType.CLIENT_ERROR;
         }
         return ErrorType.UNKNOWN;
+    }
+
+    /** Numeric status evidence must come from transport or explicit HTTP/status syntax. */
+    private static boolean hasHttpStatus(int transportStatus, String message, int expected) {
+        if (transportStatus != 0) return transportStatus == expected;
+        // Leading codes cover old adapters ("503 Service Unavailable"). The
+        // chain delimiter also permits a nested exception's leading status.
+        // Never interpret digits embedded in request IDs, counters or payloads.
+        String code = Integer.toString(expected);
+        return java.util.regex.Pattern.compile(
+                "(?im)(?:^|\\|)\\s*" + code + "(?![\\w-])"
+                + "|\\b(?:http(?:/\\d(?:\\.\\d)?)?|status(?:\\s+code)?)\\s*[:=]?\\s*" + code + "(?![\\w-])")
+                .matcher(message).find();
     }
 
     /**
@@ -811,7 +854,8 @@ public class NodeStreamingChatHelper {
 
     private StreamResult streamCallInternal(ChatModel chatModel, Prompt prompt,
                                              String conversationId, String phase,
-                                             boolean broadcast) {
+                                             PublicationMode publicationMode) {
+        boolean broadcast = publicationMode != PublicationMode.SILENT;
         // Normalize every assistant tool call in the outgoing history to valid
         // JSON arguments. The streaming aggregator already does this for the
         // current turn's calls, but tool calls replayed from persisted history
@@ -879,7 +923,7 @@ public class NodeStreamingChatHelper {
             }
             llmCallCount++;
             if (attempt > 0) retryCount++;
-            lastResult = doStreamCall(chatModel, prompt, conversationId, phase, broadcast, attempt, true, retryType, retryHint);
+            lastResult = doStreamCall(chatModel, prompt, conversationId, phase, publicationMode, attempt, true, retryType, retryHint);
             if (lastResult == null || !lastResult.stopped()) throwIfCancelled(conversationId);
             if (lastResult != null) {
                 ErrorType errType = lastResult.errorType();
@@ -895,7 +939,7 @@ public class NodeStreamingChatHelper {
                 // the error must surface unchanged (never routed to fallback —
                 // a different provider has a different window and the caller
                 // would lose the compaction signal).
-                if (errType == ErrorType.PROMPT_TOO_LONG) {
+                if (errType == ErrorType.PROMPT_TOO_LONG || errType == ErrorType.PAYLOAD_TOO_LARGE) {
                     return lastResult;
                 }
                 // THINKING_BLOCK_ERROR — side-effectful recovery: strip stale
@@ -995,9 +1039,10 @@ public class NodeStreamingChatHelper {
             failoverCount++;
             llmCallCount++;
             StreamResult fallbackResult = doStreamCall(fallback, prompt, conversationId,
-                    phase + "_fallback_" + (i + 1), broadcast, 0, false,
+                    phase + "_fallback_" + (i + 1), publicationMode, 0, false,
                     new AtomicReference<>(), new AtomicReference<>(0L));
             if (fallbackResult == null || !fallbackResult.stopped()) throwIfCancelled(conversationId);
+            if (fallbackResult != null && fallbackResult.isPayloadTooLarge()) return fallbackResult;
             // Accept only fully successful fallbacks. Non-successful results (auth
             // error, client error, still-rate-limited) propagate to the next
             // fallback instead of being surfaced as the final result.
@@ -1027,7 +1072,7 @@ public class NodeStreamingChatHelper {
 
         logPerfSummary(phase, conversationId, callStartMs, llmCallCount, retryCount, failoverCount);
         return lastResult != null ? lastResult
-                : buildErrorResult("LLM 调用失败，已达最大重试次数", conversationId, phase);
+                : buildErrorResult("LLM 调用失败，已达最大重试次数", conversationId, phase, publicationMode);
     }
 
     /** D-6: log a structured performance summary for the LLM call phase. */
@@ -1048,7 +1093,7 @@ public class NodeStreamingChatHelper {
      */
     private StreamResult doStreamCall(ChatModel chatModel, Prompt prompt,
                                        String conversationId, String phase,
-                                       boolean broadcast, int attempt, boolean primaryCall,
+                                       PublicationMode publicationMode, int attempt, boolean primaryCall,
                                        AtomicReference<ErrorType> retryTypeRef,
                                        AtomicReference<Long> retryHintRef) {
         // Collapse every SystemMessage in the prompt into a single SystemMessage
@@ -1099,7 +1144,7 @@ public class NodeStreamingChatHelper {
         }
 
         try {
-            return doStreamCallInner(chatModel, outbound, conversationId, phase, broadcast, attempt, primaryCall, retryTypeRef, retryHintRef);
+            return doStreamCallInner(chatModel, outbound, conversationId, phase, publicationMode, attempt, primaryCall, retryTypeRef, retryHintRef);
         } finally {
             // Idempotent: if consumer already took the entry, discard is a no-op.
             if (relayToken != null) {
@@ -1128,9 +1173,10 @@ public class NodeStreamingChatHelper {
 
     private StreamResult doStreamCallInner(ChatModel chatModel, Prompt prompt,
                                             String conversationId, String phase,
-                                            boolean broadcast, int attempt, boolean primaryCall,
+                                            PublicationMode publicationMode, int attempt, boolean primaryCall,
                                             AtomicReference<ErrorType> retryTypeRef,
                                             AtomicReference<Long> retryHintRef) {
+        boolean broadcast = publicationMode != PublicationMode.SILENT;
         throwIfCancelled(conversationId);
         if (attempt > 0) {
             boolean overloaded = retryTypeRef.get() == ErrorType.OVERLOADED;
@@ -1377,7 +1423,7 @@ public class NodeStreamingChatHelper {
                             ));
                         }
                         contentAccum.append(contentDelta);
-                        if (broadcast) {
+                        if (publicationMode == PublicationMode.LIVE) {
                             broadcastDelta(conversationId, "content_delta", contentDelta);
                         }
                     }
@@ -1420,9 +1466,10 @@ public class NodeStreamingChatHelper {
                                         "— disposing stream for conversation {}",
                                 phase, repeatingThinking ? "repetition" : "safety_limit",
                                 thinkingLen, thinkingOnlySafetyCapChars, conversationId);
-                        broadcastContentTruncated(conversationId,
-                                "thinking_only_no_content",
-                                thinkingAccum.length());
+                        if (broadcast) {
+                            broadcastContentTruncated(conversationId,
+                                    "thinking_only_no_content", thinkingAccum.length());
+                        }
                         thinkingOnlyCapTriggered.set(true);
                         return;
                     }
@@ -1449,9 +1496,9 @@ public class NodeStreamingChatHelper {
                                             "— disposing stream for conversation {}",
                                     phase, currentLen, CONTENT_REPEAT_MAX_OCCURRENCES,
                                     conversationId);
-                            broadcastContentTruncated(conversationId,
-                                    "content_repetition",
-                                    currentLen);
+                            if (broadcast) {
+                                broadcastContentTruncated(conversationId, "content_repetition", currentLen);
+                            }
                             contentRepeatCapTriggered.set(true);
                             return;
                         }
@@ -1534,7 +1581,7 @@ public class NodeStreamingChatHelper {
                 if (System.currentTimeMillis() > deadlineMs) {
                     subscription.dispose();
                     log.warn("[{}] Stream call timed out for conversation {}", phase, conversationId);
-                    return buildErrorResult("LLM 调用超时", conversationId, phase);
+                    return buildErrorResult("LLM 调用超时", conversationId, phase, publicationMode);
                 }
             }
         } catch (InterruptedException e) {
@@ -1595,7 +1642,7 @@ public class NodeStreamingChatHelper {
                     }
                 }
                 return buildErrorResultWithType("Prompt 过长: " + extractUserFriendlyError(error),
-                        conversationId, phase, errorType);
+                        conversationId, phase, errorType, publicationMode);
             }
 
             // Generic retry gate — the ErrorType's own budget decides whether
@@ -1617,11 +1664,12 @@ public class NodeStreamingChatHelper {
             String message = switch (errorType) {
                 case AUTH_ERROR -> "认证失败: " + friendly;
                 case CLIENT_ERROR -> "Bad request: " + friendly;
+                case PAYLOAD_TOO_LARGE -> "请求体过大（HTTP 413）";
                 default -> "LLM 调用失败: " + friendly;
             };
             log.error("[{}] LLM call failed (type={}) after {} attempts for conversation {}: {}",
                     phase, errorType, attempt + 1, conversationId, error.getMessage());
-            return buildErrorResultWithType(message, conversationId, phase, errorType);
+            return buildErrorResultWithType(message, conversationId, phase, errorType, publicationMode);
         }
 
         // ===== 成功（检查是否因 thinking-only 软上限或内容重复被截断） =====
@@ -1976,9 +2024,10 @@ public class NodeStreamingChatHelper {
         return new Prompt(rebuilt, prompt.getOptions());
     }
 
-    private StreamResult buildErrorResult(String errorMsg, String conversationId, String phase) {
+    private StreamResult buildErrorResult(String errorMsg, String conversationId, String phase,
+                                          PublicationMode publicationMode) {
         log.error("[{}] Building error result for conversation {}: {}", phase, conversationId, errorMsg);
-        if (streamTracker != null && conversationId != null) {
+        if (publicationMode != PublicationMode.SILENT && streamTracker != null && conversationId != null) {
             broadcastDelta(conversationId, "warning",
                     buildDeltaJson(errorMsg));
         }
@@ -1989,10 +2038,10 @@ public class NodeStreamingChatHelper {
 
     /** 构建带错误类型的 StreamResult */
     private StreamResult buildErrorResultWithType(String errorMsg, String conversationId,
-                                                    String phase, ErrorType errorType) {
+                                                    String phase, ErrorType errorType, PublicationMode publicationMode) {
         log.error("[{}] Building typed error result for conversation {}: {} (type={})",
                 phase, conversationId, errorMsg, errorType);
-        if (streamTracker != null && conversationId != null) {
+        if (publicationMode != PublicationMode.SILENT && streamTracker != null && conversationId != null) {
             broadcastDelta(conversationId, "warning", buildDeltaJson(errorMsg));
             // 广播结构化 error 事件，供前端展示错误卡片
             String errorJson = buildErrorEventJson(errorMsg, conversationId, errorType);
@@ -2197,6 +2246,7 @@ public class NodeStreamingChatHelper {
          * Context window exceeded. Never retried here — returned to the node,
          * which owns structured compaction and its own retry.
          */
+        PAYLOAD_TOO_LARGE    (0,                          false,     false,  false),
         PROMPT_TOO_LONG      (0,                          false,     false,  false),
         /** Auth / infrastructure failure (bad key, cert, DNS). Will not self-heal. */
         AUTH_ERROR           (0,                          true,      true,   true),
@@ -2330,6 +2380,10 @@ public class NodeStreamingChatHelper {
         }
 
         /** 是否为 Prompt 过长错误 */
+        public boolean isPayloadTooLarge() {
+            return errorType == ErrorType.PAYLOAD_TOO_LARGE;
+        }
+
         public boolean isPromptTooLong() {
             return errorType == ErrorType.PROMPT_TOO_LONG;
         }

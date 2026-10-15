@@ -750,6 +750,11 @@ public class AgentGraphBuilder {
             stepExecutionNode.setDelegateAgentTool(delegateAgentTool);
             stepExecutionNode.setGoalDecisionAdapter(goalDecisionAdapter);
             PlanSummaryNode planSummaryNode = new PlanSummaryNode(chatModel, planningService, streamingHelper);
+            planSummaryNode.setFinalizationCoordinator(new vip.mate.agent.graph.guard.TaskFinalizationCoordinator(streamingHelper,streamTracker));
+            Integer summaryWindow = primaryModelConfig != null ? contextWindowResolver.resolveMaxInputTokens(
+                    modelProviderService.getProviderConfig(primaryModelConfig.getProvider()),primaryModelConfig) : null;
+            planSummaryNode.setPrefixBudgetPlan(PrefixBudgetPlan.unlimited(summaryWindow != null && summaryWindow > 0
+                    ? summaryWindow : conversationWindowManager.getDefaultMaxInputTokens()));
             planSummaryNode.setGoalService(goalService);
             DirectAnswerNode directAnswerNode = new DirectAnswerNode();
 
@@ -909,6 +914,7 @@ public class AgentGraphBuilder {
                     streamingHelper, conversationWindowManager, streamTracker,
                     configuredMaxOutputTokens, wikiContextService,
                     skillCatalogRenderer, toolDisclosureService, progressLedgerService);
+            reasoningNode.setFinalizationCoordinator(new vip.mate.agent.graph.guard.TaskFinalizationCoordinator(streamingHelper,streamTracker));
             reasoningNode.setPrefixBudgetPlan(prefixBudgetPlan);
             reasoningNode.setAutoDemotedTools(autoDemotedTools);
             // C4: wire the environment-notification registry so ReasoningNode
@@ -929,6 +935,7 @@ public class AgentGraphBuilder {
             SummarizingNode summarizingNode = new SummarizingNode(chatModel, streamingHelper, streamTracker);
             LimitExceededNode limitExceededNode = new LimitExceededNode(
                     chatModel, observationProcessor, streamingHelper, i18nService, progressLedgerService);
+            limitExceededNode.setFinalizationCoordinator(new vip.mate.agent.graph.guard.TaskFinalizationCoordinator(streamingHelper,streamTracker));
             limitExceededNode.setPrefixBudgetPlan(prefixBudgetPlan);
             FinalAnswerNode finalAnswerNode = new FinalAnswerNode(generatedFileCache, markdownNormalizeEnabled);
 

@@ -85,6 +85,9 @@ class GoalJsonGraphIntegrationTest {
         java.util.concurrent.atomic.AtomicReference<String> revision = new java.util.concurrent.atomic.AtomicReference<>();
         org.mockito.stubbing.Answer<ChatResponse> script = invocation -> {
             Prompt prompt = invocation.getArgument(0);
+            // Production finalization now makes a separate tool-free structured review.
+            // This fixture's first completeGoal intentionally failed; later success did not recover it.
+            if (isFinalizationReview(prompt)) return finalizationVerdict(1);
             int step = calls.getAndIncrement();
             if (plan && step == 0) {
                 return new ChatResponse(List.of(new Generation(new AssistantMessage(
@@ -164,6 +167,8 @@ class GoalJsonGraphIntegrationTest {
         ChatModel model = mock(ChatModel.class);
         AtomicInteger calls = new AtomicInteger();
         org.mockito.stubbing.Answer<ChatResponse> script = invocation -> {
+            Prompt prompt = invocation.getArgument(0);
+            if (isFinalizationReview(prompt)) return finalizationVerdict(0);
             int step = calls.getAndIncrement();
             if (plan && step == 0) return new ChatResponse(List.of(new Generation(new AssistantMessage(
                     "{\"needs_planning\":true,\"steps\":[\"Read current managed JSON requirements and report status\"]}"))));
@@ -200,6 +205,15 @@ class GoalJsonGraphIntegrationTest {
             assertEquals("retry", continuations.get(fixture.goal().getId()).state());
         }
         assertTrue(calls.get() < 10, "Bounded offline rejection flow: " + calls.get());
+    }
+
+    private static boolean isFinalizationReview(Prompt prompt) {
+        return prompt.getSystemMessage().getText().contains("tool-free consistency reviewer");
+    }
+    private static ChatResponse finalizationVerdict(int failures) {
+        return new ChatResponse(List.of(new Generation(new AssistantMessage(
+                "{\"decision\":\"ACCEPT\",\"taskComplete\":true,\"remainingWork\":false,"
+                +"\"failedCallCount\":"+failures+",\"recoveryClaims\":[],\"reason\":\"Offline workflow fixture completed; no recovery claims\"}"))));
     }
 
     private List<vip.mate.agent.AgentService.StreamDelta> structured(vip.mate.agent.BaseAgent agent, String prompt, String conversation) {

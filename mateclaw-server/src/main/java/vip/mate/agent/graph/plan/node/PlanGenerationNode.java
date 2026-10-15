@@ -695,8 +695,17 @@ public class PlanGenerationNode implements NodeAction {
             NodeStreamingChatHelper.StreamResult result = streamingHelper.streamCallSilent(
                     chatModel, prompt, conversationId, "plan_generation");
 
+            boolean payloadRecovery = result.isPayloadTooLarge();
+            if (payloadRecovery) {
+                List<Message> reduced = vip.mate.agent.graph.PayloadReduction.reduce(promptMessages);
+                if (reduced != null) {
+                    result = streamingHelper.streamCallSilent(chatModel, new Prompt(reduced), conversationId,
+                            "plan_generation_payload_retry");
+                }
+            }
+
             // Prompt-too-long handling: compact the conversation window and retry once.
-            if (result.isPromptTooLong() && conversationWindowManager != null) {
+            if (!payloadRecovery && result.isPromptTooLong() && conversationWindowManager != null) {
                 log.warn("[PlanGeneration] Prompt too long, attempting compaction and retry");
                 List<Message> compactedMessages = conversationWindowManager.compactForRetry(
                         promptMessages.subList(1, promptMessages.size()));
@@ -707,6 +716,15 @@ public class PlanGenerationNode implements NodeAction {
                     result = streamingHelper.streamCallSilent(
                             chatModel, new Prompt(retryMessages), conversationId, "plan_generation_compact_retry");
                 }
+            }
+
+            if (result.isPayloadTooLarge()) {
+                events.add(GraphEventPublisher.finishReason("incomplete"));
+                return PlanStateAccessor.output().needsPlanning(false)
+                        .directAnswer(vip.mate.agent.graph.PayloadReduction.INCOMPLETE)
+                        .put(MateClawStateKeys.FINISH_REASON, "incomplete")
+                        .currentPhase("direct_answer").contentStreamed(false)
+                        .mergeUsage(state, result).events(events).build();
             }
 
             long triageMs = System.currentTimeMillis() - triageStartMs;

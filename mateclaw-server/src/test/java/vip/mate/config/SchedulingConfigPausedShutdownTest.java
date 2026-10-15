@@ -95,12 +95,11 @@ class SchedulingConfigPausedShutdownTest {
     private static void awaitActiveWorkers(ThreadPoolTaskScheduler scheduler, int expected)
             throws Exception {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-        while (scheduler.getScheduledThreadPoolExecutor().getActiveCount() < expected
-                && System.nanoTime() < deadline) {
+        while (System.nanoTime() < deadline) {
+            // Keep the successful observation: a second sample can race a worker transition.
+            if (scheduler.getScheduledThreadPoolExecutor().getActiveCount() >= expected) return;
             Thread.sleep(5);
         }
-        assertTrue(
-                scheduler.getScheduledThreadPoolExecutor().getActiveCount() >= expected,
-                "pending tick must reach the lifecycle pause gate");
+        fail("pending tick must reach the lifecycle pause gate");
     }
 }
