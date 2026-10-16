@@ -48,6 +48,8 @@ class FeishuWebSocketTransportTest {
         OkHttpClient http=(OkHttpClient)field(sdk,"httpClient");
         assertTrue(pool.awaitTermination(3,TimeUnit.SECONDS));
         assertTrue(http.dispatcher().executorService().awaitTermination(3,TimeUnit.SECONDS));
+        // Socket cancellation releases the WebSocket connection through asynchronous failure cleanup.
+        await(()->http.connectionPool().connectionCount()==0);
         assertEquals(0,http.connectionPool().connectionCount());
     }
     @Test void delayedHandshakeStaysReconnectingThenUsesOnlyOneClient() throws Exception {

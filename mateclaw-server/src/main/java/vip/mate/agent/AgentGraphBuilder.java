@@ -454,9 +454,8 @@ public class AgentGraphBuilder {
             builtinSearchEnabled = true;
         }
         if (builtinSearchEnabled) {
-            // Phase 2: 不再移除 search 工具，改为在 prompt 中设定优先级引导
-            // 内置搜索作为首选，search 工具作为补充/兜底
-            log.info("内置搜索已开启 (provider={})，search 工具保留作为补充通道", provider.getProviderId());
+            // Provider-native search is independent of the scoped web_search callback.
+            log.info("模型原生搜索已开启 (provider={})，web_search 指导由最终工具范围决定", provider.getProviderId());
         }
         // Default 100 if DB row leaves max_iterations null. Negative or zero is an
         // explicit opt-in to "no soft cap" — ObservationDispatcher already treats
@@ -493,7 +492,9 @@ public class AgentGraphBuilder {
                     entity.getId(), basePromptTokens, prefixBudgetPlan.effectiveMaxTokens());
         }
 
-        String enhancedPrompt = buildEnhancedPrompt(entity, builtinSearchEnabled, prefixBudgetPlan.memoryTokens());
+        String enhancedPrompt = buildEnhancedPrompt(entity, builtinSearchEnabled, prefixBudgetPlan.memoryTokens(),
+                toolSet.callbacks().stream().map(callback -> callback.getToolDefinition().name())
+                        .collect(java.util.stream.Collectors.toSet()));
 
         // Runtime skill-catalog renderer — captures this agent's bound skills,
         // effective tool allowlist, model window and workspace; invoked each
@@ -1383,6 +1384,11 @@ public class AgentGraphBuilder {
     }
 
     private String buildEnhancedPrompt(AgentEntity entity, boolean builtinSearchEnabled, int memoryBudgetTokens) {
+        return buildEnhancedPrompt(entity, builtinSearchEnabled, memoryBudgetTokens, Set.of());
+    }
+
+    private String buildEnhancedPrompt(AgentEntity entity, boolean builtinSearchEnabled, int memoryBudgetTokens,
+                                       Set<String> availableToolNames) {
         // The agent's own systemPrompt encodes its identity (role / goal /
         // backstory). The memory block from workspace files (AGENTS.md, SOUL.md,
         // PROFILE.md, MEMORY.md, ...) augments that identity with durable
@@ -1547,27 +1553,41 @@ public class AgentGraphBuilder {
                 - These notifications appear at most once per event; if you miss one, it will not be repeated, so act on it in the turn you see it.
                 """.formatted(entity.getId());
 
-        // Web-search vs browser_use priority guidance — emitted unconditionally so the rule
-        // also reaches OpenAI-compatible / Anthropic / Gemini / DeepSeek / Ollama agents that
-        // do not have builtin search. Issue #40: without this rule the model treats
-        // browser_use as a search tool and gets stuck in a Playwright launch loop on Windows.
-        String searchGuidance = """
+        // Only recommend callbacks surviving the runtime deny/allow filters. Provider-native
+        // search is a separate capability and does not imply either callback is available.
+        boolean webSearchAvailable = availableToolNames.contains("web_search");
+        boolean browserAvailable = availableToolNames.contains("browser_use");
+        StringBuilder searchGuidance = new StringBuilder();
+        if (webSearchAvailable || browserAvailable || builtinSearchEnabled) {
+            searchGuidance.append("\n\n## Web Search Capability\n");
+        }
+        if (webSearchAvailable) {
+            searchGuidance.append("""
 
-                ## Web Search Capability
+                    - For plain web search or fetching public page content, call the `web_search` tool. It supports advanced parameters: `freshness` (day/week/month/year), `language` (zh-CN/en), `count` (1-10).
+                    - When searching for news, use the standard format: `📰 [Category] Title — Source | Time + Summary`, up to 5 results per category.
+                    """);
+        }
+        if (browserAvailable) {
+            // Issue #40: browser search can cause a Playwright launch loop on Windows.
+            searchGuidance.append("""
 
-                ### Tool Priority
-                - For plain web search or fetching public page content, call the `search` tool. It supports advanced parameters: `freshness` (day/week/month/year), `language` (zh-CN/en), `count` (1-10).
-                - Call `browser_use` ONLY when you need to interact with a page (click, fill forms, screenshot, run JS, follow a logged-in flow). Do NOT use `browser_use` as a search alternative.
-                - **NEVER** call both `browser_use` and `search` for the same query.
-                - When searching for news, use the standard format: `📰 [Category] Title — Source | Time + Summary`, up to 5 results per category.
-                """;
+                    - Call `browser_use` ONLY when you need to interact with a page (click, fill forms, screenshot, run JS, follow a logged-in flow). Do NOT use `browser_use` as a search alternative.
+                    """);
+        }
+        if (webSearchAvailable && browserAvailable) {
+            searchGuidance.append("\n- **NEVER** call both `browser_use` and `web_search` for the same query.\n");
+        }
         if (builtinSearchEnabled) {
-            searchGuidance += """
+            searchGuidance.append("""
 
-                ### Built-in Search (preferred when available)
-                Your responses automatically incorporate live web search results from the model provider. For most queries, answer directly — your reply already includes real-time search data. Do NOT say you cannot search.
-                Use the `search` tool ONLY when you need precise time filtering (e.g., "yesterday's news" → freshness=day), a specific language, or when built-in results feel insufficient.
-                """;
+                    ### Provider-native Search
+                    Search capability is enabled for the model provider. It may supply live web results when used; do not assume every response includes search results. Base claims about current information on results actually returned.
+                    When provider results are available and sufficient, use them directly.
+                    """);
+            if (webSearchAvailable) {
+                searchGuidance.append("Use `web_search` only when additional results are needed.\n");
+            }
         }
 
         // Wiki 知识库上下文注入。Share the same prefix budget as the memory
