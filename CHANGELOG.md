@@ -8,6 +8,8 @@
 - Native DashScope chat/embedding adapters; native speech SDK retained.
 - Owned HTTP cancellation, guarded tool batches and durable Goal checkpoints prevent blind side-effect replay.
 - Existing frontend interaction contracts and conversation history remain supported.
+- Shared prompt budgets inherit model defaults and count effective tool schemas plus one output reserve; AgentScope remains on stable 2.0.4.
+- Latest budget regression: 342 focused tests and 6,509 full-suite tests (50 skipped) with no failures/errors. Real-model acceptance: 18/20 after manual review; tool argument and progress-count failures remain documented in the detailed notes.
 
 [English details](mateclaw-server/src/main/resources/docs/en/changelog.md) · [中文说明](mateclaw-server/src/main/resources/docs/zh/changelog.md)
 

@@ -61,3 +61,21 @@ The admin API is under `/api/v1/admin/dsh`: `GET /status`, `POST /verify`, `/tes
 4. Inspect the durable upgrade operation and active generation, then retry verification before admitting work.
 
 A backend restart alone is not orphan-process cleanup. Do not delete a stale lease merely to bypass the error.
+
+## 0.2.1-rc.2 evolutionary candidate (2026-10-20)
+
+The catalog now offers exact `0.2.1-rc.2` as an opt-in candidate alongside retained `0.2.0-rc.1` and `0.1.7-rc.2`. The default install target stays `0.2.0-rc.1`; adding the candidate does not change the active generation. All three versions are prereleases. The management page reads the server catalog and retains an installed catalog version rather than silently selecting a newer release.
+
+Candidate checks on macOS arm64 / Node 22.20.0 / npm 11.6.2 cover clean `npm ci`, actual SDK initialize/shutdown, a DeepSeek V4 Flash reply (`SDK_OK`) and a real Bash tool task (`printf DSH_TOOL_OK`). Sanitized reply/tool recordings run through the Java turn adapter regression suite. Subsequent macOS checks also passed actual cancel/crash recovery, interrupted file-checkpoint verification and 20 fresh-process rounds in 501 seconds. They do not establish multi-hour endurance, persisted-history migration, Linux/WSL compatibility or production rollback for this candidate. Run the existing managed upgrade checks before activation; retain previous generations.
+
+The adapter recognizes the candidate's job registration/settlement and working-directory metadata events without treating them as completion. `DSH_AGENTS_HOME` is explicitly scoped to `<employee-generation-home>/agents`, preventing implicit reads from the host user's `~/.agents`; a symlink at that instruction root is rejected. Administrator patch files can override SDK configuration and remain trusted inputs. This is not an OS sandbox, and DSH still has no MateClaw host tool-approval bridge.
+
+Upstream model/search, minimal-profile image/compaction, interactive questions and working-directory APIs are separate integration work. Updating the package does not automatically expose them in MateClaw, merge DSH context management into native prompt budgets, or restore historic tool state. The existing text-history replay and output cap remain.
+
+## Cancellation and workspace checkpoints (2026-10-20)
+
+Real SDK/model checks exercised a running Bash sleep: explicit cancellation produced one CANCELLED event, and forcibly killing the SDK root failed the stream. In both tested cases the recorded SDK/tool PIDs exited and a new application connection completed. A separate interrupted-write case verified an already committed checkpoint without rewriting it. Twenty fresh-process rounds each read, append, wait and verify a ledger; all 20 exact ledger snapshots passed over 501 seconds. This is a bounded multi-minute exercise, not a multi-hour guarantee.
+
+The transport now retains observed descendant ProcessHandles while the root is alive so those handles remain available after a crash. Cleanup is best effort: children born and reparented entirely between observations, or detached beforehand, can escape capture. An isolated runtime home does not provide OS containment, and stronger process supervision remains an open gate. Candidate status and strict-member-isolation restrictions remain.
+
+Workspace-checkpoint recovery requires inspecting the existing artifact before deciding whether to repeat a write. It does not restore SDK tool state, automatically replay uncertain side effects, or prove exactly-once behavior for external systems. Goal acceptance, call budgets, approvals and application permissions are unchanged; regression covers them separately from these direct runtime probes.

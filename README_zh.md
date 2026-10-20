@@ -51,6 +51,17 @@
 
 ---
 
+## 3.0.0-SNAPSHOT 更新概览
+
+3.0.0 仍在开发，包含未单独正式发布的 2.4.0 开发周期更新。稳定版下载以 Releases 中的发行包为准。
+
+- **原生执行循环**：AgentScope Java **2.0.4** 驱动 ReAct 与 Plan-Execute 每个步骤内部的工具循环。计划调度、工具审批、工作空间权限、取消、Goal 验收和持久化继续由 MateClaw 管理；这条路径不依赖 beta 版 AgentScope Harness API。
+- **统一上下文预算**：请求准备、压缩重试和摘要调用统一计算消息、实际生效的工具 schema 与一份输出预留。请求只覆盖部分选项时继承模型默认值，显式空工具列表关闭默认回调。估算偏保守，不等同于供应商计费 token。
+- **受治理的决策与恢复**：类型化决策默认 SHADOW 模式，继续遵守领域约束和 Goal 预算；持久检查点在副作用结果不确定时阻止盲目重放。
+- **日常能力完善**：可选严格成员文件隔离、受管理的 DSH SDK 升级、音色选择与试听、MCP 结构化展示及更严格的模型探测。
+
+源码构建使用 Java 21。升级前备份数据库、workspace、插件与配置，回滚使用升级前备份。[架构与升级说明](mateclaw-server/src/main/resources/docs/zh/changelog.md) · [模型预算规则](mateclaw-server/src/main/resources/docs/zh/models.md)
+
 ## 三件让它与众不同的事
 
 ### 1 · 模型挂了，AI 不挂
@@ -91,7 +102,7 @@ MateClaw 的 **LLM Wiki** 把它消化成结构化页面，页面之间自己长
 你雇佣员工，不是开聊天框。每位有**角色**、**目标**、**背景故事**、运行时、像素艺术头像与专属配色——6 个内置模板（通用助手 · 产品助理 · 研究分析师 · 客服助理 · 数据分析师 · 代码审查员）开箱可用。即使更换执行引擎，员工身份和治理边界仍保持不变。
 
 ### Agent Runtime：Native 或 DSH（2.2.0+）
-`AgentRuntimeProvider` contract 将员工与执行引擎分离。**Native Runtime** 在 MateClaw 内运行 ReAct、Plan-and-Execute、Persistent Goal 与 Team Run；**DSH Runtime** 启动官方 `dsh --profile sdk` CLI，统一映射思考、文本、工具、用量、完成与取消事件。受管理安装要求 Node.js 22，使用受审查 npm 锁文件固定 `0.2.0-rc.1`（另选 `0.1.7-rc.2`）。升级复制 home、检查候选并切换保留的代次；回滚恢复旧 home/配置，不合并升级后的新会话。实际包及真实模型适配器检查已在 macOS arm64 通过；Linux x64 和持久化 V3→V4 历史迁移仍待验证。[配置 DeepSeek Harness →](https://claw.mate.vip/docs/zh/deepseek-harness)
+`AgentRuntimeProvider` contract 将员工与执行引擎分离。**Native Runtime** 在 MateClaw 内运行 ReAct、Plan-and-Execute、Persistent Goal 与 Team Run；**DSH Runtime** 启动官方 `dsh --profile sdk` CLI，统一映射思考、文本、工具、用量、完成与取消事件。受管理安装要求 Node.js 22，使用受审查 npm 锁文件固定 `0.2.0-rc.1`（另选 `0.1.7-rc.2`）。新增可选 `0.2.1-rc.2` 候选，macOS arm64 安装、握手和短模型/工具任务已验证，默认选择保持不变。升级复制 home、检查候选并切换保留的代次；回滚恢复旧 home/配置，不合并升级后的新会话。实际包及真实模型适配器检查已在 macOS arm64 通过；Linux x64 和持久化 V3→V4 历史迁移仍待验证。[配置 DeepSeek Harness →](https://claw.mate.vip/docs/zh/deepseek-harness)
 
 ### 持久长任务：检查点、重启、继续（2.2.0+）
 Persistent Goal 把需要数小时的工作拆成有界、可恢复的执行段。数据库会保存目标清单、continuation 状态、attempt、冷却、lease，以及员工忙碌期间已经接收的用户输入。单后端实例重启后，supervisor 会先核对被中断的 attempt，读取持久检查点和已有产物，再调度下一段安全工作，不要求用户重新描述任务。
@@ -167,6 +178,11 @@ RBAC + JWT。**Personal Access Token** 给无人值守脚本和 CI 使用。**We
 
 ```bash
 # 后端
+# 需要 Java 21 与 Maven。首次生成本地 JWT 密钥，重启时复用。
+[ -f .env.local ] || (umask 077; printf 'JWT_SECRET=%s\n' "$(openssl rand -hex 48)" > .env.local)
+set -a
+source .env.local
+set +a
 # 从仓库根目录运行，使用根目录下已配置的模型数据库与工作空间
 SPRING_DATASOURCE_URL="jdbc:h2:file:$PWD/data/mateclaw;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE" \
 MATECLAW_WORKSPACE_SANDBOX_ROOT="$PWD/data/workspace" \
@@ -177,7 +193,7 @@ cd mateclaw-ui
 npm install && npm run dev -- --host 127.0.0.1    # http://localhost:5173
 ```
 
-默认登录：`admin` / `admin123`
+新数据库默认登录：`admin` / `admin123`。登录后修改密码，并在 **设置 → 模型** 配置模型。已有模型配置从根目录 `data/` 数据库读取；使用 `mateclaw-server/data/` 会打开另一份数据库。不要提交 `.env.local`，其中 `JWT_SECRET` 必须非空且至少包含 32 个 UTF-8 字节。
 
 ### Docker 部署
 
@@ -353,8 +369,8 @@ mateclaw/
 ```bash
 git clone https://github.com/mateaix/mateclaw.git
 cd mateclaw
-cd mateclaw-server && mvn clean compile
-cd ../mateclaw-ui && npm install && npm run dev -- --host 127.0.0.1
+mvn -pl mateclaw-server -am clean compile
+cd mateclaw-ui && npm install && npm run dev -- --host 127.0.0.1
 ```
 
 ---

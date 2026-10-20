@@ -1023,8 +1023,7 @@ public class ReasoningNode implements NodeAction {
         // budgeting retains legacy behavior.
         boolean mandatoryPrefixOverflow = loopReservedPrefixTokens + protectedHistoryTokens
                 > loopContextWindowTokens();
-        int assembledPromptEstimateTokens = TokenEstimator.estimateTokens(promptMessages)
-                + toolSchemaEstimateTokens + outputReserveTokens;
+        long assembledPromptEstimateTokens = vip.mate.agent.context.PromptBudget.estimateTokens(prompt, null, outputReserveTokens);
         boolean promptOverflow = (holdContent || prefixBudgetPlan != null && prefixBudgetPlan.enabled())
                 && assembledPromptEstimateTokens > loopContextWindowTokens();
         boolean localPromptRejected = promptOverflow;
@@ -1149,8 +1148,8 @@ public class ReasoningNode implements NodeAction {
                     // Reuse the SAME non-history prefix — wiki/runtime context preserved.
                     List<Message> retryPromptMessages = new ArrayList<>(nonHistoryPrefix);
                     retryPromptMessages.addAll(compactedMessages);
-                    int retryEstimateTokens = TokenEstimator.estimateTokens(retryPromptMessages)
-                            + toolSchemaEstimateTokens + outputReserveTokens;
+                    long retryEstimateTokens = vip.mate.agent.context.PromptBudget.estimateTokens(
+                            new Prompt(retryPromptMessages, options), null, outputReserveTokens);
                     if ((holdContent || prefixBudgetPlan != null && prefixBudgetPlan.enabled())
                             && retryEstimateTokens > loopContextWindowTokens()) {
                         localPromptRejected = true;
@@ -1234,8 +1233,8 @@ public class ReasoningNode implements NodeAction {
                 List<Message> nudgeHistory = LOOP_BUDGETER.budget(messages, nudgeConfig).messages();
                 List<Message> nudgedMessages = new ArrayList<>(nudgePrefix);
                 nudgedMessages.addAll(nudgeHistory);
-                int nudgeEstimate = TokenEstimator.estimateTokens(nudgedMessages)
-                        + toolSchemaEstimateTokens + outputReserveTokens;
+                long nudgeEstimate = vip.mate.agent.context.PromptBudget.estimateTokens(
+                        new Prompt(nudgedMessages, options), null, outputReserveTokens);
                 if ((holdContent || prefixBudgetPlan != null && prefixBudgetPlan.enabled())
                         && nudgeEstimate > loopContextWindowTokens()) {
                     localPromptRejected = true;

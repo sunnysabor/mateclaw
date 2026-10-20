@@ -55,3 +55,25 @@ ApplicationGuardedToolkit delegates tool batches to the application executor, re
 Stop the old process and back up the database, workspace, plugins and configuration before upgrading. Build with Java 21 and check third-party plugin compatibility. Rollback uses the pre-upgrade backup; downgrading an upgraded database is not verified.
 
 Validation covers the Maven reactor, frontend build, PostgreSQL/MySQL migrations and transactional pagination, approvals/cancellation, process-crash recovery and six-hour sustained execution. A real Kingbase instance was not tested. Existing frontend interaction contracts remain compatible; this migration does not rewrite the chat UI.
+
+## Context-budget consistency on AgentScope 2.0.4
+
+The native execution path stays on the stable AgentScope Java 2.0.4 API; it does not adopt a beta Harness dependency. Spring AI's native option combination resolves partial runtime options against model defaults. Shared request estimates cover messages, effective tool callback schemas and one output reserve, including OpenAI completion limits. Explicitly empty runtime callbacks suppress default tools, and long totals prevent integer overflow. Reasoning preparation, compaction retries and summary-model guards use the shared estimate while retaining call budgets, permissions, approvals and Goal acceptance.
+
+These checks estimate request size; they do not guarantee provider acceptance, exact billing or correct tool arguments. See [model budget rules](./models#context-budgets-and-request-preparation-3-0-0).
+
+## Upgrade checklist
+
+1. Stop the previous backend. Back up the database together with workspace files, plugin files and configuration, including the JWT secret. Retain the previous application package for rollback.
+2. Build with Java 21 and check plugins against the Boot 4 / Spring AI 2 interfaces. Preserve the database profile and paths. In a source checkout, start from the repository root with explicit root `data/` database and workspace paths; `mateclaw-server/data/` is a separate database.
+3. Keep Flyway validation enabled. If migration validation fails, inspect the SQL and schema before considering an explicitly authorized history repair; do not enable automatic repair as an upgrade default. See [database operations](./config).
+4. After startup, check health and login, confirm existing model configurations, then exercise a real model response, tool approval/rejection, cancellation and an existing conversation. For Goal recovery, inspect checkpoints and acceptance evidence before resuming work with side effects.
+5. If rollback is required, stop the new process and restore the pre-upgrade database, files and configuration alongside the old application. Do not assume the old binary can safely open an upgraded database.
+
+## Latest budget regression evidence (2026-10-20)
+
+The budget change passed 342 focused backend tests and the full backend suite: 6,509 tests, zero failures/errors, 50 skipped. These counts describe this verification run rather than every feature listed above.
+
+After restarting the backend against the configured root database and the frontend on port 5173, 20 real-model rounds ran through the frontend API proxy with DeepSeek V4 Flash. Numeric results and streamed/persisted answers matched in all 20 rounds. The original strict audit passed 17/20; manual review accepted 18/20 after identifying a keyword-only false positive in round 15. Original audit flags were retained.
+
+Two rounds remain failed: round 6 placed `language` outside the tool's nested arguments and triggered a schema rejection; round 20 reported 15 progress updates where receipts showed 41. Task-level recovery did not demonstrate a successful retry of the deliberately rejected original `print(1)` call. These results do not establish a fully passing 20-round acceptance run or an efficiency improvement.

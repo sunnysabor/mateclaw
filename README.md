@@ -51,6 +51,17 @@ Most AI tools die when their vendor has a bad day. Most forget you the moment th
 
 ---
 
+## What changes in 3.0.0-SNAPSHOT
+
+3.0.0 is in development and includes the unpublished 2.4.0 development cycle. Stable downloads remain the builds listed in Releases.
+
+- **Native execution:** AgentScope Java **2.0.4** runs ReAct and the tool loop within each Plan-Execute step. MateClaw retains plan scheduling, tool approvals, workspace permissions, cancellation, Goal acceptance and persistence. This path does not require a beta AgentScope Harness API.
+- **Consistent context budgets:** request preparation, compaction retries and summary calls account for messages, effective tool schemas and one output reserve. Partial request options inherit model defaults; an explicitly empty tool list disables inherited callbacks. Estimates are conservative, rather than provider billing counts.
+- **Governed decisions and recovery:** typed decisions default to SHADOW mode; existing domain constraints and Goal budgets still apply. Durable checkpoints block blind replay when side effects are uncertain.
+- **Everyday improvements:** opt-in strict member file isolation, managed DSH SDK upgrades, voice selection/preview, structured MCP results and stricter model probes.
+
+Use Java 21 for source builds. Back up the database, workspace, plugins and configuration before migration; use that backup for rollback. [Architecture and upgrade notes](mateclaw-server/src/main/resources/docs/en/changelog.md) · [Model budget rules](mateclaw-server/src/main/resources/docs/en/models.md)
+
 ## Three things that make it different
 
 ### 1 · Your AI doesn't die when a model does
@@ -91,7 +102,7 @@ Same brain. Same memory. Same tools. Different doors.
 You hire coworkers, not chat boxes. Each one has a **Role**, a **Goal**, a **Backstory**, a runtime, a pixel-art avatar, and a color of their own — six built-in templates ship ready (General Assistant · Product Assistant · Research Analyst · Customer Support · Data Analyst · Code Reviewer). Employee identity and governance stay stable even when the execution engine changes.
 
 ### Agent Runtime: native or DSH (2.2.0+)
-The `AgentRuntimeProvider` contract separates an employee from the engine that runs its turn. The **native runtime** keeps ReAct, Plan-and-Execute, persistent Goals, and Team Runs inside MateClaw. The **DSH runtime** launches the official `dsh --profile sdk` CLI and normalizes its thinking, text, tools, usage, completion, and cancellation events. Managed installation pins `0.2.0-rc.1` (alternative: `0.1.7-rc.2`) with reviewed npm locks and Node.js 22. Upgrades copy runtime homes, check the candidate, and switch a retained generation; rollback restores the previous home/configuration without merging newer sessions. Package and real-model adapter checks passed on macOS arm64; Linux x64 and persisted V3→V4 history migration remain unverified. [Configure DeepSeek Harness →](https://claw.mate.vip/docs/en/deepseek-harness)
+The `AgentRuntimeProvider` contract separates an employee from the engine that runs its turn. The **native runtime** keeps ReAct, Plan-and-Execute, persistent Goals, and Team Runs inside MateClaw. The **DSH runtime** launches the official `dsh --profile sdk` CLI and normalizes its thinking, text, tools, usage, completion, and cancellation events. Managed installation pins `0.2.0-rc.1` (alternative: `0.1.7-rc.2`) with reviewed npm locks and Node.js 22. An opt-in `0.2.1-rc.2` candidate adds SDK compatibility updates; macOS arm64 installation, handshake and short real-model/tool checks passed, while default selection stays unchanged. Upgrades copy runtime homes, check the candidate, and switch a retained generation; rollback restores the previous home/configuration without merging newer sessions. Package and real-model adapter checks passed on macOS arm64; Linux x64 and persisted V3→V4 history migration remain unverified. [Configure DeepSeek Harness →](https://claw.mate.vip/docs/en/deepseek-harness)
 
 ### Durable long tasks: checkpoint, restart, continue (2.2.0+)
 Persistent Goals turn work that takes hours into bounded, recoverable segments. The database preserves the goal checklist, continuation state, attempts, cooldowns, leases, and user input accepted while the worker is busy. After a single backend instance restarts, the supervisor reconciles the interrupted attempt, reads persisted checkpoints and artifacts, and schedules the next safe segment instead of asking you to repeat the task.
@@ -167,6 +178,11 @@ Same "whole widget" philosophy. Different center of gravity.
 
 ```bash
 # Backend
+# Java 21 and Maven required. Create a local JWT secret once and reuse it on restart.
+[ -f .env.local ] || (umask 077; printf 'JWT_SECRET=%s\n' "$(openssl rand -hex 48)" > .env.local)
+set -a
+source .env.local
+set +a
 # From the repository root; use its configured models and workspace
 SPRING_DATASOURCE_URL="jdbc:h2:file:$PWD/data/mateclaw;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE" \
 MATECLAW_WORKSPACE_SANDBOX_ROOT="$PWD/data/workspace" \
@@ -177,7 +193,7 @@ cd mateclaw-ui
 npm install && npm run dev -- --host 127.0.0.1    # http://localhost:5173
 ```
 
-Login: `admin` / `admin123`
+On a fresh database, log in with `admin` / `admin123`, change the password, then configure a model in **Settings → Models**. Existing model settings are read from the root `data/` database; starting against `mateclaw-server/data/` opens a different database. Keep `.env.local` private and set a non-empty `JWT_SECRET` of at least 32 UTF-8 bytes.
 
 ### Docker
 
@@ -353,8 +369,8 @@ Full story in the [v1.7.0 release notes](https://claw.mate.vip/docs/en/releases/
 ```bash
 git clone https://github.com/mateaix/mateclaw.git
 cd mateclaw
-cd mateclaw-server && mvn clean compile
-cd ../mateclaw-ui && npm install && npm run dev -- --host 127.0.0.1
+mvn -pl mateclaw-server -am clean compile
+cd mateclaw-ui && npm install && npm run dev -- --host 127.0.0.1
 ```
 
 ---
