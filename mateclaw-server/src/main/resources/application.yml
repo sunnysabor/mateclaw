@@ -155,6 +155,10 @@ mateclaw:
   agent:
     runtime:
         dsh:
+          containment:
+            mode: ${MATECLAW_DSH_CONTAINMENT_MODE:native}
+            docker-executable: ${MATECLAW_DSH_DOCKER_EXECUTABLE:docker}
+            images-json: ${MATECLAW_DSH_DOCKER_IMAGES_JSON:}
           command: ${DSH_JSONRPC_AGENT:}
           cordis-config: ${DSH_CORDIS_CONFIG:}
           working-directory: ${DSH_CWD:}

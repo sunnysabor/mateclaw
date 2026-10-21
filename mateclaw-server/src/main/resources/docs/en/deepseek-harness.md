@@ -79,3 +79,41 @@ Real SDK/model checks exercised a running Bash sleep: explicit cancellation prod
 The transport now retains observed descendant ProcessHandles while the root is alive so those handles remain available after a crash. Cleanup is best effort: children born and reparented entirely between observations, or detached beforehand, can escape capture. An isolated runtime home does not provide OS containment, and stronger process supervision remains an open gate. Candidate status and strict-member-isolation restrictions remain.
 
 Workspace-checkpoint recovery requires inspecting the existing artifact before deciding whether to repeat a write. It does not restore SDK tool state, automatically replay uncertain side effects, or prove exactly-once behavior for external systems. Goal acceptance, call budgets, approvals and application permissions are unchanged; regression covers them separately from these direct runtime probes.
+
+## Optional Docker process supervision (experimental)
+
+`native` remains the default. Native descendant observation cannot guarantee cleanup of a process that forks, creates a new session and reparents between observations. Optional `docker` mode creates a separate Linux PID namespace **before** SDK startup. Cancellation, SDK shutdown and loss of the attached Docker client remove only the recorded container ID. Completed/CANCELLED events require confirmed cleanup; a removal failure is an error and retains the conversation's generation lease until an explicit cancellation retry confirms removal. It never falls back to native execution.
+
+Build a dedicated image from the bundled trusted lock (from the repository root):
+
+```bash
+docker build -f mateclaw-server/src/main/resources/dsh/container/Dockerfile \
+  --build-arg DSH_VERSION=0.2.1-rc.2 \
+  --build-arg DSH_LOCK_SHA256=4c17ebb6b36dfdebe24100490a375bb93e72fc7450595751c8737b357ce8987d \
+  -t mateclaw-dsh-local:0.2.1-rc.2 mateclaw-server/src/main/resources/dsh
+docker image inspect --format '{{.Id}}' mateclaw-dsh-local:0.2.1-rc.2
+```
+
+The Dockerfile pins Node 22.20.0 by digest. Review the base, lock, native platform packages and resulting image before use. Configure the returned full `sha256:…` **image ID**, not a tag, then restart the backend:
+
+```bash
+export MATECLAW_DSH_CONTAINMENT_MODE=docker
+export MATECLAW_DSH_DOCKER_EXECUTABLE=docker
+export MATECLAW_DSH_DOCKER_IMAGES_JSON='{"0.2.1-rc.2":"sha256:<64 hexadecimal characters from image inspect>"}'
+```
+
+Provide a separate reviewed image for each SDK catalog version that must run, including candidate checks and rollback. The selected host managed executable identifies the trusted SDK version; the container runs its own matching SDK. Image version/lock labels must match. Runtime never pulls an image or upgrades the active generation. `/status` exposes the configured containment mode; it is not a compatibility certificate.
+
+Requirements: a trusted local Docker daemon reachable through a Unix socket, a matching Linux image architecture, and a host UID/GID supported by Java's Unix identity provider. Remote Docker endpoints and Windows hosts are rejected. The selected daemon endpoint stays fixed through cleanup. The container drops all capabilities, uses `no-new-privileges`, a read-only image filesystem and a bounded PID count. Its independent `/tmp` is executable because the SDK native loader copies dynamic libraries there. Only the explicit workspace, scoped employee home and read-only administrator patch files are mounted. Docker access is privileged host access; credentials passed as environment values are visible to Docker administrators. There is no Docker socket, host PID namespace or privileged mode inside the container.
+
+**Platform limitation:** on the tested macOS arm64 Docker Desktop setup, SDK model calls work, but its native Landlock runner denies reads from the host shared workspace (`EACCES`). Do not use this mode for workspace tasks on that setup. No sandbox disablement or automatic escalation is applied. Linux native bind mounts and other Desktop file-sharing backends require their own read/write/tool acceptance checks; they are not certified by a successful handshake. Process cleanup probes use container `/tmp`, separately from host-workspace compatibility.
+
+JVM termination and daemon unavailability remain explicit recovery boundaries. Containers carry `vip.mateclaw.dsh.owner=<random UUID>` and `vip.mateclaw.dsh.jvm=<creator PID>` labels. After confirming the recorded JVM has died, inspect and remove only its identified containers on the original daemon; then perform the stale-lease recovery above. A daemon outage cannot confirm cleanup. Do not remove leases or replay uncertain tool effects merely to admit work. Existing member-isolation rejection, application permissions, Goal rules, bounded text replay and output budgets remain unchanged. Docker process supervision does not add a host approval bridge or certify a complete security sandbox.
+
+### Native shared-workspace investigation (2026-10-21)
+
+The reproduced Desktop bind mount is `fakeowner` (filesystem magic `0x6a656a63`), rather than a native Linux filesystem. The exact SDK Landlock launcher rejects reads even with explicit directory/file grants; unrestricted reads succeed. A disposable Docker ext4 volume passes the same sandbox read/write probe and rejects both direct outside writes and symlink escapes. This identifies the filesystem boundary; it does not certify a Desktop configuration fix.
+
+The selected next step is Docker Desktop's [Synchronized file shares](https://docs.docker.com/desktop/features/synchronized-file-sharing/), which uses a native ext4 cache and bidirectional synchronization. It requires signing in with Pro, Team or Business entitlement. In Settings → Resources → File sharing, create a share for a disposable test directory first and wait for its Watching status. Do not set bind consistency to `consistent`, which bypasses synchronized shares. Validate actual sandbox behavior and host-visible contents before using a production workspace; do not infer Landlock compatibility from filesystem type or handshake alone. Current local validation is waiting for Docker Desktop login/entitlement; synchronized sharing has not yet been certified.
+
+The opt-in `DshDockerSharedWorkspaceAcceptanceTest` uses `MATECLAW_DSH_ACCEPTANCE_DOCKER_IMAGE` plus `MATECLAW_DSH_ACCEPTANCE_SHARED_WORKSPACE` (an existing test-share directory). It creates its own temporary subdirectory, checks host→sandbox→host data across two writes, and requires `EACCES` for outside and symlink writes. The independent ext4 volume control runs with only the image variable. Disposable owned containers, volumes and directories are cleaned. No workspace copyback implementation, sandbox bypass, automatic escalation or runtime dependency upgrade has been introduced.

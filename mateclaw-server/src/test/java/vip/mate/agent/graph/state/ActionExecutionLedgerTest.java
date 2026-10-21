@@ -8,9 +8,24 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class ActionExecutionLedgerTest {
 
+    @Test void latestFullEvidenceSurvivesMergeWithoutRetainingOlderBodiesOrStaleIds() {
+        var first=ActionExecutionLedger.fromEvents(List.of(new GraphEventPublisher.GraphEvent(
+            GraphEventPublisher.EVENT_TOOL_COMPLETE,java.util.Map.of("toolCallId","first","toolName","calc","result","old".repeat(1000),"success",true),1)));
+        var second=ActionExecutionLedger.fromEvents(List.of(new GraphEventPublisher.GraphEvent(
+            GraphEventPublisher.EVENT_TOOL_COMPLETE,java.util.Map.of("toolCallId","second","toolName","calc","result","new".repeat(1000),"success",true),2)));
+        var merged=first.merge(second);
+        assertEquals(java.util.Map.of("second","new".repeat(1000)),merged.latestCompleteResult());
+        assertEquals(2,merged.receipts().size());
+        assertEquals(merged.latestCompleteResult(),second.merge(first).latestCompleteResult());
+        var failure=ActionExecutionLedger.fromEvents(List.of(new GraphEventPublisher.GraphEvent(
+            GraphEventPublisher.EVENT_TOOL_COMPLETE,java.util.Map.of("toolCallId","second","toolName","calc","result","failed","success",false),3)));
+        assertTrue(merged.merge(failure).latestCompleteResult().isEmpty());
+        assertThrows(UnsupportedOperationException.class,()->merged.latestCompleteResult().put("forged","body"));
+    }
     @Test void legacyReceiptLengthIsUnknownAndCannotGroundLatestOutput() throws Exception {
         var receipt=new ActionExecutionLedger.Receipt("legacy","calc",ActionExecutionLedger.Status.SUCCEEDED,"x".repeat(512)+"...",1);
         assertEquals(-1,receipt.resultChars());

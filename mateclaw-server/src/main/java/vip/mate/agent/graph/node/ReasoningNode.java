@@ -1575,6 +1575,20 @@ public class ReasoningNode implements NodeAction {
                 var outcome = review.result().outcome();
                 if (outcome == vip.mate.agent.graph.guard.TaskFinalizationGate.Outcome.REVISE
                         || outcome == vip.mate.agent.graph.guard.TaskFinalizationGate.Outcome.CONTINUE) {
+                    long progress = accessor.actionExecutionLedger().receipts().values().stream()
+                            .filter(r -> r.substantive() && r.status() == vip.mate.agent.graph.state.ActionExecutionLedger.Status.SUCCEEDED)
+                            .count();
+                    long previousProgress = state.value(FINALIZATION_PROGRESS_COUNT, -1L);
+                    int idleContinuations = progress > previousProgress ? 0
+                            : state.value(FINALIZATION_IDLE_CONTINUATIONS, 0) + 1;
+                    boolean continuingWork = outcome == vip.mate.agent.graph.guard.TaskFinalizationGate.Outcome.CONTINUE;
+                    if (continuingWork && idleContinuations >= 2) {
+                        return reasonOutput().finalAnswer(vip.mate.agent.graph.guard.TaskFinalizationCoordinator
+                                        .incompleteAnswer("Continuation made no substantive progress"))
+                                .needsToolCall(false).shouldSummarize(false).contentStreamed(false)
+                                .finishReason(FinishReason.INCOMPLETE).llmCallCount(nextLlmCallCount)
+                                .mergeUsage(state, result).build();
+                    }
                     String instruction = "[Runtime finalization gate] Continue the original current user objective. "
                             + "Use canonical receipts; do not automatically replay failed operations. "
                             + "Continue through existing authorized tools when work remains; otherwise regenerate a corrected answer. "
@@ -1584,7 +1598,10 @@ public class ReasoningNode implements NodeAction {
                             + "Requested outcome: " + outcome + "\nReviewer data: " + review.result().reason();
                     return reasonOutput().continueReasoning(true)
                             .longFormDraft("")
-                            .finalizationAttempts(accessor.finalizationAttempts()+1)
+                            .finalizationAttempts(accessor.finalizationAttempts() + (continuingWork ? 0 : 1))
+                            .put(FINALIZATION_PROGRESS_COUNT, continuingWork ? progress : previousProgress)
+                            .put(FINALIZATION_IDLE_CONTINUATIONS, continuingWork ? idleContinuations
+                                    : state.value(FINALIZATION_IDLE_CONTINUATIONS, 0))
                             .iterationCount(accessor.iterationCount()+1).needsToolCall(false).shouldSummarize(false)
                             .toolCalls(List.of()).finalAnswer("").clearFinishReason()
                             .messages(List.of((Message)new SystemMessage(instruction)))

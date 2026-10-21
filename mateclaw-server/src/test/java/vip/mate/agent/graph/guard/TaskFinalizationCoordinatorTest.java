@@ -26,6 +26,33 @@ class TaskFinalizationCoordinatorTest {
     static String json(String decision,String claims){return "{\"decision\":\""+decision+"\",\"taskComplete\":true,\"remainingWork\":false,\"failedCallCount\":1,\"recoveryClaims\":"+claims+",\"reason\":\"checked\"}";}
     NodeStreamingChatHelper.StreamResult result(String text){return new NodeStreamingChatHelper.StreamResult(text,"checker thinking",null,List.of(),false,7,3,false,null,NodeStreamingChatHelper.ErrorType.NONE,false,2,1,1);}
     TaskFinalizationCoordinator.Review review(int window,int attempts,int used){return coordinator.review(model,"c","Calculate all stages","candidate",ledger,"untrusted progress",window,attempts,10,used,true,new RunState());}
+    @Test void incompleteExplanationDistinguishesFixedCausesWithoutLeakingReviewerText() {
+        var context=TaskFinalizationCoordinator.incompleteAnswer("Required execution facts or objective/candidate cannot fit context");
+        var correction=TaskFinalizationCoordinator.incompleteAnswer("Correction allowance exhausted");
+        var invalid=TaskFinalizationCoordinator.incompleteAnswer("Invalid verification facts");
+        assertTrue(context.contains("上下文"));
+        assertTrue(correction.contains("修正"));
+        assertTrue(invalid.contains("核验"));
+        assertNotEquals(context,correction);assertNotEquals(correction,invalid);
+        String missing=TaskFinalizationCoordinator.incompleteAnswer("Required execution evidence unavailable");
+        assertTrue(missing.contains("证据缺失"));assertNotEquals(context,missing);
+        assertFalse(TaskFinalizationCoordinator.incompleteAnswer("SECRET_REVIEWER_TEXT").contains("SECRET_"));
+    }
+    @Test void completeLargeEvidenceSurvivesCompactionAndUsesAvailableWindow() {
+        // Well above the former 3000-token evidence allowance; tail must remain grounded.
+        String output="独立结果证据".repeat(1800)+" totalSquareSum=2094116873200";
+        var receipts=ActionExecutionLedger.fromEvents(List.of(GraphEventPublisher.toolComplete("aggregate","execute_code",output,true)));
+        when(helper.streamCallSilent(any(),any(),anyString(),anyString())).thenAnswer(call->{
+            Prompt prompt=call.getArgument(1);
+            assertTrue(prompt.getContents().contains(output));
+            assertTrue(vip.mate.agent.context.TokenEstimator.estimateTokens(prompt.getInstructions())+1024<=32000);
+            return result(json("ACCEPT","[]").replace("\"failedCallCount\":1","\"failedCallCount\":0"));
+        });
+        // Empty model history: canonical ledger must preserve its newest full result.
+        var review=coordinator.review(model,"c","aggregate","table",receipts,"",32000,0,10,0,true,new RunState());
+        assertEquals(TaskFinalizationGate.Outcome.ACCEPT,review.result().outcome());
+        assertEquals(1,review.calls());
+    }
     @Test void revisionFeedbackRequestsSpecificOffendingClauseAndGroundedReplacement() {
         when(helper.streamCallSilent(any(),any(),anyString(),anyString())).thenAnswer(call->{
             String prompt=((Prompt)call.getArgument(1)).getContents();
@@ -71,9 +98,15 @@ class TaskFinalizationCoordinatorTest {
             new RunState(Map.of(MateClawStateKeys.TOOL_RESULTS,List.of(augmented),MateClawStateKeys.PENDING_EVENTS,List.of(event))));
         assertEquals(TaskFinalizationGate.Outcome.ACCEPT,check.result().outcome());
     }
-    @Test void missingWrongIdentityAndOversizedLatestEvidenceFailBeforeChecker() {
-        for(String output:List.of("x".repeat(600)+" actual-total", "x".repeat(30000)+" actual-total")) {
+    @Test void legacyMissingWrongIdentityAndActualWindowOverflowFailBeforeChecker() throws Exception {
+        for(String output:List.of("x".repeat(600)+" actual-total", "x".repeat(120000)+" actual-total")) {
             var receipts=ActionExecutionLedger.fromEvents(List.of(GraphEventPublisher.toolComplete("aggregate","execute_code",output,true)));
+            if (output.length() < 1000) {
+                // Legacy run without retained full evidence still fails closed.
+                var constructor=ActionExecutionLedger.class.getDeclaredConstructor(Map.class);
+                constructor.setAccessible(true);
+                receipts=constructor.newInstance(receipts.receipts());
+            }
             for(String id:List.of("aggregate","wrong-id")) {
                 reset(helper);
                 var response=new org.springframework.ai.chat.messages.ToolResponseMessage.ToolResponse(id,"execute_code",output);
@@ -82,6 +115,8 @@ class TaskFinalizationCoordinatorTest {
                 var check=coordinator.review(model,"c","aggregate","table",receipts,"",16000,0,10,0,true,state);
                 assertEquals(TaskFinalizationGate.Outcome.INCOMPLETE,check.result().outcome());
                 assertEquals(0,check.calls());verifyNoInteractions(helper);
+                assertEquals(output.length()<1000 ? "Required execution evidence unavailable"
+                    : "Required execution facts or objective/candidate cannot fit context", check.result().reason());
             }
         }
     }

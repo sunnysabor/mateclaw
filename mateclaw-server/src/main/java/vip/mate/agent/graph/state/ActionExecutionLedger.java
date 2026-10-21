@@ -58,9 +58,26 @@ public final class ActionExecutionLedger {
     private static final ActionExecutionLedger EMPTY = new ActionExecutionLedger(Map.of());
 
     private final Map<String, Receipt> receipts;
+    // Independent of model history. Keep at most one full substantive result per run.
+    private final Map<String, String> latestCompleteResult;
 
     private ActionExecutionLedger(Map<String, Receipt> receipts) {
+        this(receipts, Map.of());
+    }
+
+    private ActionExecutionLedger(Map<String, Receipt> receipts, Map<String, String> fullResults) {
         this.receipts = Map.copyOf(receipts);
+        var latest = receipts.values().stream()
+                .filter(r -> r.status() == Status.SUCCEEDED && r.substantive())
+                .sorted(Comparator.comparingLong(Receipt::completedAt).reversed().thenComparing(Receipt::toolCallId))
+                .findFirst();
+        String id = latest.map(Receipt::toolCallId).orElse("");
+        String full = fullResults.get(id);
+        this.latestCompleteResult = full == null ? Map.of() : Map.of(id, full);
+    }
+
+    public Map<String, String> latestCompleteResult() {
+        return latestCompleteResult;
     }
 
     public static ActionExecutionLedger empty() {
@@ -70,6 +87,7 @@ public final class ActionExecutionLedger {
     public static ActionExecutionLedger fromEvents(List<GraphEventPublisher.GraphEvent> events) {
         if (events == null || events.isEmpty()) return empty();
         Map<String, Receipt> receipts = new LinkedHashMap<>();
+        Map<String, String> fullResults = new LinkedHashMap<>();
         // Join only explicit call ids. Tool names and event order cannot establish
         // which request completed. Conflicting duplicate starts stay unknown.
         Map<String, String> operations = new LinkedHashMap<>();
@@ -94,6 +112,7 @@ public final class ActionExecutionLedger {
             boolean success = Boolean.parseBoolean(String.valueOf(data.getOrDefault("success", false)));
             String result = String.valueOf(data.getOrDefault("result", ""));
             int resultChars = result.length();
+            if (success) fullResults.put(id, result); else fullResults.remove(id);
             if (result.length() > MAX_RESULT_SUMMARY_CHARS) {
                 result = result.substring(0, MAX_RESULT_SUMMARY_CHARS) + "...";
             }
@@ -102,7 +121,7 @@ public final class ActionExecutionLedger {
                     name.equals(operationTools.get(id))
                             ? operations.getOrDefault(id, UNKNOWN_OPERATION) : UNKNOWN_OPERATION, resultChars));
         }
-        return receipts.isEmpty() ? empty() : new ActionExecutionLedger(receipts);
+        return receipts.isEmpty() ? empty() : new ActionExecutionLedger(receipts, fullResults);
     }
 
     /**
@@ -328,6 +347,10 @@ public final class ActionExecutionLedger {
         if (receipts.isEmpty()) return other;
         Map<String, Receipt> merged = new LinkedHashMap<>(receipts);
         merged.putAll(other.receipts);
-        return new ActionExecutionLedger(merged);
+        Map<String, String> fullResults = new LinkedHashMap<>(latestCompleteResult);
+        // A replacement receipt must never inherit a stale full result for the same id.
+        other.receipts.keySet().forEach(fullResults::remove);
+        fullResults.putAll(other.latestCompleteResult);
+        return new ActionExecutionLedger(merged, fullResults);
     }
 }

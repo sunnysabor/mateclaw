@@ -17,7 +17,7 @@ class PlanSummaryFinalizationTest {
  @Test void oversizedPlanOutputFailsIncompleteWithoutCheckingOrRestarting() throws Exception {
   var helper=mock(NodeStreamingChatHelper.class);var service=mock(PlanningService.class);
   var node=new PlanSummaryNode(mock(ChatModel.class),service,helper);node.setFinalizationCoordinator(new TaskFinalizationCoordinator(helper,null));
-  String full="x".repeat(30000)+" actual-total";
+  String full="x".repeat(120000)+" actual-total";
   var state=new RunState(Map.of(PlanStateKeys.PLAN_ID,42L,PlanStateKeys.GOAL,"aggregate",
     PlanStateKeys.COMPLETED_RESULTS,List.of("result retained elsewhere"),MateClawStateKeys.PENDING_EVENTS,List.of(GraphEventPublisher.toolComplete("aggregate","calc",full,true))));
   when(helper.streamCallBufferedContent(any(),any(),any(),anyString())).thenReturn(new NodeStreamingChatHelper.StreamResult("table","",null,List.of(),false,10,5));
