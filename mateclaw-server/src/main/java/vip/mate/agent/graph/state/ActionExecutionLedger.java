@@ -29,14 +29,29 @@ public final class ActionExecutionLedger {
 
     public enum Status { SUCCEEDED, FAILED }
 
+    public record ProgressUpdate(String taskId, int percent) {}
+
     public record Receipt(String toolCallId, String toolName, Status status,
-                          String resultSummary, long completedAt, String operationIdentity, int resultChars) {
+                          String resultSummary, long completedAt, String operationIdentity, int resultChars, boolean progressOnly, ProgressUpdate progressUpdate) {
         public Receipt {
+            if (!progressOnly || progressUpdate != null && (!validTaskId(progressUpdate.taskId())
+                    || progressUpdate.percent() < 0 || progressUpdate.percent() > 100)) progressUpdate = null;
             // Older serialized receipts have no original output length (primitive defaults to zero).
             if (resultSummary != null && !resultSummary.isEmpty() && resultChars == 0) resultChars = -1;
             if (operationIdentity == null || !operationIdentity.matches("sha256:[a-f0-9]{64}")) {
                 operationIdentity = UNKNOWN_OPERATION;
             }
+            if (!"team_tasks".equals(toolName) || UNKNOWN_OPERATION.equals(operationIdentity)) progressUpdate = null;
+        }
+
+        public Receipt(String toolCallId, String toolName, Status status,
+                       String resultSummary, long completedAt, String operationIdentity, int resultChars, boolean progressOnly) {
+            this(toolCallId, toolName, status, resultSummary, completedAt, operationIdentity, resultChars, progressOnly, null);
+        }
+
+        public Receipt(String toolCallId, String toolName, Status status,
+                       String resultSummary, long completedAt, String operationIdentity, int resultChars) {
+            this(toolCallId, toolName, status, resultSummary, completedAt, operationIdentity, resultChars, false);
         }
 
         public Receipt(String toolCallId, String toolName, Status status,
@@ -51,7 +66,7 @@ public final class ActionExecutionLedger {
             this(toolCallId, toolName, status, resultSummary, completedAt, UNKNOWN_OPERATION);
         }
         public boolean substantive() {
-            return toolName != null && !NON_SUBSTANTIVE_TOOLS.contains(toolName);
+            return !progressOnly && toolName != null && !NON_SUBSTANTIVE_TOOLS.contains(toolName);
         }
     }
 
@@ -92,6 +107,8 @@ public final class ActionExecutionLedger {
         // which request completed. Conflicting duplicate starts stay unknown.
         Map<String, String> operations = new LinkedHashMap<>();
         Map<String, String> operationTools = new LinkedHashMap<>();
+        Map<String, Boolean> progressCalls = new LinkedHashMap<>();
+        Map<String, ProgressUpdate> progressUpdates = new LinkedHashMap<>();
         for (GraphEventPublisher.GraphEvent event : events) {
             if (event == null || !GraphEventPublisher.EVENT_TOOL_START.equals(event.type())) continue;
             String id = String.valueOf(event.data().getOrDefault("toolCallId", ""));
@@ -99,6 +116,10 @@ public final class ActionExecutionLedger {
             String name = String.valueOf(event.data().getOrDefault("toolName", ""));
             String identity = operationIdentity(name,
                     String.valueOf(event.data().getOrDefault("arguments", "")));
+            progressCalls.put(id, isTeamProgress(name,
+                    String.valueOf(event.data().getOrDefault("arguments", ""))));
+            progressUpdates.put(id, teamProgressUpdate(name,
+                    String.valueOf(event.data().getOrDefault("arguments", ""))));
             operationTools.put(id, name);
             operations.merge(id, identity, (first, next) -> first.equals(next) ? first : UNKNOWN_OPERATION);
         }
@@ -119,9 +140,56 @@ public final class ActionExecutionLedger {
             receipts.put(id, new Receipt(id, name,
                     success ? Status.SUCCEEDED : Status.FAILED, result, event.timestamp(),
                     name.equals(operationTools.get(id))
-                            ? operations.getOrDefault(id, UNKNOWN_OPERATION) : UNKNOWN_OPERATION, resultChars));
+                            ? operations.getOrDefault(id, UNKNOWN_OPERATION) : UNKNOWN_OPERATION, resultChars,
+                    name.equals(operationTools.get(id))
+                            && !UNKNOWN_OPERATION.equals(operations.getOrDefault(id, UNKNOWN_OPERATION))
+                            && Boolean.TRUE.equals(progressCalls.get(id)),
+                    name.equals(operationTools.get(id))
+                            && !UNKNOWN_OPERATION.equals(operations.getOrDefault(id, UNKNOWN_OPERATION))
+                            && success && acknowledgedProgress(String.valueOf(data.getOrDefault("result", "")))
+                            ? progressUpdates.get(id) : null));
         }
         return receipts.isEmpty() ? empty() : new ActionExecutionLedger(receipts, fullResults);
+    }
+
+    /** Progress changes metadata, not the substantive result used to verify the answer. */
+    private static boolean isTeamProgress(String toolName, String arguments) {
+        if (!"team_tasks".equals(toolName)) return false;
+        try {
+            var request = OPERATION_MAPPER.readTree(arguments);
+            return request != null && request.isObject()
+                    && "progress".equals(request.path("action").asText());
+        } catch (java.io.IOException invalid) {
+            return false;
+        }
+    }
+
+    /** Native callbacks may return the plain acknowledgement or its MethodToolCallback JSON string. */
+    private static boolean acknowledgedProgress(String result) {
+        if ("✓ Progress recorded.".equals(result.trim())) return true;
+        try {
+            var value = OPERATION_MAPPER.readTree(result);
+            return value != null && value.isTextual() && "✓ Progress recorded.".equals(value.textValue());
+        } catch (java.io.IOException invalid) { return false; }
+    }
+
+    private static boolean validTaskId(String value) {
+        if (value == null || !value.matches("[1-9][0-9]{0,18}")) return false;
+        try { return Long.parseLong(value) > 0; } catch (NumberFormatException invalid) { return false; }
+    }
+
+    private static ProgressUpdate teamProgressUpdate(String toolName, String arguments) {
+        if (!"team_tasks".equals(toolName)) return null;
+        try {
+            var request = OPERATION_MAPPER.readTree(arguments);
+            if (request == null || !request.isObject() || !"progress".equals(request.path("action").asText())) return null;
+            var id = request.path("taskId");
+            var percent = request.path("percent");
+            if (!(id.isTextual() || id.isIntegralNumber()) || !validTaskId(id.asText())
+                    || !percent.isIntegralNumber() || !percent.canConvertToInt()
+                    || percent.intValue() < 0 || percent.intValue() > 100) return null;
+            return new ProgressUpdate(id.asText(), percent.intValue());
+        } catch (java.io.IOException invalid) { return null; }
     }
 
     /**
@@ -278,6 +346,20 @@ public final class ActionExecutionLedger {
             }
             successful.add(output);
         }
+        // Progress is execution evidence for milestone constraints, never the latest substantive output.
+        var progress = facts.putArray("successfulProgressUpdates");
+        Map<String, Long> latestProgressAt = new LinkedHashMap<>();
+        receipts.values().stream().filter(r -> r.status() == Status.SUCCEEDED && r.progressUpdate() != null)
+                .forEach(r -> latestProgressAt.merge(r.progressUpdate().taskId(), r.completedAt(), Math::max));
+        receipts.values().stream().filter(r -> r.status() == Status.SUCCEEDED && r.progressUpdate() != null
+                        && r.completedAt() == latestProgressAt.get(r.progressUpdate().taskId()))
+                .sorted(Comparator.comparingLong(Receipt::completedAt).reversed().thenComparing(Receipt::toolCallId))
+                .forEach(r -> {
+                    var node = progress.addObject();
+                    node.put("toolCallId", identifierPreview(r.toolCallId()));
+                    node.put("taskId", r.progressUpdate().taskId()); node.put("percent", r.progressUpdate().percent());
+                    node.put("completedAt", r.completedAt());
+                });
         facts.put("omittedFailedCallCount", failures.size() - failed.size());
         facts.put("omittedSuccessfulSubstantiveCallCount", successes.size() - successful.size());
         if (vip.mate.agent.context.TokenEstimator.estimateTokens(facts.toString()) > tokenBudget) {
@@ -309,6 +391,7 @@ public final class ActionExecutionLedger {
         var node = OPERATION_MAPPER.createObjectNode();
         node.put("toolCallId", identifierPreview(receipt.toolCallId()));
         node.put("toolName", identifierPreview(receipt.toolName()));
+        node.put("completedAt", receipt.completedAt());
         node.put("resultSummary", receipt.resultSummary());
         int omitted = receipt.resultChars() < 0 ? -1 : Math.max(0, receipt.resultChars() - MAX_RESULT_SUMMARY_CHARS);
         node.put("resultComplete", omitted == 0);

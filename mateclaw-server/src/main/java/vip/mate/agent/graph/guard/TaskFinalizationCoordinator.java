@@ -45,6 +45,15 @@ public final class TaskFinalizationCoordinator {
         describe finishing the task after failure; it does not establish original-operation recovery.
         Endorse recovery only for canonical supportedRecoveryCallIds; an empty list means none is established.
         Do not invent numeric results or reconstruct omitted results.
+        For literal existence checks, a substring anywhere in the complete observed output satisfies existence.
+        Do not invent a standalone line, whole-line equality, token-boundary or occurrence-count requirement
+        unless the CURRENT objective explicitly requires it. A quoted numeric marker such as
+        "130 checks passed and evidence retained" is not a claim that those tests were executed.
+        Distinguish reporting that a marker exists from endorsing the marker's embedded claim.
+        successfulProgressUpdates records successful team progress writes separately from substantive outputs:
+        check its taskId, percent and completedAt for requested milestone and read-before-progress constraints.
+        Their absence from successfulSubstantiveCalls does not mean progress was not reported.
+        Free-form progress prose alone cannot establish a successful progress write.
         Unsupported candidate prose requires REVISE with empty recoveryClaims and a specific correction.
         Unfinished executable objective work or unsatisfied requested state constraints require CONTINUE, not prose-only REVISE.
         Explicitly requested pending records are not unfinished executable work; compare them to the original constraints.

@@ -139,6 +139,18 @@ public class ReasoningNode implements NodeAction {
             "(\\d{1,3}(?:[,，]\\d{3})+|\\d+(?:\\.\\d+)?)\\s*(万|千|k|K)?\\s*(字|字符|中文字|汉字|word|words)");
     private static final Pattern CHINESE_TEN_THOUSAND_CHARS_PATTERN = Pattern.compile(
             "(一万|1万|十千)\\s*(字|字符|中文字|汉字)");
+    private static final Pattern OUTPUT_LENGTH_INTENT_PATTERN = Pattern.compile(
+            "(?i)(?:写|撰写|创作|扩写|续写)[^\\n]{0,48}$|"
+            + "(?:^|[:：\\s])(?:请帮我|请为我|请|帮我|为我|给我|麻烦|需要|务必|必须|希望)?"
+            + "(?:写|撰写|创作|生成|输出|扩写|续写|回答|回复|write\\b|compose\\b|produce\\b|generate\\b|respond\\b|answer\\b)"
+            + "[^\\n]{0,48}$");
+    private static final Pattern DIRECT_LENGTH_TARGET_PATTERN = Pattern.compile(
+            "(?i)^(?:约|大约|一篇|一部|一份|请用|用|以|about|around|至少|不少于|不低于|at least|no less than)?\\s*$");
+    private static final Pattern CLAUSE_LENGTH_TARGET_PATTERN = Pattern.compile(
+            "(?i)^(?:要求|全文(?:字数|长度)?|字数|长度|篇幅|length|word count)\\s*[:：]?\\s*"
+            + "(?:约|大约|为|是|至少|不少于|不低于|about|around|at least)?\\s*$");
+    private static final Pattern LENGTH_CEILING_PATTERN = Pattern.compile(
+            "(?i)(?:不超过|不能超过|不要超过|最多|至多|少于|小于|\\bno more than|\\bat most|\\bless than|\\bunder|\\bup to|\\bmaximum)\\s*$");
     private static final Pattern EXPLICIT_ARTIFACT_REQUEST_PATTERN = Pattern.compile(
             "(?i)(word|docx|pdf|pptx|xlsx|markdown|\\bmd\\b|下载|附件|文档|文件|保存|落盘|导出)");
     private static final List<String> ARTIFACT_DELIVERY_TOOL_PREFIXES = List.of(
@@ -247,13 +259,21 @@ public class ReasoningNode implements NodeAction {
         if (userMessage == null || userMessage.isBlank()) {
             return OptionalInt.empty();
         }
+        // Structured workers deliver a bounded JSON summary, even when their
+        // task describes a much longer source. Let the worker result contract
+        // validate completion instead of forcing prose continuation by source size.
+        if (userMessage.contains("[Final result contract]\n"
+                + vip.mate.agent.runtime.WorkerResultContract.INSTRUCTIONS)) {
+            return OptionalInt.empty();
+        }
         Matcher tenThousand = CHINESE_TEN_THOUSAND_CHARS_PATTERN.matcher(userMessage);
-        if (tenThousand.find()) {
-            return OptionalInt.of(10_000);
+        while (tenThousand.find()) {
+            if (isOutputLengthTarget(userMessage, tenThousand.start())) return OptionalInt.of(10_000);
         }
         Matcher matcher = ARABIC_CHAR_COUNT_PATTERN.matcher(userMessage);
         int best = 0;
         while (matcher.find()) {
+            if (!isOutputLengthTarget(userMessage, matcher.start())) continue;
             String rawNumber = matcher.group(1).replace(",", "").replace("，", "");
             double value;
             try {
@@ -270,6 +290,18 @@ public class ReasoningNode implements NodeAction {
             best = Math.max(best, (int) Math.round(value));
         }
         return best >= LONG_FORM_MIN_REQUEST_CHARS ? OptionalInt.of(best) : OptionalInt.empty();
+    }
+
+    /** Counts describing source material and output ceilings are not minimum writing targets. */
+    private static boolean isOutputLengthTarget(String request, int numberStart) {
+        int clauseStart = numberStart;
+        while (clauseStart > 0 && "\n。！？!?；;，,".indexOf(request.charAt(clauseStart - 1)) < 0) clauseStart--;
+        String prefix = request.substring(clauseStart, numberStart).strip();
+        return !LENGTH_CEILING_PATTERN.matcher(prefix).find()
+                && (DIRECT_LENGTH_TARGET_PATTERN.matcher(prefix).matches()
+                    || OUTPUT_LENGTH_INTENT_PATTERN.matcher(prefix).find()
+                    || (CLAUSE_LENGTH_TARGET_PATTERN.matcher(prefix).matches()
+                        && OUTPUT_LENGTH_INTENT_PATTERN.matcher(request.substring(0, clauseStart)).find()));
     }
 
     static List<ToolCallback> filterLongFormArtifactTools(String userMessage,

@@ -26,6 +26,116 @@ class ActionExecutionLedgerTest {
         assertTrue(merged.merge(failure).latestCompleteResult().isEmpty());
         assertThrows(UnsupportedOperationException.class,()->merged.latestCompleteResult().put("forged","body"));
     }
+    @Test void teamProgressPreservesFullReadEvidenceAndSurvivesReceiptSerialization() throws Exception {
+        String body = "HEAD " + "evidence ".repeat(1000) + " TAIL";
+        var read = ActionExecutionLedger.fromEvents(List.of(
+                GraphEventPublisher.toolComplete("read", "read_file", body, true)));
+        var progress = ActionExecutionLedger.fromEvents(List.of(
+                GraphEventPublisher.toolStart("progress", "team_tasks", "{\"action\":\"progress\",\"taskId\":\"5\",\"percent\":100}"),
+                GraphEventPublisher.toolComplete("progress", "team_tasks", "✓ Progress recorded.", true)));
+        var merged = read.merge(progress);
+        assertEquals(java.util.Map.of("read", body), merged.latestCompleteResult());
+        assertFalse(merged.receipts().get("progress").substantive());
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        var restored = mapper.readValue(mapper.writeValueAsString(merged.receipts().get("progress")),
+                ActionExecutionLedger.Receipt.class);
+        assertFalse(restored.substantive());
+        var failed = ActionExecutionLedger.fromEvents(List.of(
+                GraphEventPublisher.toolStart("failed-progress", "team_tasks", "{\"action\":\"progress\",\"taskId\":\"5\"}"),
+                GraphEventPublisher.toolComplete("failed-progress", "team_tasks", "Error", false)));
+        assertEquals(1, merged.merge(failed).failedCallCount());
+    }
+
+    @Test void canonicalTeamProgressFactsPreserveLatestPercentWithoutReplacingReadEvidence() throws Exception {
+        String body = "HEAD " + "evidence ".repeat(1000) + " 130 checks passed and evidence retained TAIL";
+        var ledger = ActionExecutionLedger.fromEvents(List.of(
+            GraphEventPublisher.toolComplete("read", "read_file", body, true),
+            GraphEventPublisher.toolStart("progress", "team_tasks", "{\"action\":\"progress\",\"taskId\":\"5\",\"percent\":100,\"step\":\"secret/freeform step\"}"),
+            GraphEventPublisher.toolComplete("progress", "team_tasks", "✓ Progress recorded.", true)));
+        var projection = ledger.projectAnswerFacts(10000, ledger.latestCompleteResult());
+        assertTrue(projection.coreFactsFit());
+        var facts = new com.fasterxml.jackson.databind.ObjectMapper().readTree(projection.text());
+        var progress = facts.path("successfulProgressUpdates").get(0);
+        org.junit.jupiter.api.Assertions.assertNotNull(progress);
+        assertEquals("5", progress.path("taskId").asText());
+        assertEquals(100, progress.path("percent").asInt());
+        assertFalse(projection.text().contains("secret/freeform step"));
+        assertEquals(java.util.Map.of("read", body), ledger.latestCompleteResult());
+    }
+
+    @Test void onlyJoinedSuccessfulStrictProgressRequestsEstablishPercent() throws Exception {
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        for (String args : List.of("{\"action\":\"progress\",\"percent\":100}",
+                "{\"action\":\"progress\",\"taskId\":\"5\",\"percent\":\"100\"}",
+                "{\"action\":\"progress\",\"taskId\":\"5\",\"percent\":100.0}",
+                "{\"action\":\"progress\",\"taskId\":\"5\",\"percent\":101}",
+                "{\"action\":\"progress\",\"taskId\":\"5\",\"percent\":100,\"percent\":0}",
+                "{\"action\":\"progress\",\"taskId\":\"not-an-id\",\"percent\":100}")) {
+            var ledger = ActionExecutionLedger.fromEvents(List.of(
+                GraphEventPublisher.toolStart("p", "team_tasks", args),
+                GraphEventPublisher.toolComplete("p", "team_tasks", "✓ Progress recorded.", true)));
+            assertTrue(mapper.readTree(ledger.projectAnswerFacts(3000).text()).path("successfulProgressUpdates").isEmpty());
+        }
+        for (var events : List.of(
+                List.of(GraphEventPublisher.toolComplete("p", "team_tasks", "✓ Progress recorded.", true)),
+                List.of(GraphEventPublisher.toolStart("p", "team_tasks", "{\"action\":\"progress\",\"taskId\":\"5\",\"percent\":100}"),
+                    GraphEventPublisher.toolComplete("p", "team_tasks", "Error", false)),
+                List.of(GraphEventPublisher.toolStart("p", "team_tasks", "{\"action\":\"progress\",\"taskId\":\"5\",\"percent\":100}"),
+                    GraphEventPublisher.toolStart("p", "team_tasks", "{\"action\":\"complete\",\"taskId\":\"5\"}"),
+                    GraphEventPublisher.toolComplete("p", "team_tasks", "✓ Progress recorded.", true)))) {
+            var ledger = ActionExecutionLedger.fromEvents(events);
+            assertTrue(mapper.readTree(ledger.projectAnswerFacts(3000).text()).path("successfulProgressUpdates").isEmpty());
+        }
+    }
+
+    @Test void historicalSuccessFlagWithRejectedNativeTextCannotEstablishMilestone() throws Exception {
+        var ledger = ActionExecutionLedger.fromEvents(List.of(
+                GraphEventPublisher.toolStart("p", "team_tasks", "{\"action\":\"progress\",\"taskId\":\"5\",\"percent\":100}"),
+                GraphEventPublisher.toolComplete("p", "team_tasks", "Error: progress not recorded", true)));
+        var facts = new com.fasterxml.jackson.databind.ObjectMapper().readTree(ledger.projectAnswerFacts(3000).text());
+        assertTrue(facts.path("successfulProgressUpdates").isEmpty());
+    }
+
+    @Test void malformedOrErrorEncodedAcknowledgementsRemainUnproven() throws Exception {
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        for (String text : List.of("\"Error: progress not recorded\"", "\"✓ Progress recorded.\" {}",
+                "{\"result\":\"✓ Progress recorded.\"}", "\"\\\"✓ Progress recorded.\\\"\"")) {
+            var ledger = ActionExecutionLedger.fromEvents(List.of(
+                GraphEventPublisher.toolStart("p", "team_tasks", "{\"action\":\"progress\",\"taskId\":\"5\",\"percent\":100}"),
+                GraphEventPublisher.toolComplete("p", "team_tasks", text, true)));
+            assertTrue(mapper.readTree(ledger.projectAnswerFacts(3000).text()).path("successfulProgressUpdates").isEmpty());
+        }
+    }
+
+    @Test void latestProgressPerTaskSurvivesSerializationWithoutReintroducingOlderPercent() throws Exception {
+        var events = List.of(
+            new GraphEventPublisher.GraphEvent(GraphEventPublisher.EVENT_TOOL_START, java.util.Map.of("toolCallId","p1", "toolName","team_tasks", "arguments","{\"action\":\"progress\",\"taskId\":\"5\",\"percent\":100}"), 1),
+            new GraphEventPublisher.GraphEvent(GraphEventPublisher.EVENT_TOOL_COMPLETE, java.util.Map.of("toolCallId","p1", "toolName","team_tasks", "result","✓ Progress recorded.", "success",true), 2),
+            new GraphEventPublisher.GraphEvent(GraphEventPublisher.EVENT_TOOL_START, java.util.Map.of("toolCallId","p2", "toolName","team_tasks", "arguments","{\"action\":\"progress\",\"taskId\":\"5\",\"percent\":25}"), 3),
+            new GraphEventPublisher.GraphEvent(GraphEventPublisher.EVENT_TOOL_COMPLETE, java.util.Map.of("toolCallId","p2", "toolName","team_tasks", "result","✓ Progress recorded.", "success",true), 4));
+        var ledger = ActionExecutionLedger.fromEvents(events);
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        var restored = mapper.readValue(mapper.writeValueAsString(ledger.receipts().get("p2")), ActionExecutionLedger.Receipt.class);
+        assertEquals(25, restored.progressUpdate().percent());
+        var progress = mapper.readTree(ledger.projectAnswerFacts(3000).text()).path("successfulProgressUpdates");
+        assertEquals(1, progress.size()); assertEquals(25, progress.get(0).path("percent").asInt());
+        assertEquals(4, progress.get(0).path("completedAt").asInt());
+    }
+
+    @Test void ambiguousOrMutatingTeamCallsRemainSubstantive() {
+        for (String arguments : List.of("{\"action\":\"complete\",\"taskId\":\"5\"}",
+                "{\"action\":\"output\",\"taskId\":\"5\"}",
+                "{\"action\":\"progress\",\"action\":\"complete\"}", "not-json")) {
+            var ledger = ActionExecutionLedger.fromEvents(List.of(
+                    GraphEventPublisher.toolStart("call", "team_tasks", arguments),
+                    GraphEventPublisher.toolComplete("call", "team_tasks", "receipt", true)));
+            assertTrue(ledger.receipts().get("call").substantive());
+        }
+        var missingStart = ActionExecutionLedger.fromEvents(List.of(
+                GraphEventPublisher.toolComplete("legacy", "team_tasks", "✓ Progress recorded.", true)));
+        assertTrue(missingStart.receipts().get("legacy").substantive());
+    }
+
     @Test void legacyReceiptLengthIsUnknownAndCannotGroundLatestOutput() throws Exception {
         var receipt=new ActionExecutionLedger.Receipt("legacy","calc",ActionExecutionLedger.Status.SUCCEEDED,"x".repeat(512)+"...",1);
         assertEquals(-1,receipt.resultChars());

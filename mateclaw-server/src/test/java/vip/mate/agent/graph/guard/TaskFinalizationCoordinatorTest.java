@@ -53,6 +53,18 @@ class TaskFinalizationCoordinatorTest {
         assertEquals(TaskFinalizationGate.Outcome.ACCEPT,review.result().outcome());
         assertEquals(1,review.calls());
     }
+    @Test void existenceReviewDoesNotInventWholeLineOrExecutionCountRequirements() {
+        when(helper.streamCallSilent(any(), any(), anyString(), anyString())).thenAnswer(call -> {
+            String prompt = ((Prompt)call.getArgument(1)).getContents();
+            assertTrue(prompt.contains("substring anywhere"));
+            assertTrue(prompt.contains("standalone line"));
+            assertTrue(prompt.contains("not a claim that those tests were executed"));
+            assertTrue(prompt.contains("successfulProgressUpdates"));
+            return result(json("ACCEPT", "[]"));
+        });
+        assertEquals(TaskFinalizationGate.Outcome.ACCEPT, review(16000, 0, 0).result().outcome());
+    }
+
     @Test void revisionFeedbackRequestsSpecificOffendingClauseAndGroundedReplacement() {
         when(helper.streamCallSilent(any(),any(),anyString(),anyString())).thenAnswer(call->{
             String prompt=((Prompt)call.getArgument(1)).getContents();
