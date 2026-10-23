@@ -18,6 +18,7 @@ import java.util.concurrent.CancellationException;
 /** Call-scoped publication review. No conversation or attempt state is retained here. */
 public final class TaskFinalizationCoordinator {
     private static final int OUTPUT_TOKENS = 1024;
+    private static final int MAX_RETRY_OUTPUT_TOKENS = 8192;
     private static final String RECOVERY_PROSE_RULES = """
         Recovery prose must match the specific failed original request. Unqualified phrases such as
         "随后补齐 language="python" 重试", "补齐参数后成功", "fixed the parameters and retried", or
@@ -95,7 +96,7 @@ public final class TaskFinalizationCoordinator {
         ACCEPTED, REVISION_REQUIRED, RECOVERY_RELATION_CORRECTION, CONTINUATION_REQUIRED, INVALID_VERDICT, FAILED_CALL_COUNT_MISMATCH,
         UNSUPPORTED_RECOVERY, CONTRADICTORY_OUTCOME, TASK_UNFINISHED, INVALID_CONTINUATION,
         CORRECTION_LIMIT, CONTINUATION_NOT_AVAILABLE, VERIFICATION_REJECTED,
-        CHECKER_UNAVAILABLE, CHECKER_PARTIAL, CHECKER_ERROR, CHECKER_TOOL_CALL, CHECKER_EXCEPTION, CANCELLED
+        CHECKER_UNAVAILABLE, CHECKER_PARTIAL, CHECKER_OUTPUT_LIMIT, CHECKER_ERROR, CHECKER_TOOL_CALL, CHECKER_EXCEPTION, CANCELLED
     }
     public record Review(TaskFinalizationGate.Result result, NodeStreamingChatHelper.StreamResult usage,
                          int calls, boolean stopped) {}
@@ -183,21 +184,46 @@ public final class TaskFinalizationCoordinator {
                 "progressHintsTokens",includedProgressTokens,"progressHintsOmitted",progressOmitted,
                 "canContinue",canContinue,"correctiveAttempts",attempts));
         NodeStreamingChatHelper.StreamResult response=null;
+        NodeStreamingChatHelper.StreamResult usage=null;
+        int calls=0;
         String outcome="INCOMPLETE";
         Diagnostic diagnostic=Diagnostic.CHECKER_UNAVAILABLE;
         TaskFinalizationGate.ParseFailureCode parseFailureCode=TaskFinalizationGate.ParseFailureCode.NOT_EVALUATED;
         try {
             var checkState = new vip.mate.agent.runtime.state.RunState(runState.data());
             checkState.replace(vip.mate.agent.graph.state.MateClawStateKeys.REQUESTED_THINKING_LEVEL,"off");
-            Prompt checkPrompt = new Prompt(messages,options);
-            response=vip.mate.agent.runtime.state.RuntimeExecutionScope.call(checkState,
-                () -> helper.streamCallSilent(model,checkPrompt,conversationId,"finalization_check"));
-            if(response==null) return incomplete("Checker unavailable",null,1,false);
-            if(stopped(conversationId) || response.stopped()) { diagnostic=Diagnostic.CANCELLED;return incomplete("Cancelled",response,1,true); }
+            for (int attempt=0; ; attempt++) {
+                Prompt checkPrompt = new Prompt(messages,options);
+                calls++;
+                response=vip.mate.agent.runtime.state.RuntimeExecutionScope.call(checkState,
+                    () -> helper.streamCallSilent(model,checkPrompt,conversationId,"finalization_check"));
+                usage=usage==null?response:addUsage(usage,response);
+                if(response==null) return incomplete("Checker unavailable",usage,calls,false);
+                if(stopped(conversationId) || response.stopped()) { diagnostic=Diagnostic.CANCELLED;return incomplete("Cancelled",usage,calls,true); }
+                // Some compatible providers cannot disable reasoning. Their output
+                // limit includes thinking, so the small JSON allowance can expire
+                // before a complete verdict is emitted. Retry only that explicit condition,
+                // once, without replaying tools or dropping evidence from the prompt.
+                if(attempt==0 && response.isOutputTokenLimit() && callAvailable(maxIterations,usedCalls+calls)) {
+                    int configured=vip.mate.agent.context.BudgetedCompactionModel.outputReserveTokens(
+                            ChatModelDefaults.optionsFor(model),4096);
+                    int available=window-TokenEstimator.estimateTokens(messages)-128;
+                    int retryTokens=Math.min(Math.min(configured,MAX_RETRY_OUTPUT_TOKENS),available);
+                    if(retryTokens>OUTPUT_TOKENS) {
+                        options=toolFreeOptions(model,retryTokens);
+                        continue;
+                    }
+                }
+                break;
+            }
+            if(response.isOutputTokenLimit()) {
+                diagnostic=Diagnostic.CHECKER_OUTPUT_LIMIT;
+                return incomplete(diagnostic.name(),usage,calls,false);
+            }
             if(response.partial() || response.errorMessage()!=null || response.hasToolCalls()) {
                 diagnostic=response.errorMessage()!=null?Diagnostic.CHECKER_ERROR
                     :response.partial()?Diagnostic.CHECKER_PARTIAL:Diagnostic.CHECKER_TOOL_CALL;
-                return incomplete(diagnostic.name(),response,1,false);
+                return incomplete(diagnostic.name(),usage,calls,false);
             }
             var verdict=gate.parse(response.text()).orElse(null);
             parseFailureCode=verdict==null?gate.parseFailureCode(response.text()):TaskFinalizationGate.ParseFailureCode.NONE;
@@ -205,16 +231,16 @@ public final class TaskFinalizationCoordinator {
             outcome=evaluated.outcome().name();
             diagnostic=diagnostic(verdict,evaluated,ledger,attempts);
             if (evaluated.outcome() == TaskFinalizationGate.Outcome.INCOMPLETE)
-                return incomplete(diagnostic.name(), response, 1, false);
-            return new Review(evaluated,response,1,false);
-        } catch(CancellationException cancelled) {diagnostic=Diagnostic.CANCELLED;return incomplete("Cancelled",response,1,true);}
-        catch(Exception unavailable) {diagnostic=Diagnostic.CHECKER_EXCEPTION;return incomplete("CHECKER_EXCEPTION",response,1,false);}
+                return incomplete(diagnostic.name(), usage, calls, false);
+            return new Review(evaluated,usage,calls,false);
+        } catch(CancellationException cancelled) {diagnostic=Diagnostic.CANCELLED;return incomplete("Cancelled",usage,calls,true);}
+        catch(Exception unavailable) {diagnostic=Diagnostic.CHECKER_EXCEPTION;return incomplete("CHECKER_EXCEPTION",usage,calls,false);}
         finally {
-            var completed=new java.util.LinkedHashMap<String,Object>(Map.of("logicalCalls",1,"promptTokens",response==null?0:response.promptTokens(),
-                "completionTokens",response==null?0:response.completionTokens(),"usageReported",response!=null,
-                "cacheReadTokens",response==null?0:response.cacheReadTokens(),
-                "cacheWriteTokens",response==null?0:response.cacheWriteTokens(),
-                "reasoningTokens",response==null?0:response.reasoningTokens(),"outcome",outcome));
+            var completed=new java.util.LinkedHashMap<String,Object>(Map.of("logicalCalls",calls,"promptTokens",usage==null?0:usage.promptTokens(),
+                "completionTokens",usage==null?0:usage.completionTokens(),"usageReported",usage!=null,
+                "cacheReadTokens",usage==null?0:usage.cacheReadTokens(),
+                "cacheWriteTokens",usage==null?0:usage.cacheWriteTokens(),
+                "reasoningTokens",usage==null?0:usage.reasoningTokens(),"outcome",outcome));
             completed.put("diagnostic",diagnostic.name());
             completed.put("parseFailureCode",parseFailureCode.name());
             completed.put("responseTextChars",response==null || response.text()==null?0:response.text().length());
@@ -256,19 +282,22 @@ public final class TaskFinalizationCoordinator {
         return options;
     }
     public static ChatOptions toolFreeOptions(ChatModel model) {
+        return toolFreeOptions(model,OUTPUT_TOKENS);
+    }
+    private static ChatOptions toolFreeOptions(ChatModel model,int outputTokens) {
         ChatOptions defaults=ChatModelDefaults.optionsFor(model);
-        ChatOptions options=defaults==null?ChatOptions.builder().maxTokens(OUTPUT_TOKENS).build():defaults.mutate().maxTokens(OUTPUT_TOKENS).build();
+        ChatOptions options=defaults==null?ChatOptions.builder().maxTokens(outputTokens).build():defaults.mutate().maxTokens(outputTokens).build();
         if(options instanceof ToolCallingChatOptions tools) options=tools.mutate().toolCallbacks(List.of()).build();
         // OpenAI reasoning providers use maxCompletionTokens instead of maxTokens.
         if(options instanceof org.springframework.ai.openai.OpenAiChatOptions openAi) {
             options = openAi.getMaxCompletionTokens()!=null
-                ? openAi.mutate().maxTokens(null).maxCompletionTokens(OUTPUT_TOKENS).toolChoice("none").build()
-                : openAi.mutate().maxTokens(OUTPUT_TOKENS).toolChoice("none").build();
+                ? openAi.mutate().maxTokens(null).maxCompletionTokens(outputTokens).toolChoice("none").build()
+                : openAi.mutate().maxTokens(outputTokens).toolChoice("none").build();
         }
         if(options instanceof org.springframework.ai.anthropic.AnthropicChatOptions anthropic)
-            options=anthropic.mutate().thinkingDisabled().maxTokens(OUTPUT_TOKENS).toolCallbacks(List.of()).build();
+            options=anthropic.mutate().thinkingDisabled().maxTokens(outputTokens).toolCallbacks(List.of()).build();
         if(options instanceof vip.mate.llm.dashscope.NativeDashScopeChatOptions dashscope)
-            options=dashscope.mutate().enableThinking(false).maxTokens(OUTPUT_TOKENS).toolCallbacks(List.of()).build();
+            options=dashscope.mutate().enableThinking(false).maxTokens(outputTokens).toolCallbacks(List.of()).build();
         return options;
     }
     private void event(String id,String status,Map<String,Object> details) {
@@ -295,6 +324,7 @@ public final class TaskFinalizationCoordinator {
             case "Invalid verification facts", "INVALID_VERDICT", "FAILED_CALL_COUNT_MISMATCH",
                  "UNSUPPORTED_RECOVERY", "CONTRADICTORY_OUTCOME", "INVALID_CONTINUATION", "VERIFICATION_REJECTED" -> "最终核验返回格式无效或与实际工具记录不一致，未发布未经核实的回答";
             case "CHECKER_PARTIAL" -> "最终核验响应被截断，无法确认核验结果";
+            case "CHECKER_OUTPUT_LIMIT" -> "最终核验在生成核验结果前耗尽输出 token 预算，请适当增加模型最大输出 token 数或拆分任务后重试";
             case "CHECKER_TOOL_CALL" -> "最终核验意外返回工具调用，未获得有效核验结果";
             case "Checker unavailable", "CHECKER_ERROR", "CHECKER_EXCEPTION", "Verification unavailable",
                  "Summary verification unavailable", "Summary unavailable" -> "最终核验或汇总调用失败，任务是否完成尚未确认";

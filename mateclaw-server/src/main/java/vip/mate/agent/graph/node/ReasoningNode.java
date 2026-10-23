@@ -1507,7 +1507,17 @@ public class ReasoningNode implements NodeAction {
             String content = result.text();
             ActionCompletionPolicy.Decision completionDecision = ActionCompletionPolicy.evaluate(
                     accessor.actionCompletionRequired(), accessor.actionCompletionRetryCount(),
-                    accessor.actionExecutionLedger());
+                    accessor.actionExecutionLedger(), content);
+            boolean waitingForUser = completionDecision == ActionCompletionPolicy.Decision.WAIT_FOR_USER;
+            String userInputRequest = waitingForUser
+                    ? ActionCompletionPolicy.userInputRequest(content).orElseThrow() : "";
+            if (waitingForUser && (accessor.actionCompletionRequired()
+                    || accessor.actionExecutionLedger().hasSubstantiveAttempt())
+                    && !accessor.actionExecutionLedger().hasSuccessfulSubstantiveCall()) {
+                // A question must not smuggle in an unsupported success claim. Without
+                // execution evidence publish only the request, never force an action.
+                content = userInputRequest;
+            }
             if (completionDecision == ActionCompletionPolicy.Decision.RETRY) {
                 log.warn("[ReasoningNode] Rejecting text-only action completion; continuing once");
                 UserMessage continuation = new UserMessage("""
@@ -1556,7 +1566,7 @@ public class ReasoningNode implements NodeAction {
                         .events(buildEvents(phaseEvent, iterStartEvent))
                         .build();
             }
-            if (shouldContinueLongForm(accessor.userMessage(), accessor.longFormDraft(), content,
+            if (!waitingForUser && shouldContinueLongForm(accessor.userMessage(), accessor.longFormDraft(), content,
                     accessor.iterationCount(), accessor.maxIterations())) {
                 String accumulatedDraft = appendLongFormChunk(accessor.longFormDraft(), content);
                 int written = accumulatedDraft.length();
@@ -1584,12 +1594,14 @@ public class ReasoningNode implements NodeAction {
                         .events(buildEvents(phaseEvent, iterStartEvent))
                         .build();
             }
-            boolean longFormRequest = requestedLongFormChars(accessor.userMessage()).isPresent();
+            boolean longFormRequest = !waitingForUser && requestedLongFormChars(accessor.userMessage()).isPresent();
             String accumulatedContent = longFormRequest
                     ? appendLongFormChunk(accessor.longFormDraft(), content)
                     : (content != null ? content : "");
-            if (bufferedCandidate) {
-                boolean canContinue = (accessor.maxIterations() <= 0
+            // Still verify any summary preceding the question. A reviewer may reject
+            // that summary, but cannot authorize continuing past the user-input boundary.
+            if (bufferedCandidate && (!waitingForUser || !content.strip().equals(userInputRequest))) {
+                boolean canContinue = !waitingForUser && (accessor.maxIterations() <= 0
                         || accessor.iterationCount() + 1 < accessor.maxIterations())
                         && hasLlmCallBudget(accessor.maxIterations(), nextLlmCallCount, 3);
                 var review = finalizationCoordinator.review(chatModel, conversationId,
@@ -1605,8 +1617,11 @@ public class ReasoningNode implements NodeAction {
                             .llmCallCount(nextLlmCallCount).mergeUsage(state,result).build();
                 }
                 var outcome = review.result().outcome();
-                if (outcome == vip.mate.agent.graph.guard.TaskFinalizationGate.Outcome.REVISE
-                        || outcome == vip.mate.agent.graph.guard.TaskFinalizationGate.Outcome.CONTINUE) {
+                if (waitingForUser && outcome != vip.mate.agent.graph.guard.TaskFinalizationGate.Outcome.ACCEPT) {
+                    accumulatedContent = userInputRequest;
+                }
+                if (!waitingForUser && (outcome == vip.mate.agent.graph.guard.TaskFinalizationGate.Outcome.REVISE
+                        || outcome == vip.mate.agent.graph.guard.TaskFinalizationGate.Outcome.CONTINUE)) {
                     long progress = accessor.actionExecutionLedger().receipts().values().stream()
                             .filter(r -> r.substantive() && r.status() == vip.mate.agent.graph.state.ActionExecutionLedger.Status.SUCCEEDED)
                             .count();
@@ -1640,7 +1655,7 @@ public class ReasoningNode implements NodeAction {
                             .streamedContent("").contentStreamed(false)
                             .llmCallCount(nextLlmCallCount).mergeUsage(state,result).build();
                 }
-                if (outcome != vip.mate.agent.graph.guard.TaskFinalizationGate.Outcome.ACCEPT) {
+                if (!waitingForUser && outcome != vip.mate.agent.graph.guard.TaskFinalizationGate.Outcome.ACCEPT) {
                     return reasonOutput().finalAnswer(vip.mate.agent.graph.guard.TaskFinalizationCoordinator
                                     .incompleteAnswer(review.result().reason()))
                             .needsToolCall(false).shouldSummarize(false).contentStreamed(false)

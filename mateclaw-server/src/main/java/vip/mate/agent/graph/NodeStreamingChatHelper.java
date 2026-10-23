@@ -1709,12 +1709,16 @@ public class NodeStreamingChatHelper {
                 : truncatedByContentRepeat ? "content_repetition"
                 : thinkingTokenLimit ? "thinking_token_limit"
                 : null;
+        // Retain the provider's end condition even when it emitted some content.
+        // A verifier JSON cut off by length is not a malformed completed verdict.
+        Map<String, Object> resultMetadata = new LinkedHashMap<>(providerMetadata.get());
+        if (finishReason.get() != null) resultMetadata.put("generationFinishReason", finishReason.get());
         return assembleResult(contentAccum, thinkingAccum, toolCallAccumulators,
                 promptTokens.get(), completionTokens.get(),
                 cacheReadTokens.get(), cacheWriteTokens.get(),
                 reasoningTokens.get(), phase,
                 truncated,
-                truncationReason, providerMetadata.get());
+                truncationReason, resultMetadata);
     }
 
     /** 组装 stopped partial 结果（用户主动停止，有已累积内容） */
@@ -2386,6 +2390,14 @@ public class NodeStreamingChatHelper {
 
         public boolean isPromptTooLong() {
             return errorType == ErrorType.PROMPT_TOO_LONG;
+        }
+
+        /** Explicit provider output-limit stop, distinct from transport errors and loop guards. */
+        public boolean isOutputTokenLimit() {
+            if (stopped || hasToolCalls || errorType != ErrorType.NONE) return false;
+            if ("thinking_token_limit".equals(errorMessage)) return true;
+            return errorMessage == null && assistantMessage != null
+                    && "length".equalsIgnoreCase(String.valueOf(assistantMessage.getMetadata().get("generationFinishReason")));
         }
 
         /** 是否有任何可保存的内容（text/thinking/toolCalls） */

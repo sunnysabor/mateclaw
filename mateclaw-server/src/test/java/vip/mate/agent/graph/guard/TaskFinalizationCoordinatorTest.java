@@ -26,6 +26,135 @@ class TaskFinalizationCoordinatorTest {
     static String json(String decision,String claims){return "{\"decision\":\""+decision+"\",\"taskComplete\":true,\"remainingWork\":false,\"failedCallCount\":1,\"recoveryClaims\":"+claims+",\"reason\":\"checked\"}";}
     NodeStreamingChatHelper.StreamResult result(String text){return new NodeStreamingChatHelper.StreamResult(text,"checker thinking",null,List.of(),false,7,3,false,null,NodeStreamingChatHelper.ErrorType.NONE,false,2,1,1);}
     TaskFinalizationCoordinator.Review review(int window,int attempts,int used){return coordinator.review(model,"c","Calculate all stages","candidate",ledger,"untrusted progress",window,attempts,10,used,true,new RunState());}
+    @Test void reasoningTokenExhaustionRetriesOnceWithConfiguredBudget() {
+        var defaults = OpenAiChatOptions.builder().model("sensenova-6.8-flash-lite").maxTokens(8192).build();
+        when(model.getDefaultOptions()).thenReturn(defaults);
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        when(helper.streamCallSilent(any(), any(), anyString(), anyString())).thenAnswer(call -> {
+            Prompt prompt = call.getArgument(1);
+            assertEquals("off", ThinkingLevelHolder.get());
+            assertTrue(((ToolCallingChatOptions) prompt.getOptions()).getToolCallbacks().isEmpty());
+            if (calls.getAndIncrement() == 0) {
+                assertEquals(1024, prompt.getOptions().getMaxTokens());
+                return new NodeStreamingChatHelper.StreamResult("", "Reviewing all fifteen forecast days", null,
+                        List.of(), false, 10, 1024, true, "thinking_token_limit",
+                        NodeStreamingChatHelper.ErrorType.NONE, false, 2, 0, 1024);
+            }
+            assertEquals(8192, prompt.getOptions().getMaxTokens());
+            return result(json("ACCEPT", "[]"));
+        });
+        var check = review(16000, 0, 0);
+        assertEquals(TaskFinalizationGate.Outcome.ACCEPT, check.result().outcome());
+        assertEquals(2, check.calls());
+        assertEquals(17, check.usage().promptTokens());
+        assertEquals(1027, check.usage().completionTokens());
+        assertEquals(4, check.usage().cacheReadTokens());
+        assertEquals(1025, check.usage().reasoningTokens());
+        assertEquals(8192, defaults.getMaxTokens());
+    }
+
+    @Test void tokenRetryStaysWithinWindowAndKeepsObjectiveAndEvidence() {
+        when(model.getDefaultOptions()).thenReturn(OpenAiChatOptions.builder().maxTokens(32000).build());
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        when(helper.streamCallSilent(any(), any(), anyString(), anyString())).thenAnswer(call -> {
+            Prompt prompt = call.getArgument(1);
+            assertTrue(prompt.getContents().contains("Calculate all stages"));
+            assertTrue(prompt.getContents().contains("missing language"));
+            assertTrue(vip.mate.agent.context.TokenEstimator.estimateTokens(prompt.getInstructions())
+                    + prompt.getOptions().getMaxTokens() <= 8000);
+            if (calls.getAndIncrement() == 0) {
+                return new NodeStreamingChatHelper.StreamResult("", "Review in progress", null,
+                        List.of(), false, 10, 1024, true, "thinking_token_limit",
+                        NodeStreamingChatHelper.ErrorType.NONE, false, 0, 0, 1024);
+            }
+            assertTrue(prompt.getOptions().getMaxTokens() > 1024);
+            return result(json("ACCEPT", "[]"));
+        });
+        assertEquals(TaskFinalizationGate.Outcome.ACCEPT, review(8000, 0, 0).result().outcome());
+        assertEquals(2, calls.get());
+    }
+
+    @Test void exhaustedCallBudgetReportsTokenLimitWithoutRetrying() {
+        when(model.getDefaultOptions()).thenReturn(OpenAiChatOptions.builder().maxTokens(8192).build());
+        when(helper.streamCallSilent(any(), any(), anyString(), anyString())).thenReturn(
+                new NodeStreamingChatHelper.StreamResult("", "Review in progress", null,
+                        List.of(), false, 10, 1024, true, "thinking_token_limit",
+                        NodeStreamingChatHelper.ErrorType.NONE, false, 0, 0, 1024));
+        var check = review(16000, 0, 49);
+        assertEquals(TaskFinalizationGate.Outcome.INCOMPLETE, check.result().outcome());
+        assertEquals("CHECKER_OUTPUT_LIMIT", check.result().reason());
+        assertEquals(1, check.calls());
+        assertTrue(TaskFinalizationCoordinator.incompleteAnswer(check.result().reason()).contains("token"));
+        verify(helper, times(1)).streamCallSilent(any(), any(), anyString(), anyString());
+    }
+
+    @Test void repeatedExhaustionIsBoundedAndReportsAggregateUsage() {
+        when(model.getDefaultOptions()).thenReturn(OpenAiChatOptions.builder().maxTokens(32000).build());
+        var tracker = mock(vip.mate.channel.web.ChatStreamTracker.class);
+        var observed = new TaskFinalizationCoordinator(helper, tracker);
+        when(helper.streamCallSilent(any(), any(), anyString(), anyString())).thenReturn(
+                new NodeStreamingChatHelper.StreamResult("", "Still reviewing", null,
+                        List.of(), false, 10, 1024, true, "thinking_token_limit",
+                        NodeStreamingChatHelper.ErrorType.NONE, false, 2, 1, 1024));
+        var check = observed.review(model, "c", "objective", "candidate", ledger, "", 16000, 0, 10, 0, true, new RunState());
+        assertEquals(TaskFinalizationGate.Outcome.INCOMPLETE, check.result().outcome());
+        assertEquals("CHECKER_OUTPUT_LIMIT", check.result().reason());
+        assertEquals(2, check.calls());
+        assertEquals(20, check.usage().promptTokens());
+        assertEquals(2048, check.usage().completionTokens());
+        var prompts = org.mockito.ArgumentCaptor.forClass(Prompt.class);
+        verify(helper, times(2)).streamCallSilent(any(), prompts.capture(), anyString(), anyString());
+        assertEquals(8192, prompts.getAllValues().get(1).getOptions().getMaxTokens());
+        var events = org.mockito.ArgumentCaptor.forClass(Map.class);
+        verify(tracker, times(2)).broadcastObject(eq("c"), eq("finalization_check"), events.capture());
+        var completed = events.getAllValues().get(1);
+        assertEquals(2, completed.get("logicalCalls"));
+        assertEquals(20, completed.get("promptTokens"));
+        assertEquals(2048, completed.get("completionTokens"));
+        assertEquals("CHECKER_OUTPUT_LIMIT", completed.get("diagnostic"));
+    }
+
+    @Test void retryCannotTurnInvalidVerdictIntoAcceptance() {
+        when(model.getDefaultOptions()).thenReturn(OpenAiChatOptions.builder().maxTokens(8192).build());
+        when(helper.streamCallSilent(any(), any(), anyString(), anyString())).thenReturn(
+                new NodeStreamingChatHelper.StreamResult("", "Review", null, List.of(), false,
+                        10, 1024, true, "thinking_token_limit", NodeStreamingChatHelper.ErrorType.NONE,
+                        false, 0, 0, 1024), result("not a verdict"));
+        var check = review(16000, 0, 0);
+        assertEquals(TaskFinalizationGate.Outcome.INCOMPLETE, check.result().outcome());
+        assertEquals("INVALID_VERDICT", check.result().reason());
+        assertEquals(2, check.calls());
+    }
+
+    @Test void noBudgetGrowthAndSafetyCapsAreNotRetried() {
+        for (String reason : List.of("thinking_token_limit", "thinking_only_no_content", "content_repetition")) {
+            reset(helper);
+            when(model.getDefaultOptions()).thenReturn(OpenAiChatOptions.builder().maxTokens(1024).build());
+            when(helper.streamCallSilent(any(), any(), anyString(), anyString())).thenReturn(
+                    new NodeStreamingChatHelper.StreamResult("", "Review", null, List.of(), false,
+                            10, 1024, true, reason, NodeStreamingChatHelper.ErrorType.NONE, false, 0, 0, 1024));
+            assertEquals(TaskFinalizationGate.Outcome.INCOMPLETE, review(16000, 0, 0).result().outcome());
+            verify(helper, times(1)).streamCallSilent(any(), any(), anyString(), anyString());
+        }
+    }
+
+    @Test void completionTokenRetryPreservesOpenAiParameterFamily() {
+        when(model.getDefaultOptions()).thenReturn(OpenAiChatOptions.builder().model("gpt-5")
+                .maxCompletionTokens(8192).build());
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        when(helper.streamCallSilent(any(), any(), anyString(), anyString())).thenAnswer(call -> {
+            var options = (OpenAiChatOptions) ((Prompt) call.getArgument(1)).getOptions();
+            assertNull(options.getMaxTokens());
+            assertEquals(calls.get() == 0 ? 1024 : 8192, options.getMaxCompletionTokens());
+            if (calls.getAndIncrement() == 0) return new NodeStreamingChatHelper.StreamResult("", "Review", null,
+                    List.of(), false, 10, 1024, true, "thinking_token_limit", NodeStreamingChatHelper.ErrorType.NONE,
+                    false, 0, 0, 1024);
+            return result(json("ACCEPT", "[]"));
+        });
+        assertEquals(TaskFinalizationGate.Outcome.ACCEPT, review(16000, 0, 0).result().outcome());
+        assertEquals(2, calls.get());
+    }
+
     @Test void incompleteExplanationDistinguishesFixedCausesWithoutLeakingReviewerText() {
         var context=TaskFinalizationCoordinator.incompleteAnswer("Required execution facts or objective/candidate cannot fit context");
         var correction=TaskFinalizationCoordinator.incompleteAnswer("Correction allowance exhausted");
