@@ -7,7 +7,9 @@ head:
       content: MateClaw,多智能体,AI操作系统,自部署AI,Spring AI + AgentScope,ReAct,Plan-and-Execute,MCP,LLM Wiki,记忆系统,Tool Guard,开源
 ---
 
-3.0.0-SNAPSHOT 升级到 Java 21、Spring Boot 4 和 Spring AI 2，AgentScope 2 驱动 ReAct 与计划单步执行循环。工具审批、权限、Goal、SSE 与持久化继续由 MateClaw 统一治理；这是开发快照。
+3.0.0 升级到 Java 21、Spring Boot 4 和 Spring AI 2，AgentScope 2 驱动 ReAct 与计划单步执行循环。工具审批、权限、Goal、SSE 与持久化继续由 MateClaw 统一治理。
+
+发布日期：**2026-10-26**。本文为 3.0.0 正式版更新说明。源码与发行包版本统一为 `3.0.0`；发行包请从 [GitHub Releases](https://github.com/mateaix/mateclaw/releases) 下载。
 
 [升级说明与 changelog](./changelog)
 

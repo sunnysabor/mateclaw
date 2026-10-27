@@ -26,6 +26,7 @@
 const { loadBrandConfig } = require('./scripts/branding.cjs')
 
 const mode = process.env.BUILD_MODE === 'remote' ? 'remote' : 'local'
+const buildArch = process.env.BUILD_ARCH
 const brand = loadBrandConfig(__dirname)
 // Keep artifact file names ASCII: electron-builder sanitizes non-ASCII names on
 // some targets, which can collapse Chinese labels into ambiguous punctuation.
@@ -73,6 +74,10 @@ function getLocalJreResourcePath() {
   return 'resources/jre/${os}-${arch}/'
 }
 
+function archList(defaultArchs) {
+  return defaultArchs.includes(buildArch) ? [buildArch] : defaultArchs
+}
+
 // Derive a short slug from the brand name for artifact file names.
 // "MyAI" → "MyAI", "Cool App" → "Cool_App"
 const brandSlug = brand.name.replace(/\s+/g, '_')
@@ -100,7 +105,7 @@ const config = {
     },
   ],
   files: ['dist-electron', 'dist'],
-  afterPack: 'scripts/trim-playwright-driver.cjs',
+  afterPack: 'scripts/after-pack.cjs',
 
   // extraResources: only bundle JRE + JAR in local mode.
   // In remote mode this array is empty — the packaged app contains only the
@@ -123,8 +128,8 @@ const config = {
   mac: {
     category: 'public.app-category.productivity',
     target: [
-      { target: 'dmg', arch: desktopBuildArches },
-      { target: 'zip', arch: desktopBuildArches },
+      { target: 'dmg', arch: archList(['arm64', 'x64']) },
+      { target: 'zip', arch: archList(['arm64', 'x64']) },
     ],
     icon: 'build/icon.icns',
     hardenedRuntime: true,
@@ -144,9 +149,7 @@ const config = {
   },
 
   win: {
-    target: [
-      { target: 'nsis', arch: desktopBuildArches },
-    ],
+    target: archList(['x64', 'arm64']).map((arch) => ({ target: 'nsis', arch })),
     icon: 'build/icon.ico',
     artifactName: `${brandSlug}_${variantName}_${'$'}{version}_${'$'}{arch}_Setup.${'$'}{ext}`,
   },

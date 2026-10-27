@@ -1,180 +1,156 @@
 #!/usr/bin/env bash
 #
-# scripts/download-jre.sh — Download Eclipse Temurin JRE 21 for the current
-# platform and extract into resources/jre/<platform>-<arch>/.
+# Download Adoptium JRE 21 for the requested platform.
 #
 # Usage:
-#   scripts/download-jre.sh            # auto-detect current arch
-#   scripts/download-jre.sh arm64      # arm64 only
-#   scripts/download-jre.sh x64        # x64 only
-#   scripts/download-jre.sh all        # both arches when supported
+#   bash scripts/download-jre.sh [platform-arch]
+#   bash scripts/download-jre.sh mac-arm64
+#   bash scripts/download-jre.sh mac-x64
+#   bash scripts/download-jre.sh win-x64
+#   bash scripts/download-jre.sh win-arm64
 #
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-JRE_DIR="$PROJECT_ROOT/resources/jre"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+RESOURCES_DIR="$PROJECT_DIR/resources"
 
-# Temurin 21 (LTS) JRE downloads via Adoptium API.
-ADOPTIUM_BASE="https://api.adoptium.net/v3/binary/latest/21/ga"
+JRE_VERSION="21"
+ADOPTIUM_API="https://api.adoptium.net/v3/binary/latest"
 
-case "$(uname -s)" in
-  Darwin*)
-    API_OS="mac"
-    FOLDER_OS="mac"
-    ARCHIVE_EXT="tar.gz"
-    ;;
-  MINGW*|MSYS*|CYGWIN*)
-    API_OS="windows"
-    FOLDER_OS="win32"
-    ARCHIVE_EXT="zip"
-    ;;
-  Linux*)
-    API_OS="linux"
-    FOLDER_OS="linux"
-    ARCHIVE_EXT="tar.gz"
-    ;;
-  *)
-    echo "Unsupported OS: $(uname -s)" >&2
-    exit 1
-    ;;
+detect_platform() {
+    local os arch
+
+    case "$(uname -s)" in
+        Darwin) os="mac" ;;
+        Linux)  os="linux" ;;
+        MINGW*|MSYS*|CYGWIN*) os="win32" ;;
+        *) echo "Unsupported OS: $(uname -s)"; exit 1 ;;
+    esac
+
+    case "$(uname -m)" in
+        x86_64|amd64) arch="x64" ;;
+        arm64|aarch64) arch="arm64" ;;
+        *) echo "Unsupported arch: $(uname -m)"; exit 1 ;;
+    esac
+
+    echo "${os}-${arch}"
+}
+
+PLATFORM="${1:-$(detect_platform)}"
+echo "🔧 Platform: $PLATFORM"
+
+case "$PLATFORM" in
+    mac-arm64)
+        API_OS="mac"
+        API_ARCH="aarch64"
+        ARCHIVE_EXT="tar.gz"
+        ;;
+    mac-x64)
+        API_OS="mac"
+        API_ARCH="x64"
+        ARCHIVE_EXT="tar.gz"
+        ;;
+    win-x64|win32-x64)
+        API_OS="windows"
+        API_ARCH="x64"
+        ARCHIVE_EXT="zip"
+        ;;
+    win-arm64)
+        API_OS="windows"
+        API_ARCH="aarch64"
+        ARCHIVE_EXT="zip"
+        ;;
+    linux-x64)
+        API_OS="linux"
+        API_ARCH="x64"
+        ARCHIVE_EXT="tar.gz"
+        ;;
+    linux-arm64)
+        API_OS="linux"
+        API_ARCH="aarch64"
+        ARCHIVE_EXT="tar.gz"
+        ;;
+    *)
+        echo "❌ Unsupported platform: $PLATFORM"
+        exit 1
+        ;;
 esac
 
-python_bin() {
-  if command -v python3 >/dev/null 2>&1; then
-    command -v python3
-  elif command -v python >/dev/null 2>&1; then
-    command -v python
-  else
-    return 1
-  fi
-}
+TARGET_DIR="$RESOURCES_DIR/jre/$PLATFORM"
 
-move_dir_contents() {
-  local from="$1"
-  local to="$2"
-  mkdir -p "$to"
-  (shopt -s dotglob nullglob; mv "$from"/* "$to"/)
-}
+case "$PLATFORM" in
+    mac-*)         JRE_NATIVE_LIB="Contents/Home/lib/server/libjvm.dylib"; JAVA_REL="Contents/Home/bin/java" ;;
+    win-*|win32-*) JRE_NATIVE_LIB="bin/server/jvm.dll";                     JAVA_REL="bin/java.exe" ;;
+    linux-*)       JRE_NATIVE_LIB="lib/server/libjvm.so";                   JAVA_REL="bin/java" ;;
+esac
 
-extract_archive() {
-  local archive="$1"
-  local destination="$2"
-
-  mkdir -p "$destination"
-  if [ "$ARCHIVE_EXT" = "zip" ]; then
-    local py
-    py="$(python_bin)" || {
-      echo "ERROR: python3/python is required to extract Windows JRE zip archives" >&2
-      exit 1
-    }
-    "$py" - "$archive" "$destination" <<'PY'
-import sys
-from zipfile import ZipFile
-with ZipFile(sys.argv[1]) as zf:
-    zf.extractall(sys.argv[2])
-PY
-  else
-    tar -xzf "$archive" -C "$destination"
-  fi
-}
-
-find_extracted_root() {
-  local extract_tmp="$1"
-  find "$extract_tmp" -mindepth 1 -maxdepth 1 -type d | head -1
-}
-
-download_and_extract() {
-  local api_arch="$1"
-  local folder="$2"
-  local url="$ADOPTIUM_BASE/$API_OS/$api_arch/jre/hotspot/normal/eclipse?project=jdk"
-  local tmpfile="$JRE_DIR/jre-$FOLDER_OS-$api_arch.$ARCHIVE_EXT"
-  local extract_tmp="$JRE_DIR/.tmp-$FOLDER_OS-$api_arch"
-  local target_dir="$JRE_DIR/$folder"
-
-  echo "==> Downloading Temurin 21 JRE for $API_OS $api_arch"
-  mkdir -p "$JRE_DIR"
-  curl -L --fail -o "$tmpfile" "$url"
-
-  echo "==> Extracting to $target_dir"
-  rm -rf "$target_dir" "$extract_tmp"
-  mkdir -p "$target_dir" "$extract_tmp"
-
-  extract_archive "$tmpfile" "$extract_tmp"
-
-  local extracted_dir
-  extracted_dir="$(find_extracted_root "$extract_tmp")"
-  if [ -z "$extracted_dir" ]; then
-    echo "ERROR: Could not find extracted JRE directory" >&2
-    exit 1
-  fi
-
-  if [ "$API_OS" = "mac" ]; then
-    # Temurin macOS archives extract to: jdk-21.x.x+jre/Contents/Home/...
-    if [ -d "$extracted_dir/Contents" ]; then
-      mv "$extracted_dir/Contents" "$target_dir/Contents"
-    elif [ -d "$extract_tmp/Contents" ]; then
-      mv "$extract_tmp/Contents" "$target_dir/Contents"
-    else
-      echo "ERROR: Could not find macOS JRE Contents directory" >&2
-      exit 1
-    fi
-  else
-    # Windows/Linux archives extract with bin/, lib/, release, ... at top level.
-    move_dir_contents "$extracted_dir" "$target_dir"
-  fi
-
-  rm -rf "$extract_tmp" "$tmpfile"
-
-  local java_bin
-  if [ "$API_OS" = "mac" ]; then
-    java_bin="$target_dir/Contents/Home/bin/java"
-  elif [ "$API_OS" = "windows" ]; then
-    java_bin="$target_dir/bin/java.exe"
-  else
-    java_bin="$target_dir/bin/java"
-  fi
-
-  if [ -f "$java_bin" ]; then
-    echo "==> OK: $java_bin"
-  else
-    echo "ERROR: java binary not found at $java_bin" >&2
-    exit 1
-  fi
-}
-
-TARGET="${1:-auto}"
-if [ "$TARGET" = "auto" ]; then
-  case "$(uname -m)" in
-    arm64|aarch64) TARGET="arm64" ;;
-    x86_64|amd64)  TARGET="x64" ;;
-    *) echo "Unsupported arch: $(uname -m)" >&2; exit 1 ;;
-  esac
+if [ -d "$TARGET_DIR" ] && [ -f "$TARGET_DIR/$JRE_NATIVE_LIB" ]; then
+    echo "✅ JRE already exists and looks complete at $TARGET_DIR"
+    chmod -R u+w "$TARGET_DIR"
+    exit 0
+elif [ -d "$TARGET_DIR" ] && [ -n "$(ls -A "$TARGET_DIR" 2>/dev/null)" ]; then
+    echo "⚠️  Existing JRE at $TARGET_DIR is incomplete (missing $JRE_NATIVE_LIB) — re-downloading."
+    rm -rf "$TARGET_DIR"
 fi
 
-case "$TARGET" in
-  arm64)
-    if [ "$API_OS" = "windows" ]; then
-      echo "Windows arm64 JRE packaging is not configured for this project." >&2
-      exit 1
-    fi
-    download_and_extract "aarch64" "$FOLDER_OS-arm64"
-    ;;
-  x64)
-    download_and_extract "x64" "$FOLDER_OS-x64"
-    ;;
-  all)
-    if [ "$API_OS" = "windows" ]; then
-      download_and_extract "x64" "$FOLDER_OS-x64"
-    else
-      download_and_extract "aarch64" "$FOLDER_OS-arm64"
-      download_and_extract "x64" "$FOLDER_OS-x64"
-    fi
-    ;;
-  *)
-    echo "Usage: $0 [arm64|x64|all]" >&2
-    exit 1
-    ;;
-esac
+mkdir -p "$TARGET_DIR"
 
-echo "==> JRE setup complete."
+DOWNLOAD_URL="${ADOPTIUM_API}/${JRE_VERSION}/ga/${API_OS}/${API_ARCH}/jre/hotspot/normal/eclipse"
+
+echo "📥 Downloading JRE ${JRE_VERSION} from Adoptium..."
+echo "   URL: $DOWNLOAD_URL"
+
+TEMP_FILE="$(mktemp)"
+
+if command -v curl &>/dev/null; then
+    curl -fSL --progress-bar -o "$TEMP_FILE" "$DOWNLOAD_URL"
+elif command -v wget &>/dev/null; then
+    wget -q --show-progress -O "$TEMP_FILE" "$DOWNLOAD_URL"
+else
+    echo "❌ Neither curl nor wget found"
+    exit 1
+fi
+
+echo "📦 Extracting JRE..."
+
+if [ "$ARCHIVE_EXT" = "tar.gz" ]; then
+    tar -xzf "$TEMP_FILE" -C "$TARGET_DIR" --strip-components=1
+elif [ "$ARCHIVE_EXT" = "zip" ]; then
+    TEMP_EXTRACT="$(mktemp -d)"
+    unzip -q "$TEMP_FILE" -d "$TEMP_EXTRACT"
+    EXTRACTED_DIR=$(ls "$TEMP_EXTRACT")
+    mv "$TEMP_EXTRACT/$EXTRACTED_DIR"/* "$TARGET_DIR/"
+    rm -rf "$TEMP_EXTRACT"
+fi
+
+rm -f "$TEMP_FILE"
+
+# codesign --force needs write permission on upstream read-only files.
+chmod -R u+w "$TARGET_DIR"
+
+JAVA_BIN="$TARGET_DIR/$JAVA_REL"
+chmod +x "$JAVA_BIN" 2>/dev/null || true
+
+if [ ! -f "$JAVA_BIN" ] || [ ! -f "$TARGET_DIR/$JRE_NATIVE_LIB" ]; then
+    echo "❌ JRE is incomplete — missing java launcher or native runtime ($JRE_NATIVE_LIB)"
+    echo "   Removing $TARGET_DIR so the next run re-downloads."
+    rm -rf "$TARGET_DIR"
+    exit 1
+fi
+
+HOST_PLATFORM="$(detect_platform | sed 's/^win32-/win-/')"
+NORM_PLATFORM="$(echo "$PLATFORM" | sed 's/^win32-/win-/')"
+if [ "$NORM_PLATFORM" = "$HOST_PLATFORM" ]; then
+    if ! "$JAVA_BIN" -version >/dev/null 2>&1; then
+        echo "❌ JRE installed but 'java -version' failed — the runtime is broken"
+        "$JAVA_BIN" -version 2>&1 | head -5 || true
+        rm -rf "$TARGET_DIR"
+        exit 1
+    fi
+fi
+
+echo "✅ JRE installed successfully"
+"$JAVA_BIN" -version 2>&1 | head -1 || true
+echo "📁 JRE location: $TARGET_DIR"

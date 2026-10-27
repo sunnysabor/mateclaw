@@ -15,6 +15,8 @@ Use the DSH management console to install the pinned **`0.2.0-rc.1`** target. Th
 
 Run **Verify**, **Test connection**, and **Test task**. These mean different things: configuration checks, an SDK `initialize` handshake, and a real model task requiring the answer `OK`. A successful handshake alone does not establish model access. The wire server version `0.0.1` is not the npm package version; managed provenance records the pinned package separately. An external executable remains unverified unless independently checked.
 
+The Docker runtime image pins Node.js 22 and includes bubblewrap for Linux sandbox execution. Rebuild or pull the updated image before installing managed DSH packages; updating the application JAR alone does not update container dependencies. Host installations must supply their own runtime dependencies.
+
 ## SDK configuration
 
 Use an absolute executable path to `node_modules/.bin/dsh`, profile `sdk`, an existing working directory, and a dedicated home root. Optional patch paths are an ordered JSON array of absolute files. MateClaw assigns a separate `DSH_HOME` for each workspace/employee pair and launches arguments directly, without a shell.

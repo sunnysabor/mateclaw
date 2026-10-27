@@ -1,10 +1,10 @@
-# 3.0.0-SNAPSHOT: execution architecture upgrade
+# 3.0.0: execution architecture upgrade
 
-Development snapshot; no stable 3.0.0 release has been published.
+Release date: **2026-10-26**. These notes cover the 3.0.0 stable release. Source and package versions are `3.0.0`; download published packages from [GitHub Releases](https://github.com/mateaix/mateclaw/releases).
 
 ## Cumulative changes since 2.3.0
 
-3.0.0-SNAPSHOT includes the former 2.4.0 development cycle; 2.4.0 was not published as a separate stable release. The groups below cover capabilities added before the architecture migration as well.
+3.0.0 includes the former 2.4.0 development cycle; 2.4.0 was not published as a separate stable release. The groups below cover capabilities added before the architecture migration as well.
 
 ### Workspaces and conversations
 
@@ -34,6 +34,14 @@ Development snapshot; no stable 3.0.0 release has been published.
 - Unsupported webhook channels are rejected before configuration persistence (#654).
 - Flyway validation failures block startup by default; history repair requires explicit opt-in, with backup and recovery guidance (#657).
 - Commercial-edition overview and links are added; commercial modules are not included in the open-source edition.
+
+## Finalization, team delivery and deployment
+
+- Long tasks check completion before returning a final answer and can continue unfinished work within runtime limits. Requests that need user input wait for a reply instead of repeatedly starting action turns (#668).
+- When reasoning consumes the response output budget, final-answer generation can retry within runtime limits. DeepSeek Flash thinking controls are applied consistently (#672).
+- Team worker progress retains full result evidence and runtime failure causes. A Team Run publishes completion after final synthesis, keeping worker output, progress and the delivered summary consistent.
+- DSH keeps its reviewed default SDK version; `0.2.1-rc.2` is an opt-in candidate. Docker runtime images pin Node.js 22 and include bubblewrap for Linux sandbox execution (#670). Candidate checks on macOS arm64 do not establish Linux or Windows acceptance; see [DSH setup and limitations](./deepseek-harness).
+- Every backend requires a non-empty `JWT_SECRET` of at least 32 UTF-8 bytes. Desktop local mode generates and persists its secret; source and server deployments must configure and retain theirs. See [configuration](./config).
 
 ## Platform and execution core
 

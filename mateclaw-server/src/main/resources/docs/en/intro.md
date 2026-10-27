@@ -7,7 +7,9 @@ head:
       content: MateClaw,multi-agent AI,self-hosted AI,AI operating system,Spring AI + AgentScope,ReAct,Plan-and-Execute,MCP,LLM Wiki,memory lifecycle,Tool Guard,open source
 ---
 
-3.0.0-SNAPSHOT upgrades to Java 21, Spring Boot 4 and Spring AI 2. AgentScope 2 drives ReAct and plan-step execution loops; MateClaw retains approvals, permissions, Goals, SSE and persistence. This is a development snapshot.
+3.0.0 upgrades to Java 21, Spring Boot 4 and Spring AI 2. AgentScope 2 drives ReAct and plan-step execution loops; MateClaw retains approvals, permissions, Goals, SSE and persistence.
+
+Release date: **2026-10-26**. These notes cover the 3.0.0 stable release. Source and package versions are `3.0.0`; download published packages from [GitHub Releases](https://github.com/mateaix/mateclaw/releases).
 
 [Upgrade guidance and changelog](./changelog)
 
