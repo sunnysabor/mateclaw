@@ -46,6 +46,12 @@ public final class TaskFinalizationCoordinator {
         describe finishing the task after failure; it does not establish original-operation recovery.
         Endorse recovery only for canonical supportedRecoveryCallIds; an empty list means none is established.
         Do not invent numeric results or reconstruct omitted results.
+        Distinguish runtime evidence omission (resultComplete=false) from pagination described inside
+        a complete tool response. A directory reporting "Showing: 50 of 52" establishes its reported
+        total of 52 even though only 50 entries are shown; it does not establish the names, details or
+        status of the unseen entries. Do not require fetching every page to cite an explicitly reported total.
+        A later filtered lookup with no matches is scoped to that filter; it does not erase or contradict
+        the entries and totals observed in an earlier directory lookup. Review all available complete outputs.
         For literal existence checks, a substring anywhere in the complete observed output satisfies existence.
         Do not invent a standalone line, whole-line equality, token-boundary or occurrence-count requirement
         unless the CURRENT objective explicitly requires it. A quoted numeric marker such as
@@ -110,40 +116,42 @@ public final class TaskFinalizationCoordinator {
         return Thread.currentThread().isInterrupted() || tracker!=null && tracker.isStopRequested(conversationId);
     }
     /** Read existing canonical data only; never execute tools or trust completed-step prose. */
-    private static Map<String,String> retainedLatestResult(ActionExecutionLedger ledger,
+    private static Map<String,String> retainedSuccessfulResults(ActionExecutionLedger ledger,
             vip.mate.agent.runtime.state.RunState state) {
-        var latest=ledger.receipts().values().stream()
-            .filter(r->r.status()==ActionExecutionLedger.Status.SUCCEEDED && r.substantive())
-            .sorted(java.util.Comparator.comparingLong(ActionExecutionLedger.Receipt::completedAt).reversed()
-                .thenComparing(ActionExecutionLedger.Receipt::toolCallId)).findFirst();
-        if (!ledger.latestCompleteResult().isEmpty()) return ledger.latestCompleteResult();
-        if(latest.isEmpty() || state==null) return Map.of();
-        var receipt=latest.get();
-        if(receipt.resultChars()<=512) return Map.of();
-        java.util.function.Predicate<String> matches=output->output!=null
-            && output.length()==receipt.resultChars()
-            && output.startsWith(receipt.resultSummary().substring(0,512));
-        java.util.Set<String> outputs=new java.util.HashSet<>();
-        var accessor=new vip.mate.agent.graph.state.MateClawStateAccessor(state);
-        java.util.function.Consumer<org.springframework.ai.chat.messages.ToolResponseMessage.ToolResponse> add=response->{
-            if(receipt.toolCallId().equals(response.id()) && receipt.toolName().equals(response.name())
-                    && matches.test(response.responseData())) outputs.add(response.responseData());
+        Map<String,String> retained = new java.util.LinkedHashMap<>(ledger.latestCompleteResult());
+        if (state == null) return retained;
+        Map<String,java.util.Set<String>> candidates = new java.util.HashMap<>();
+        java.util.function.Consumer<org.springframework.ai.chat.messages.ToolResponseMessage.ToolResponse> add = response -> {
+            if (response.id() == null) return;
+            var receipt = ledger.receipts().get(response.id());
+            if (receipt == null || receipt.status() != ActionExecutionLedger.Status.SUCCEEDED
+                    || !receipt.substantive() || !receipt.toolName().equals(response.name())
+                    || receipt.resultChars() <= 512 || response.responseData() == null
+                    || response.responseData().length() != receipt.resultChars()
+                    || !response.responseData().startsWith(receipt.resultSummary().substring(0,512))) return;
+            candidates.computeIfAbsent(response.id(), ignored -> new java.util.HashSet<>()).add(response.responseData());
         };
-        Object results=state.data().get(vip.mate.agent.graph.state.MateClawStateKeys.TOOL_RESULTS);
-        if(results instanceof List<?> list) for(Object value:list)
-            if(value instanceof org.springframework.ai.chat.messages.ToolResponseMessage.ToolResponse response) add.accept(response);
-        for(var message:accessor.messages())
-            if(message instanceof org.springframework.ai.chat.messages.ToolResponseMessage responses)
+        var accessor = new vip.mate.agent.graph.state.MateClawStateAccessor(state);
+        Object results = state.data().get(vip.mate.agent.graph.state.MateClawStateKeys.TOOL_RESULTS);
+        if (results instanceof List<?> list) for (Object value : list)
+            if (value instanceof org.springframework.ai.chat.messages.ToolResponseMessage.ToolResponse response) add.accept(response);
+        for (var message : accessor.messages())
+            if (message instanceof org.springframework.ai.chat.messages.ToolResponseMessage responses)
                 responses.getResponses().forEach(add);
-        for(var event:accessor.pendingEvents()) {
-            if(vip.mate.agent.GraphEventPublisher.EVENT_TOOL_COMPLETE.equals(event.type())
-                && receipt.toolCallId().equals(event.data().get("toolCallId"))
-                && receipt.toolName().equals(event.data().get("toolName"))
-                && Boolean.parseBoolean(String.valueOf(event.data().get("success")))
-                && event.data().get("result") instanceof String output && matches.test(output)) outputs.add(output);
+        for (var event : accessor.pendingEvents()) {
+            if (vip.mate.agent.GraphEventPublisher.EVENT_TOOL_COMPLETE.equals(event.type())
+                    && Boolean.parseBoolean(String.valueOf(event.data().get("success")))
+                    && event.data().get("toolCallId") instanceof String id
+                    && event.data().get("toolName") instanceof String name
+                    && event.data().get("result") instanceof String output)
+                add.accept(new org.springframework.ai.chat.messages.ToolResponseMessage.ToolResponse(id,name,output));
         }
-        // Conflicting records for one identity cannot establish which output is authoritative.
-        return outputs.size()==1?Map.of(receipt.toolCallId(),outputs.iterator().next()):Map.of();
+        // Canonical retained output wins over display records. Conflicting runtime
+        // records cannot establish a complete older result for the same call.
+        candidates.forEach((id, outputs) -> {
+            if (!retained.containsKey(id) && outputs.size() == 1) retained.put(id,outputs.iterator().next());
+        });
+        return retained;
     }
     public Review review(ChatModel model, String conversationId, String objective, String candidate,
                          ActionExecutionLedger ledger, String progressHints, int window, int attempts,
@@ -154,7 +162,7 @@ public final class TaskFinalizationCoordinator {
                 +"\nRUNTIME: ACTIVE; iteration/call continuation available="+canContinue
                 +"; corrective attempts used="+attempts+"; logical calls used="+usedCalls;
         int room=window-OUTPUT_TOKENS-TokenEstimator.estimateTokens(INSTRUCTIONS+mandatory)-128;
-        var retained = retainedLatestResult(ledger, runState);
+        var retained = retainedSuccessfulResults(ledger, runState);
         var latest = ledger.receipts().values().stream()
                 .filter(r -> r.status() == ActionExecutionLedger.Status.SUCCEEDED && r.substantive())
                 .sorted(java.util.Comparator.comparingLong(ActionExecutionLedger.Receipt::completedAt).reversed()
