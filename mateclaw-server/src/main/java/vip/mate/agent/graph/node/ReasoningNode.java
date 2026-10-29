@@ -38,6 +38,8 @@ import vip.mate.agent.graph.state.MateClawStateAccessor;
 import vip.mate.agent.graph.state.MateClawStateKeys;
 import vip.mate.agent.graph.state.SourceEvidenceLedger;
 import vip.mate.agent.graph.guard.ActionCompletionPolicy;
+import vip.mate.agent.graph.guard.TaskFinalizationCoordinator;
+import vip.mate.agent.graph.guard.TaskFinalizationGate;
 
 import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.team.service.TeamContextBuilder;
@@ -1689,7 +1691,14 @@ public class ReasoningNode implements NodeAction {
                             .streamedContent("").contentStreamed(false)
                             .llmCallCount(nextLlmCallCount).mergeUsage(state,result).build();
                 }
-                if (!waitingForUser && outcome != vip.mate.agent.graph.guard.TaskFinalizationGate.Outcome.ACCEPT) {
+                if (!waitingForUser && outcome != TaskFinalizationGate.Outcome.ACCEPT
+                        && TaskFinalizationCoordinator.checkerUnavailable(review.result().reason())) {
+                    // The verifier failed to run; the grounded candidate is still the best
+                    // available answer, so publish it with an explicit unverified notice.
+                    log.warn("[ReasoningNode] Final verification unavailable ({}); publishing answer as unverified",
+                            review.result().reason());
+                    accumulatedContent = TaskFinalizationCoordinator.unverifiedAnswer(accumulatedContent, review.result().reason());
+                } else if (!waitingForUser && outcome != TaskFinalizationGate.Outcome.ACCEPT) {
                     return reasonOutput().finalAnswer(vip.mate.agent.graph.guard.TaskFinalizationCoordinator
                                     .incompleteAnswer(review.result().reason()))
                             .needsToolCall(false).shouldSummarize(false).contentStreamed(false)

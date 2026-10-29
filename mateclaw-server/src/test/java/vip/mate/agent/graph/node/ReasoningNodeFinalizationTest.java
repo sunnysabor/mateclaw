@@ -479,4 +479,45 @@ class ReasoningNodeFinalizationTest {
         public void send(SseEventBuilder builder) { for(var data:builder.build())chunks.add(String.valueOf(data.getData())); }
         String text(){return String.join("",chunks);}
     }
+
+    @Test void verifierProviderFailurePublishesCandidateWithUnverifiedNotice() throws Exception {
+        var tracker=new ChatStreamTracker(new ObjectMapper());
+        try {
+            tracker.register("gate-test");
+            var model=mock(ChatModel.class);
+            when(model.stream(any(Prompt.class))).thenAnswer(call -> {
+                String prompt=((Prompt)call.getArgument(0)).getContents();
+                return prompt.contains("You are a tool-free consistency reviewer")
+                    ? Flux.error(new RuntimeException("invalid_request_error: unsupported parameter"))
+                    : Flux.just(response("The first calculation failed; the total is 42."));
+            });
+            var helper=new NodeStreamingChatHelper(tracker);var tools=mock(AgentToolSet.class);
+            when(tools.callbacks()).thenReturn(List.of());
+            var node=new ReasoningNode(model,tools,null,helper,null,tracker);enable(node,helper,tracker);
+            var out=node.apply(new RunState(state()));
+            String answer=String.valueOf(out.get(FINAL_ANSWER));
+            assertTrue(answer.startsWith("The first calculation failed; the total is 42."));
+            assertTrue(answer.contains("未经最终核验"));
+            assertTrue(answer.contains("诊断码：CHECKER_ERROR"));
+            assertNotEquals("incomplete",out.get(FINISH_REASON));
+        } finally {tracker.onShutdown();}
+    }
+    @Test void malformedVerdictStillWithholdsCandidate() throws Exception {
+        var tracker=new ChatStreamTracker(new ObjectMapper());
+        try {
+            tracker.register("gate-test");
+            var model=mock(ChatModel.class);
+            when(model.stream(any(Prompt.class))).thenAnswer(call -> {
+                String prompt=((Prompt)call.getArgument(0)).getContents();
+                return Flux.just(response(prompt.contains("You are a tool-free consistency reviewer")
+                    ? "not json" : "The failed operation was recovered; total 42."));
+            });
+            var helper=new NodeStreamingChatHelper(tracker);var tools=mock(AgentToolSet.class);
+            when(tools.callbacks()).thenReturn(List.of());
+            var node=new ReasoningNode(model,tools,null,helper,null,tracker);enable(node,helper,tracker);
+            var out=node.apply(new RunState(state()));
+            assertEquals("incomplete",out.get(FINISH_REASON));
+            assertFalse(String.valueOf(out.get(FINAL_ANSWER)).contains("recovered"));
+        } finally {tracker.onShutdown();}
+    }
 }

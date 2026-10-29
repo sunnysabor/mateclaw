@@ -420,4 +420,54 @@ class TaskFinalizationCoordinatorTest {
         assertEquals("FENCED_JSON",data.getAllValues().get(1).get("parseFailureCode"));
         assertFalse(data.getAllValues().toString().contains("```"));
     }
+
+    @Test void providerErrorIsReportedAsCheckerErrorWithShareableCode() {
+        when(helper.streamCallSilent(any(), any(), anyString(), anyString())).thenReturn(
+                new NodeStreamingChatHelper.StreamResult("", "", null, List.of(), false, 0, 0, false,
+                        "LLM 调用失败: upstream reset", NodeStreamingChatHelper.ErrorType.SERVER_ERROR));
+        var check = review(16000, 0, 0);
+        assertEquals("CHECKER_ERROR", check.result().reason());
+        String answer = TaskFinalizationCoordinator.incompleteAnswer(check.result().reason());
+        assertTrue(answer.contains("模型服务报错"));
+        assertTrue(answer.endsWith("（诊断码：CHECKER_ERROR）"));
+        assertFalse(answer.contains("upstream reset"));
+    }
+    @Test void locallyTruncatedVerdictIsPartialNotProviderError() {
+        when(helper.streamCallSilent(any(), any(), anyString(), anyString())).thenReturn(
+                new NodeStreamingChatHelper.StreamResult("{\"decision\":", "", null, List.of(), false, 7, 3, true,
+                        "content_repetition", NodeStreamingChatHelper.ErrorType.NONE));
+        assertEquals("CHECKER_PARTIAL", review(16000, 0, 0).result().reason());
+    }
+    @Test void nullVerifierResponseAndExceptionHaveDistinctCodes() {
+        when(helper.streamCallSilent(any(), any(), anyString(), anyString())).thenReturn(null);
+        assertEquals("CHECKER_UNAVAILABLE", review(16000, 0, 0).result().reason());
+        reset(helper);
+        when(helper.streamCallSilent(any(), any(), anyString(), anyString())).thenThrow(new IllegalStateException("boom"));
+        var thrown = review(16000, 0, 0).result().reason();
+        assertEquals("CHECKER_EXCEPTION", thrown);
+        assertNotEquals(TaskFinalizationCoordinator.incompleteAnswer("CHECKER_UNAVAILABLE"),
+                TaskFinalizationCoordinator.incompleteAnswer(thrown));
+    }
+    @Test void summaryFailureCodesAreDistinctAndFreeTextGetsNoCode() {
+        assertTrue(TaskFinalizationCoordinator.incompleteAnswer("Summary unavailable").contains("诊断码：SUMMARY_UNAVAILABLE"));
+        assertTrue(TaskFinalizationCoordinator.incompleteAnswer("Summary verification unavailable").contains("诊断码：SUMMARY_EXCEPTION"));
+        assertFalse(TaskFinalizationCoordinator.incompleteAnswer("SECRET_REVIEWER_TEXT").contains("诊断码"));
+    }
+    @Test void onlyVerifierInfrastructureFailuresAllowUnverifiedPublication() {
+        for (String reason : List.of("CHECKER_ERROR","CHECKER_UNAVAILABLE","CHECKER_EXCEPTION","CHECKER_PARTIAL","CHECKER_OUTPUT_LIMIT","CHECKER_TOOL_CALL"))
+            assertTrue(TaskFinalizationCoordinator.checkerUnavailable(reason), reason);
+        for (String reason : List.of("INVALID_VERDICT","FAILED_CALL_COUNT_MISMATCH","UNSUPPORTED_RECOVERY","CONTRADICTORY_OUTCOME",
+                "TASK_UNFINISHED","CORRECTION_LIMIT","Required execution evidence unavailable","SUMMARY_OUTPUT_LIMIT"))
+            assertFalse(TaskFinalizationCoordinator.checkerUnavailable(reason), reason);
+        assertFalse(TaskFinalizationCoordinator.checkerUnavailable(null));
+    }
+    @Test void oversizedVerifierRequestIsContextOverflowNotPublishable() {
+        when(helper.streamCallSilent(any(), any(), anyString(), anyString())).thenReturn(
+                new NodeStreamingChatHelper.StreamResult("", "", null, List.of(), false, 0, 0, false,
+                        "请求体过大（HTTP 413）", NodeStreamingChatHelper.ErrorType.PAYLOAD_TOO_LARGE));
+        String reason = review(16000, 0, 0).result().reason();
+        assertEquals("CHECKER_CONTEXT_EXCEEDED", reason);
+        assertFalse(TaskFinalizationCoordinator.checkerUnavailable(reason));
+        assertTrue(TaskFinalizationCoordinator.incompleteAnswer(reason).contains("超出可用上下文"));
+    }
 }
