@@ -437,7 +437,7 @@ async function confirmCreate() {
       systemPrompt: draft.value.systemPrompt,
       tags,
       enabled: true,
-      maxIterations: 10,
+      maxIterations: 100,
       // primaryKbId kept as string to preserve Snowflake precision.
       primaryKbId: isAcpRuntime.value ? null : selectedKbId.value,
     }
