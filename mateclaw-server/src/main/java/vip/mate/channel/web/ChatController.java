@@ -2268,7 +2268,9 @@ public class ChatController {
         return new AgentStreamAccumulator(objectMapper, new AgentStreamAccumulator.Sink() {
             @Override
             public void broadcast(String conversationId, String eventName, Object payload) {
-                broadcastEvent(conversationId, eventName, payload);
+                if (!streamTracker.consumeLiveToolEvent(conversationId, eventName, payload)) {
+                    broadcastEvent(conversationId, eventName, payload);
+                }
             }
 
             @Override
