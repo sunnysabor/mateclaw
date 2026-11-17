@@ -83,7 +83,8 @@ export default {
     validity: { UNKNOWN: 'Unknown', UNAVAILABLE: 'Unavailable', STALE: 'Stale', VALID: 'Valid' },
   },
   app: {
-    title: 'HHAIOS - AI Assistant',
+    chatTitleStatus: { running: 'Running', completed: 'Completed', failed: 'Failed', stopped: 'Stopped', awaitingApproval: 'Awaiting approval' },
+    title: 'MateClaw - AI Assistant',
   },
   router: {
     chunkLoadFailed: 'Failed to load page resources. Check your network and try again.',
