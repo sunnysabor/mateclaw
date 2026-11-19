@@ -139,6 +139,7 @@
         :team-runs-has-more="Boolean(teamRunsNextCursor)"
         :team-runs-loading-more="teamRunsLoadingMore"
         :readonly="workerConversationReadOnly"
+        @quote="handleAnswerQuote"
         @regenerate="handleRegenerate"
         @rewind="handleRewind"
         @suggestion-click="sendSuggestion"
@@ -305,6 +306,7 @@ let cachedAgents: import('@/types').Agent[] = []
 <script setup lang="ts">
 import { ElMessage } from 'element-plus/es/components/message/index'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index'
+import { quoteIntoDraft, type AnswerQuote } from '@/utils/answerQuote'
 import { useChatDocumentTitle } from '@/composables/useChatDocumentTitle'
 import { defineAsyncComponent, ref, computed, onMounted, onBeforeUnmount, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -761,11 +763,20 @@ async function collectFilesFromEntries(dirEntries: FileSystemDirectoryEntry[]): 
 
 const messageListRef = ref<InstanceType<typeof MessageList> | null>(null)
 const chatInputRef = ref<InstanceType<typeof ChatInput> | null>(null)
+async function handleAnswerQuote(quote: AnswerQuote) {
+  if (workerConversationReadOnly.value || quote.conversationId !== currentConversationId.value) return
+  if (!messages.value.some(message => String(message.id) === quote.messageId
+      && message.conversationId === quote.conversationId && message.role === 'assistant' && message.status !== 'generating')) return
+  inputText.value = quoteIntoDraft(quote.text,inputText.value)
+  await nextTick()
+  chatInputRef.value?.focus()
+}
+
 
 // Post-render augmentations (ECharts, KaTeX, Mermaid) all watch the same
 // MessageList container — placeholders emitted by useMarkdownRenderer get
 // upgraded in place after Vue paints the rendered Markdown HTML.
-const echartsContainerRef = computed(() => messageListRef.value?.$el as HTMLElement | null)
+const echartsContainerRef = computed(() => messageListRef.value?.contentElement ?? null)
 const { startObserving: startECharts, dispose: disposeECharts } = useEChartsRenderer(echartsContainerRef)
 const { startObserving: startKatex, dispose: disposeKatex } = useKatexRenderer(echartsContainerRef)
 const { startObserving: startMermaid, dispose: disposeMermaid } = useMermaidRenderer(echartsContainerRef)
