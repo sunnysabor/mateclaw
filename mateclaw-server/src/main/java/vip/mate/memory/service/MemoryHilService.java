@@ -8,6 +8,9 @@ import vip.mate.workspace.document.model.WorkspaceFileEntity;
 
 import java.time.LocalDate;
 import java.util.regex.Pattern;
+import java.util.ArrayList;
+import java.util.List;
+import vip.mate.exception.MateClawException;
 
 /**
  * Human-in-the-Loop service for memory editing.
@@ -68,18 +71,22 @@ public class MemoryHilService {
         String cleanContent = USER_EDITED_MARKER.matcher(newContent).replaceAll("").trim();
         String metadata = "<!-- user-edited: " + LocalDate.now() + " -->";
         String sectionHeader = "## " + key;
-        SectionBounds section = findSection(fileContent, key);
-
+        String newline = fileContent.contains("\r\n") ? "\r\n" : "\n";
+        List<Section> matches = sections(fileContent).stream().filter(section -> section.key().equals(key)).toList();
+        if (matches.size() > 1) {
+            throw new MateClawException("err.memory.section_ambiguous", 409,
+                    "Memory section is ambiguous. Rename duplicate headings before editing.");
+        }
         String updated;
-        if (section == null) {
-            // Section not found — append as a new section.
-            String newSection = sectionHeader + "\n" + cleanContent + "\n" + metadata;
-            updated = fileContent.isBlank() ? newSection : fileContent.trim() + "\n\n" + newSection;
+        if (matches.isEmpty()) {
+            String newSection = sectionHeader + newline + cleanContent + newline + metadata;
+            updated = fileContent.isBlank() ? newSection : fileContent.trim() + newline + newline + newSection;
         } else {
-            // Replace the existing section body, keeping the heading in place.
-            String replacement = cleanContent + "\n" + metadata + "\n";
-            updated = fileContent.substring(0, section.contentStart()) + replacement
-                    + fileContent.substring(section.sectionEnd());
+            Section section = matches.getFirst();
+            String prefix = fileContent.substring(0, section.bodyStart());
+            if (!prefix.endsWith("\n") && !prefix.endsWith("\r")) prefix += newline;
+            updated = prefix + cleanContent + newline + metadata + newline
+                    + fileContent.substring(section.end());
         }
         return updated;
     }
@@ -91,48 +98,22 @@ public class MemoryHilService {
     public boolean sectionExists(Long agentId, String filename, String key) {
         WorkspaceFileEntity file = workspaceFileService.getFile(agentId, filename);
         if (file == null || file.getContent() == null) return false;
-        return findSection(file.getContent(), key) != null;
+        return sections(file.getContent()).stream().anyMatch(section -> section.key().equals(key));
     }
+    private record Section(String key, int bodyStart, int end) {}
 
-    /** Owner-scoped section lookup matching {@link #editMemoryEntry(Long, String, String, String, String)}. */
-    public boolean sectionExists(Long agentId, String filename, String key, String ownerKey) {
-        WorkspaceFileEntity file = workspaceFileService.getVisibleFile(agentId, filename, ownerKey);
-        if (file == null || file.getContent() == null) return false;
-        return findSection(file.getContent(), key) != null;
-    }
-
-    /**
-     * Locate an exact level-2 heading. The old substring search let key
-     * {@code "Fact"} match {@code "## Facts"} and could overwrite the wrong
-     * user-edited section. Matching whole heading lines keeps HiL edits scoped
-     * to the section the user actually opened.
-     */
-    private SectionBounds findSection(String content, String key) {
-        if (content == null || content.isBlank() || key == null || key.isBlank()) {
-            return null;
-        }
-        Pattern target = Pattern.compile("(?m)^##\\s+" + Pattern.quote(key.trim()) + "\\s*$");
-        java.util.regex.Matcher m = target.matcher(content);
-        if (!m.find()) {
-            return null;
-        }
-        int contentStart = m.end();
-        while (contentStart < content.length()) {
-            char ch = content.charAt(contentStart);
-            if (ch == '\n' || ch == '\r') {
-                contentStart++;
-            } else {
-                break;
+    /** A heading is a complete line, never an inline substring or another key's prefix. */
+    private static List<Section> sections(String content) {
+        var matcher = Pattern.compile("(?m)^## ([^\r\n]*)(?:\r\n|\n|\r|$)").matcher(content);
+        List<Section> result = new ArrayList<>();
+        while (matcher.find()) {
+            if (!result.isEmpty()) {
+                Section previous = result.removeLast();
+                result.add(new Section(previous.key(), previous.bodyStart(), matcher.start()));
             }
+            result.add(new Section(matcher.group(1).trim(), matcher.end(), content.length()));
         }
-
-        java.util.regex.Matcher next = SECTION_HEADER.matcher(content);
-        int sectionEnd = content.length();
-        if (next.find(contentStart)) {
-            sectionEnd = next.start();
-        }
-        return new SectionBounds(contentStart, sectionEnd);
+        return result;
     }
 
-    private record SectionBounds(int contentStart, int sectionEnd) {}
 }
