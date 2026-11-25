@@ -90,6 +90,8 @@ export default {
     chunkLoadFailed: '页面资源加载失败，请检查网络后重试',
   },
   teams: {
+    chatUnavailable: '团队负责人不可用，请先检查员工是否已启用。',
+    chatWithTeam: '与团队对话',
     kicker: '多 Agent 协作',
     title: 'Agent 团队',
     subtitle: 'Lead 编排、成员执行的多 Agent 协作团队',
@@ -2346,6 +2348,7 @@ export default {
     },
   },
   mcp: {
+    ownership: { label: '所属范围', global: '全局 · 所有工作区共享', current: '当前工作区' },
     kicker: '能力桥接',
     title: 'MCP 连接',
     subtitle: '把 Agent 连到外部数据源和工具',

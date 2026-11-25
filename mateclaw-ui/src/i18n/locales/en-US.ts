@@ -90,6 +90,8 @@ export default {
     chunkLoadFailed: 'Failed to load page resources. Check your network and try again.',
   },
   teams: {
+    chatUnavailable: 'The team lead is unavailable. Check that the agent is enabled.',
+    chatWithTeam: 'Chat with team',
     kicker: 'Multi-Agent Collaboration',
     title: 'Agent Teams',
     subtitle: 'Multi-agent teams: the lead orchestrates, members execute',
@@ -2501,6 +2503,7 @@ export default {
     },
   },
   mcp: {
+    ownership: { label: 'Ownership', global: 'Global · shared across workspaces', current: 'Current workspace' },
     kicker: 'Capability Bridge',
     title: 'MCP Connections',
     subtitle: 'Connect agents to external data sources and tools',
