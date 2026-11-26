@@ -98,6 +98,8 @@ import java.util.Set;
 @Component
 @RequiredArgsConstructor
 public class AgentGraphBuilder {
+    @Autowired
+    private vip.mate.team.service.TeamCoordinatorPolicy coordinatorPolicy;
 
     private final ToolRegistry toolRegistry;
     @org.springframework.beans.factory.annotation.Autowired
@@ -328,6 +330,7 @@ public class AgentGraphBuilder {
      * the Agent's model override, then the global default.</p>
      */
     public BaseAgent build(AgentEntity entity, String modelProvider, String modelName) {
+        if (coordinatorPolicy != null) coordinatorPolicy.requireSupportedRuntime(entity);
         AgentToolSet toolSet = toolRegistry.getEnabledToolSet();
         if (mcpWorkspaceAccess != null) toolSet = mcpWorkspaceAccess.scope(toolSet, entity.getWorkspaceId());
 
@@ -456,6 +459,7 @@ public class AgentGraphBuilder {
                 && Boolean.TRUE.equals(ProviderGenerateKwargs.findOptionValue(providerKwargs, "enableSearch"))) {
             builtinSearchEnabled = true;
         }
+        if (isCoordinator(entity.getId())) builtinSearchEnabled = false;
         if (builtinSearchEnabled) {
             // Provider-native search is independent of the scoped web_search callback.
             log.info("模型原生搜索已开启 (provider={})，web_search 指导由最终工具范围决定", provider.getProviderId());
@@ -561,7 +565,7 @@ public class AgentGraphBuilder {
         // ACTIVE_GOAL. The node itself stays inert until goalProperties.enabled
         // flips true, but tests need findActiveByConversation to work even
         // when the runtime path is disabled.
-        agent.goalService = goalService;
+        agent.goalService = isCoordinator(entity.getId()) ? null : goalService;
         agent.multimodalRouter = multimodalRouter;
         agent.mediaCaptionService = mediaCaptionService;
         agent.chatUploadLocationResolver = chatUploadLocationResolver;
@@ -633,7 +637,7 @@ public class AgentGraphBuilder {
     StateGraphReActAgent buildReActAgent(AgentToolSet toolSet, ModelConfigEntity runtimeModel,
                                          int maxIter, Long agentId, SkillCatalogRenderer skillCatalogRenderer,
                                          PrefixBudgetPlan prefixBudgetPlan, Set<String> autoDemotedTools) {
-        ChatModel chatModel = buildRuntimeChatModel(runtimeModel);
+        ChatModel chatModel = buildAgentChatModel(runtimeModel, this.retryTemplate, agentId);
         ChatClient chatClient = ChatClient.create(chatModel);
         String reasoningEffort = resolveReasoningEffortForModel(runtimeModel);
         AgentRuntime compiledGraph = buildReActGraph(toolSet, chatModel, maxIter, reasoningEffort,
@@ -667,7 +671,7 @@ public class AgentGraphBuilder {
                                                      int maxIter, Long agentId,
                                                      SkillCatalogRenderer skillCatalogRenderer,
                                                      Set<String> autoDemotedTools) {
-        ChatModel chatModel = buildRuntimeChatModel(runtimeModel);
+        ChatModel chatModel = buildAgentChatModel(runtimeModel, this.retryTemplate, agentId);
         ChatClient chatClient = ChatClient.create(chatModel);
         String reasoningEffort = resolveReasoningEffortForModel(runtimeModel);
         AgentRuntime graph = buildPlanExecuteGraph(toolSet, chatModel, maxIter, reasoningEffort,
@@ -736,12 +740,14 @@ public class AgentGraphBuilder {
             if (auditEventService != null) {
                 executor.setAuditEventService(auditEventService);
             }
-            PlanGenerationNode planGenerationNode = new PlanGenerationNode(chatModel, planningService, streamingHelper, conversationWindowManager, toolSet, goalService, goalProperties, agentService);
+            PlanGenerationNode planGenerationNode = new PlanGenerationNode(chatModel, planningService, streamingHelper,
+                    conversationWindowManager, toolSet, isCoordinator(agentId) ? null : goalService, goalProperties, agentService);
             // Team hand-off: a lead-of-team plan agent parks multi-step plans on
             // the team task board instead of the serial delegation pipeline.
             planGenerationNode.setTeamPlanBridge(teamPlanBridge);
             planGenerationNode.setRoutingAdapter(routingDecisionAdapter);
-            planGenerationNode.setGoalDecisionAdapter(goalDecisionAdapter);
+            planGenerationNode.setGoalDecisionAdapter(isCoordinator(agentId) ? null : goalDecisionAdapter);
+            planGenerationNode.setI18nService(i18nService);
             List<ToolCallback> advertisedCallbacks = toolDisclosureService
                     .split(toolSet, Set.of(), autoDemotedTools).activeCallbacks();
             AgentToolSet advertisedToolSet = AgentToolSet.fromCallbacks(
@@ -751,15 +757,18 @@ public class AgentGraphBuilder {
                     conversationWindowManager, skillCatalogRenderer);
             // Per-step delegation: route a step assigned to a specialist agent
             // through DelegateAgentTool (null when delegation deps aren't wired).
-            stepExecutionNode.setDelegateAgentTool(delegateAgentTool);
-            stepExecutionNode.setGoalDecisionAdapter(goalDecisionAdapter);
+            // Persisted specialist assignments bypass the callback map. Coordinator
+            // graphs must resume them locally with the restricted tool set instead.
+            stepExecutionNode.setDelegateAgentTool(isCoordinator(agentId) ? null : delegateAgentTool);
+            stepExecutionNode.setGoalDecisionAdapter(isCoordinator(agentId) ? null : goalDecisionAdapter);
+            stepExecutionNode.setI18nService(i18nService);
             PlanSummaryNode planSummaryNode = new PlanSummaryNode(chatModel, planningService, streamingHelper);
             planSummaryNode.setFinalizationCoordinator(new vip.mate.agent.graph.guard.TaskFinalizationCoordinator(streamingHelper,streamTracker));
             Integer summaryWindow = primaryModelConfig != null ? contextWindowResolver.resolveMaxInputTokens(
                     modelProviderService.getProviderConfig(primaryModelConfig.getProvider()),primaryModelConfig) : null;
             planSummaryNode.setPrefixBudgetPlan(PrefixBudgetPlan.unlimited(summaryWindow != null && summaryWindow > 0
                     ? summaryWindow : conversationWindowManager.getDefaultMaxInputTokens()));
-            planSummaryNode.setGoalService(goalService);
+            planSummaryNode.setGoalService(isCoordinator(agentId) ? null : goalService);
             DirectAnswerNode directAnswerNode = new DirectAnswerNode();
 
 
@@ -780,18 +789,18 @@ public class AgentGraphBuilder {
                     goalEvaluationService, goalFollowupService, goalService, goalProperties,
                     conversationWindowManager, conversationService,
                     vip.mate.goal.service.GraphFlavor.PLAN_EXECUTE);
-            goalEvalNode.setDecisionAdapter(goalDecisionAdapter);
+            goalEvalNode.setDecisionAdapter(isCoordinator(agentId) ? null : goalDecisionAdapter);
 
             EdgeAction goalGate = state -> {
                 MateClawStateAccessor accessor = new MateClawStateAccessor(state);
-                boolean hasGoal = goalProperties.isEnabled()
+                boolean hasGoal = !isCoordinator(agentId) && goalProperties.isEnabled()
                         && GoalEvaluationNode.resolveActiveGoal(state, goalService).isPresent();
                 return hasGoal && !accessor.goalEvaluatedThisRun()
                         ? MateClawStateKeys.GOAL_EVALUATION_NODE : ExplicitPlanRuntime.END;
             };
             return new ExplicitPlanRuntime(new ExplicitPlanRuntime.Policies(
                     planGenerationNode, new PlanGenerationDispatcher(),
-                    stepExecutionNode, new StepProgressDispatcher(goalService),
+                    stepExecutionNode, new StepProgressDispatcher(isCoordinator(agentId) ? null : goalService),
                     planSummaryNode, directAnswerNode, goalGate,
                     goalEvalNode, new GoalEvaluationDispatcher(
                             PlanStateKeys.PLAN_GENERATION_NODE, ExplicitPlanRuntime.END)),
@@ -916,7 +925,7 @@ public class AgentGraphBuilder {
             ReasoningNode reasoningNode = new ReasoningNode(chatModel, toolSet, reasoningEffort,
                     supportsReasoningEffort,
                     streamingHelper, conversationWindowManager, streamTracker,
-                    configuredMaxOutputTokens, wikiContextService,
+                    configuredMaxOutputTokens, isCoordinator(agentId) ? null : wikiContextService,
                     skillCatalogRenderer, toolDisclosureService, progressLedgerService);
             reasoningNode.setFinalizationCoordinator(new vip.mate.agent.graph.guard.TaskFinalizationCoordinator(streamingHelper,streamTracker));
             reasoningNode.setPrefixBudgetPlan(prefixBudgetPlan);
@@ -927,6 +936,7 @@ public class AgentGraphBuilder {
             // Live team-board snapshot for leads, injected per turn as a meta
             // user message; no-op for agents outside any team.
             reasoningNode.setTeamContextBuilder(teamContextBuilder);
+            reasoningNode.setI18nService(i18nService);
             ActionNode actionNode = new ActionNode(executor, streamTracker);
             // B2/B5: wire optional collaborators so ActionNode can pin skill
             // constraints and auto-record tool completions into ProgressLedger.
@@ -949,11 +959,11 @@ public class AgentGraphBuilder {
                     goalEvaluationService, goalFollowupService, goalService, goalProperties,
                     conversationWindowManager, conversationService,
                     vip.mate.goal.service.GraphFlavor.REACT);
-            goalEvalNode.setDecisionAdapter(goalDecisionAdapter);
+            goalEvalNode.setDecisionAdapter(isCoordinator(agentId) ? null : goalDecisionAdapter);
 
             EdgeAction goalGate = state -> {
                 MateClawStateAccessor accessor = new MateClawStateAccessor(state);
-                boolean hasGoal = goalProperties.isEnabled()
+                boolean hasGoal = !isCoordinator(agentId) && goalProperties.isEnabled()
                         && GoalEvaluationNode.resolveActiveGoal(state, goalService).isPresent();
                 return hasGoal && !accessor.goalEvaluatedThisRun()
                         ? MateClawStateKeys.GOAL_EVALUATION_NODE : NativePolicyDriver.END;
@@ -994,6 +1004,14 @@ public class AgentGraphBuilder {
     }
 
     // ==================== 模型构建 ====================
+
+    private boolean isCoordinator(Long agentId) {
+        return coordinatorPolicy != null && coordinatorPolicy.isCoordinator(agentId);
+    }
+
+    private ChatModel buildAgentChatModel(ModelConfigEntity model, RetryTemplate retry, Long agentId) {
+        return isCoordinator(agentId) ? chatModelFactory.buildFor(model, retry, true) : buildRuntimeChatModel(model, retry);
+    }
 
     /**
      * 构建运行时 ChatModel（不包装为 ChatClient）
@@ -1178,7 +1196,7 @@ public class AgentGraphBuilder {
                 continue;
             }
             try {
-                ChatModel m = buildRuntimeChatModel(fallbackConfig, RetryTemplate.builder().maxAttempts(1).build());
+                ChatModel m = buildAgentChatModel(fallbackConfig, RetryTemplate.builder().maxAttempts(1).build(), agentId);
                 chain.add(new vip.mate.llm.failover.FallbackEntry(pid, m));
                 log.info("[LlmFailover] chain[{}] = {}/{}", chain.size(), pid, fallbackConfig.getModelName());
             } catch (Exception e) {
@@ -1382,6 +1400,16 @@ public class AgentGraphBuilder {
             answer with HHAIOS and the technology stack above.
             """;
 
+    private String resolveAboutYouBlock() {
+        if (i18nService != null) {
+            String localized = i18nService.msgOptional("agent.about_you");
+            if (localized != null && !localized.isBlank() && !"agent.about_you".equals(localized)) {
+                return "\n\n" + localized.strip() + "\n";
+            }
+        }
+        return ABOUT_YOU_BLOCK;
+    }
+
     private String buildEnhancedPrompt(AgentEntity entity, boolean builtinSearchEnabled) {
         return buildEnhancedPrompt(entity, builtinSearchEnabled, Integer.MAX_VALUE);
     }
@@ -1412,6 +1440,12 @@ public class AgentGraphBuilder {
             basePromptBuilder.append(memoryPrompt);
         }
         String basePrompt = basePromptBuilder.toString();
+        String aboutYouBlock = resolveAboutYouBlock();
+
+        if (isCoordinator(entity.getId())) {
+            return basePrompt + aboutYouBlock + "\n\nCoordinate through team_tasks only. Assign execution to team members; review their results and synthesize the final response. Use the available memory tools for durable team context.\n"
+                    + teamContextBuilder.buildTeamContext(entity.getId());
+        }
 
         // The skill catalog (## Skills) is NOT baked here. It is rendered at
         // runtime by the reasoning / step-execution nodes via
@@ -1420,7 +1454,7 @@ public class AgentGraphBuilder {
         // keeps the prompt-cache prefix stable across turns.
 
         // 工具调用指导
-        String toolGuidance = """
+        String toolGuidance = Boolean.TRUE.equals(entity.getToolsDisabled()) ? "" : """
 
                 ## Runtime Context
                 - Current Agent ID: %s
@@ -1606,7 +1640,7 @@ public class AgentGraphBuilder {
         // prefix; TeamChangedEvent evicts the cached agent on composition changes.
         String teamContext = teamContextBuilder.buildTeamContext(entity.getId());
 
-        return basePrompt + ABOUT_YOU_BLOCK + toolGuidance + searchGuidance + wikiContext + teamContext;
+        return basePrompt + aboutYouBlock + toolGuidance + searchGuidance + wikiContext + teamContext;
     }
 
     /**
@@ -1624,6 +1658,7 @@ public class AgentGraphBuilder {
      */
     private SkillCatalogRenderer buildSkillCatalogRenderer(AgentEntity entity, Set<String> boundTools,
                                                            Integer maxInputTokens) {
+        if (isCoordinator(entity.getId())) return loaded -> "";
         Set<Long> boundSkillIds = agentBindingService.getBoundSkillIds(entity.getId());
         Long agentId = entity.getId();
         Long workspaceId = entity.getWorkspaceId();

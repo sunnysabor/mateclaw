@@ -2,6 +2,8 @@
 
 > **3.1.0 正式版 · 2026-11-19**。Java 21 / Spring Boot 4.1.2 / Spring AI 2.0.2 / AgentScope Java 2.0.5。
 > 技能经验审阅与撤回、快照恢复预览、精确记忆编辑、清晰的聊天状态，以及更可靠的模型与工具执行。
+> **dev (3.2.0-SNAPSHOT)**: Java 21 / Spring Boot 4.2.0 / Spring AI 2.1.0 / AgentScope Java 2.0.5.
+
 > [3.1.0 更新说明](mateclaw-server/src/main/resources/docs/zh/changelog.md) · [版本历史](CHANGELOG.md) · [下载发行包](https://github.com/mateaix/mateclaw/releases)
 
 
@@ -20,7 +22,7 @@
 [![在线演示](https://img.shields.io/badge/演示-在线-orange.svg?logo=vercel&label=Demo)](https://claw-demo.mate.vip)
 [![官网](https://img.shields.io/badge/官网-claw.mate.vip-blue.svg?logo=googlechrome&label=Site)](https://claw.mate.vip)
 [![Java 版本](https://img.shields.io/badge/Java-21+-blue.svg?logo=openjdk&label=Java)](https://adoptium.net/)
-[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.1.2-brightgreen.svg?logo=springboot)](https://spring.io/projects/spring-boot)
+[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.2.0-brightgreen.svg?logo=springboot)](https://spring.io/projects/spring-boot)
 [![Vue](https://img.shields.io/badge/Vue-3-4FC08D.svg?logo=vuedotjs)](https://vuejs.org/)
 [![最后提交](https://img.shields.io/github/last-commit/mateaix/mateclaw)](https://github.com/mateaix/mateclaw)
 [![许可证](https://img.shields.io/badge/license-Apache--2.0-red.svg?logo=opensourceinitiative&label=License)](LICENSE)
@@ -51,6 +53,18 @@
 
 ---
 
+## dev 新增：复用员工配置与受控团队协作
+
+以下功能位于 `dev / 3.2.0-SNAPSHOT`，不属于已发布的 3.1.0 版本：
+
+- **员工保存为模板**：把原生员工的配置保存为工作区快照，选择共享配置文档，再用新名称招聘员工；保留继承默认、显式禁用和显式绑定的含义，自定义模板招聘前检查依赖。6 个内置模板继续沿用原有流程。[员工模板说明](mateclaw-server/src/main/resources/docs/zh/agents.md)
+- **可选协调员模式**：工作区管理员在 **团队 → 指定团队 → 成员** 中开启，让原生负责人专注派工、跟进与汇总。保留团队任务板移交，限制通用委派、业务工具和模型原生搜索，不覆盖原有能力绑定。[团队协作说明](mateclaw-server/src/main/resources/docs/zh/teams.md)
+- **与团队对话**：从团队卡片或详情页直接开启负责人新会话，入口遵守聊天权限与负责人可用状态。
+- **派工说明与成员点名**：新任务固定运行目标、描述、验收标准和限制条件，重试沿用说明；负责人聊天展示成员分工与状态，`@` 只表达派工偏好，仍经任务板执行。
+- **编制保护**：未完成任务会阻止移除成员、删除相关员工或团队；团队存在时不能直接删除负责人。一个员工同时只能属于一个团队，暂停团队也占用归属；历史失败任务不能重试给已移除的执行人。
+
+工作区快照当前支持同一工作区内的原生员工，不支持 DSH 克隆或跨工作区导出。[未发布变更与升级提示](CHANGELOG.md#unreleased)
+
 ## 3.1.0 更新内容
 
 以下为 [3.0.0](https://claw.mate.vip/docs/zh/releases/3.0.0) 之后的改动，按使用场景归类：
@@ -60,7 +74,7 @@
 - **执行可靠性**：恢复上下文溢出和过大的历史媒体，保存前校验模型参数，限制供应商并发，保留工具超时覆盖，并约束团队累计派发预算。
 - **知识与文档**：对单个 Wiki 来源提取实体，多轮检索后对齐引用；生成文档后继续推理，保留 Markdown 表格值、文件换行风格与技能二进制附件。
 - **渠道与 DSH**：拆分钉钉长 Markdown、校验投递回执并保留飞书附件文件名。DSH `0.2.2-rc.1` 是要求 Node.js 24.9+（24.x）的可选候选，默认仍为 `0.2.0-rc.1`。
-- **当前技术栈**：Spring Boot **4.1.2**、Spring AI **2.0.2**、AgentScope Java **2.0.5**、MyBatis Plus **3.5.18.1**。原生 ReAct 和计划单步循环继续遵守 MateClaw 的审批、权限、Goal 验收与持久化边界。
+- **当前技术栈**：Spring Boot **4.2.0**、Spring AI **2.1.0**、AgentScope Java **2.0.5**、MyBatis Plus **3.5.18.1**。原生 ReAct 和计划单步循环继续遵守 MateClaw 的审批、权限、Goal 验收与持久化边界。
 
 源码构建使用 Java 21。升级前备份数据库、workspace、插件与配置，回滚使用升级前备份。[架构与升级说明](mateclaw-server/src/main/resources/docs/zh/changelog.md) · [模型预算规则](mateclaw-server/src/main/resources/docs/zh/models.md)
 
@@ -233,7 +247,7 @@ docker compose up -d          # http://localhost:18080
 
 ```
 mateclaw/
-├── mateclaw-server/        Spring Boot 4.1.2 后端（Agent Runtime contract · Native AgentScope + DSH）
+├── mateclaw-server/        Spring Boot 4.2.0 后端（Agent Runtime contract · Native AgentScope + DSH）
 ├── mateclaw-ui/            Vue 3 + TypeScript 管理 SPA（构建产物打进后端 JAR）
 ├── mateclaw-desktop/       Electron 桌面端（本地内嵌 / 远程集中双模式）
 ├── mateclaw-webchat/       网页嵌入式聊天组件（UMD / ES bundle）
@@ -251,7 +265,7 @@ mateclaw/
 
 | 层次 | 技术 |
 |---|---|
-| 后端 | Spring Boot 4.1.2 · Spring AI 2.0.2 · AgentScope Java 2.0.5 · MyBatis Plus · Flyway |
+| 后端 | Spring Boot 4.2.0 · Spring AI 2.1.0 · AgentScope Java 2.0.5 · MyBatis Plus · Flyway |
 | Agent Runtime | `AgentRuntimeProvider` contract · Native AgentScope（ReAct + Plan-Execute）· 受管理的 DSH JSON-RPC runtime · 统一事件 / 生命周期 / 用量 · Tool Guard |
 | 业务编排 | 工作流（7 step mode · Pebble DSL）· 触发器（6 pattern type · 事件治理）· Wiki 加工器（1.3.0+）|
 | 能力扩展 | SKILL.md 包 · MCP（stdio / SSE / HTTP · per-agent 绑定）· ACP 桥接（Claude Code / Codex） |

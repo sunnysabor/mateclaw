@@ -247,10 +247,19 @@
         <ContextUsagePanel :usage="contextUsage" />
       </div>
 
+      <TeamChatMembers
+        v-if="chatTeam"
+        :team="chatTeam"
+        :members="chatTeamMembers"
+        :coordinator-mode="chatTeamCoordinator"
+        :disabled="blockingPrompt || !currentAgent || workerConversationReadOnly"
+        @mention="chatInputRef?.insertMemberMention($event)"
+      />
       <!-- 使用组件化的 ChatInput -->
       <ChatInput
         ref="chatInputRef"
         v-model="inputText"
+        :member-candidates="chatTeamMembers"
         :loading="isGenerating && !hasPendingApproval"
         :disabled="blockingPrompt || !currentAgent || workerConversationReadOnly"
         :skills-enabled="!!currentAgent && !currentAgent.skillsDisabled"
@@ -343,6 +352,8 @@ import ConversationSidebar from '@/components/chat/ConversationSidebar.vue'
 import DropdownMenu, { type DropdownMenuItem } from '@/components/common/DropdownMenu.vue'
 import { agentIconColor } from '@/utils/agentIconColor'
 import ChatInput from '@/components/chat/ChatInput.vue'
+import TeamChatMembers from '@/components/chat/TeamChatMembers.vue'
+import { useChatTeam } from '@/composables/chat/useChatTeam'
 import MultimodalRoutingHint from '@/components/chat/MultimodalRoutingHint.vue'
 import StreamLoadingBar from '@/components/chat/StreamLoadingBar.vue'
 import ContextUsagePanel from '@/components/chat/ContextUsagePanel.vue'
@@ -1168,7 +1179,7 @@ const eligibleModels = computed(() => {
 })
 
 // ============ 生命周期 ============
-// Global shortcuts (Ctrl+K agents, Ctrl+N new chat) live in MainLayout so they
+// Global shortcuts (Alt+K agents, Alt+N new chat) live in MainLayout so they
 // work from any page; this view reacts to the dispatched event when mounted.
 function handleChatShortcut(e: Event) {
   const action = (e as CustomEvent).detail as 'newChat' | undefined
@@ -1444,7 +1455,7 @@ onActivated(async () => {
 })
 
 watch(() => route.query, () => {
-  // If a fresh action arrives (e.g. user re-fires Ctrl+K via the URL while
+  // If a fresh action arrives (e.g. user re-fires Alt+K via the URL while
   // the view is already alive), pick it up immediately.
   captureRouteAction()
   if (pendingRouteAction) applyPendingRouteAction()
@@ -1461,6 +1472,7 @@ watch([selectedAgentId, currentConversationId], () => {
 const goalStore = useGoalStore()
 const workspaceStore = useWorkspaceStore()
 const currentWorkspaceId = computed(() => workspaceStore.currentWorkspaceId ?? '1')
+const { team: chatTeam, members: chatTeamMembers, coordinatorMode: chatTeamCoordinator } = useChatTeam(selectedAgentId, currentWorkspaceId, computed(() => workerConversationReadOnly.value || !!workerRunContext.value))
 const canConfigureModels = computed(() => workspaceStore.isGlobalAdmin)
 const modelSelectorEmptyHint = computed(() => canConfigureModels.value
   ? undefined

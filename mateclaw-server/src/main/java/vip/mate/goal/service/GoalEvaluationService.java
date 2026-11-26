@@ -6,6 +6,7 @@ import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.metadata.FinishReasonCategory;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
@@ -170,6 +171,14 @@ public class GoalEvaluationService implements Evaluator {
             ChatResponse response = chatModel.call(new Prompt(messages, options));
             long elapsed = System.currentTimeMillis() - start;
 
+            if (response != null && response.getResult() != null) {
+                FinishReasonCategory category = response.getResult().getMetadata().getFinishReasonCategory();
+                if (category == FinishReasonCategory.TRUNCATED || category == FinishReasonCategory.FILTERED
+                        || category == FinishReasonCategory.TOOL_CALL) {
+                    return GoalEvaluationResult.fallbackAfterCall("incomplete_response", model.getModelName(), elapsed)
+                            .withEvaluationRevision(evaluationRevision);
+                }
+            }
             String body = extractText(response);
             if (body == null || body.isBlank()) {
                 log.warn("[GoalEvaluation] empty response: model={}, finishReason={}, totalTokens={}, elapsedMs={}",
@@ -449,15 +458,8 @@ public class GoalEvaluationService implements Evaluator {
         if (text != null && !text.isBlank()) {
             return text;
         }
-        // Fallback for reasoning models that emit everything as reasoningContent
-        // and leave the regular content empty; the JSON often tails the trace.
-        var metadata = output.getMetadata();
-        if (metadata != null) {
-            Object rc = metadata.get("reasoningContent");
-            if (rc instanceof String s && !s.isBlank()) {
-                return s;
-            }
-        }
+        String reasoning = vip.mate.llm.chatmodel.AssistantMessageParts.reasoningText(output);
+        if (reasoning != null && !reasoning.isBlank()) return reasoning;
         return text;
     }
 

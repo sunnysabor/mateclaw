@@ -1,6 +1,9 @@
 package vip.mate.agent.graph;
 
 import vip.mate.llm.chatmodel.ChatModelDefaults;
+import vip.mate.llm.chatmodel.AssistantMessageParts;
+import org.springframework.ai.chat.messages.part.ReasoningPart;
+import org.springframework.ai.chat.metadata.FinishReasonCategory;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -1160,9 +1163,11 @@ public class NodeStreamingChatHelper {
         List<String> out = new ArrayList<>();
         for (Message m : prompt.getInstructions()) {
             if (m instanceof AssistantMessage am) {
-                Map<String, Object> meta = am.getMetadata();
-                Object rc = meta != null ? meta.get("reasoningContent") : null;
-                out.add(rc instanceof String s ? s : "");
+                // Let the native adapter replay signed blocks only to their own provider.
+                // The legacy wire relay must never turn them into unsigned OpenAI reasoning.
+                boolean signed = am.getReasoning().stream().anyMatch(part -> part.payload() != null);
+                String reasoning = signed ? null : AssistantMessageParts.reasoningText(am);
+                out.add(reasoning != null ? reasoning : "");
             }
         }
         return out;
@@ -1234,11 +1239,13 @@ public class NodeStreamingChatHelper {
         StringBuilder contentAccum = new StringBuilder();
         StringBuilder thinkingAccum = new StringBuilder();
         List<ToolCallAccumulator> toolCallAccumulators = new ArrayList<>();
+        StreamingMessageParts messageParts = new StreamingMessageParts();
         AtomicReference<Map<String, Object>> providerMetadata = new AtomicReference<>(Map.of());
         boolean cumulativeReasoning = ChatModelDefaults.optionsFor(chatModel) instanceof OpenAiChatOptions;
         AtomicReference<String> previousReasoning = new AtomicReference<>("");
         AtomicReference<Throwable> errorRef = new AtomicReference<>();
         AtomicReference<String> finishReason = new AtomicReference<>();
+        AtomicReference<FinishReasonCategory> finishCategory = new AtomicReference<>(FinishReasonCategory.UNSPECIFIED);
         AtomicInteger promptTokens = new AtomicInteger(0);
         AtomicInteger completionTokens = new AtomicInteger(0);
         // Prompt cache / reasoning counters; providers that don't report them stay 0.
@@ -1358,6 +1365,7 @@ public class NodeStreamingChatHelper {
         Disposable subscription = streamWithIdleGuard
                 .doOnNext(chatResponse -> {
                     if (chatResponse == null) return;
+                    messageParts.accept(chatResponse);
                     // Usage-only terminal frames have no generations. Read reported counters
                     // before the content guard so completed calls do not silently become zero.
                     if (chatResponse.getMetadata() != null && chatResponse.getMetadata().getUsage() != null) {
@@ -1385,6 +1393,8 @@ public class NodeStreamingChatHelper {
                         finishReason.set(generation.getMetadata().getFinishReason());
                     }
                     AssistantMessage msg = generation.getOutput();
+                    FinishReasonCategory category = generation.getMetadata().getFinishReasonCategory();
+                    if (category != FinishReasonCategory.UNSPECIFIED) finishCategory.set(category);
                     providerMetadata.updateAndGet(previous -> mergeProviderMetadata(previous, msg.getMetadata()));
 
                     // thinking-only soft cap 已触发 → 跳过一切处理（等外层 dispose）
@@ -1396,7 +1406,7 @@ public class NodeStreamingChatHelper {
                     //    内联标签提取（此类模型不会再用 <think> 包裹思考，正文里的
                     //    字面标签是真实内容）。
                     String nativeThinking = extractReasoningContent(msg);
-                    if (cumulativeReasoning && nativeThinking != null && !nativeThinking.isEmpty()) {
+                    if (cumulativeReasoning && msg.getReasoning().isEmpty() && nativeThinking != null && !nativeThinking.isEmpty()) {
                         String previous = previousReasoning.get();
                         if (!nativeThinking.startsWith(previous)) {
                             throw new IllegalArgumentException("OpenAI cumulative reasoning is not monotonic");
@@ -1415,6 +1425,8 @@ public class NodeStreamingChatHelper {
                         contentDelta = split.content();
                         tagThinking = split.thinking();
                     }
+
+                    if (!java.util.Objects.equals(rawContent, contentDelta)) messageParts.markTextTransformed();
 
                     // 2. 标签提取的 thinking 先处理：形如 "…</think>answer" 的
                     //    chunk 里思考先于正文出现。
@@ -1570,7 +1582,7 @@ public class NodeStreamingChatHelper {
                         return assembleStoppedResult(contentAccum, thinkingAccum, toolCallAccumulators,
                                 promptTokens.get(), completionTokens.get(),
                                 cacheReadTokens.get(), cacheWriteTokens.get(),
-                                reasoningTokens.get(), phase, providerMetadata.get());
+                                reasoningTokens.get(), phase, providerMetadata.get(), messageParts.finish());
                     }
                     log.info("[{}] Stop requested during LLM call, no content accumulated, aborting: conversationId={}",
                             phase, conversationId);
@@ -1610,7 +1622,7 @@ public class NodeStreamingChatHelper {
                         promptTokens.get(), completionTokens.get(),
                         cacheReadTokens.get(), cacheWriteTokens.get(),
                         reasoningTokens.get(),
-                        phase, true, error.getMessage(), providerMetadata.get());
+                        phase, true, error.getMessage(), providerMetadata.get(), messageParts.finish());
             }
 
             // ===== 无内容：分类错误并决定是否重试 =====
@@ -1673,7 +1685,8 @@ public class NodeStreamingChatHelper {
         // ===== 成功（检查是否因 thinking-only 软上限或内容重复被截断） =====
         boolean truncatedByThinkingCap = thinkingOnlyCapTriggered.get();
         boolean truncatedByContentRepeat = contentRepeatCapTriggered.get();
-        boolean thinkingTokenLimit = isOutputLimitFinishReason(finishReason.get())
+        boolean thinkingTokenLimit = (finishCategory.get() == FinishReasonCategory.TRUNCATED
+                || isOutputLimitFinishReason(finishReason.get()))
                 && thinkingAccum.length() > 0 && contentAccum.toString().isBlank()
                 && toolCallAccumulators.isEmpty();
         boolean truncated = truncatedByThinkingCap || truncatedByContentRepeat || thinkingTokenLimit;
@@ -1711,12 +1724,13 @@ public class NodeStreamingChatHelper {
         // A verifier JSON cut off by length is not a malformed completed verdict.
         Map<String, Object> resultMetadata = new LinkedHashMap<>(providerMetadata.get());
         if (finishReason.get() != null) resultMetadata.put("generationFinishReason", finishReason.get());
+        resultMetadata.put("generationFinishReasonCategory", finishCategory.get().name());
         return assembleResult(contentAccum, thinkingAccum, toolCallAccumulators,
                 promptTokens.get(), completionTokens.get(),
                 cacheReadTokens.get(), cacheWriteTokens.get(),
                 reasoningTokens.get(), phase,
                 truncated,
-                truncationReason, resultMetadata);
+                truncationReason, resultMetadata, messageParts.finish(contentAccum, thinkingAccum));
     }
 
     /** 组装 stopped partial 结果（用户主动停止，有已累积内容） */
@@ -1724,7 +1738,7 @@ public class NodeStreamingChatHelper {
                                                 List<ToolCallAccumulator> toolCallAccumulators,
                                                 int promptTok, int completionTok,
                                                 int cacheReadTok, int cacheWriteTok,
-                                                int reasoningTok, String phase, Map<String, Object> providerMetadata) {
+                                                int reasoningTok, String phase, Map<String, Object> providerMetadata, AssistantMessage nativeMessage) {
         List<AssistantMessage.ToolCall> finalToolCalls = buildFinalToolCalls(toolCallAccumulators);
         String fullContent = contentAccum.toString();
         String fullThinking = thinkingAccum.toString();
@@ -1738,7 +1752,7 @@ public class NodeStreamingChatHelper {
             }
         }
 
-        AssistantMessage assembledMessage = buildAssistantMessageWithThinking(fullContent, fullThinking, finalToolCalls, providerMetadata);
+        AssistantMessage assembledMessage = buildAssistantMessageWithThinking(fullContent, fullThinking, finalToolCalls, providerMetadata, nativeMessage);
 
         // Cache reasoning_content for MiMo-style providers that require it on
         // subsequent turns.
@@ -1755,7 +1769,7 @@ public class NodeStreamingChatHelper {
                                          List<ToolCallAccumulator> toolCallAccumulators,
                                          int promptTok, int completionTok,
                                          int cacheReadTok, int cacheWriteTok, int reasoningTok,
-                                         String phase, boolean partial, String errorMsg, Map<String, Object> providerMetadata) {
+                                         String phase, boolean partial, String errorMsg, Map<String, Object> providerMetadata, AssistantMessage nativeMessage) {
         List<AssistantMessage.ToolCall> finalToolCalls = buildFinalToolCalls(toolCallAccumulators);
         String fullContent = contentAccum.toString();
         String fullThinking = thinkingAccum.toString();
@@ -1771,7 +1785,7 @@ public class NodeStreamingChatHelper {
             }
         }
 
-        AssistantMessage assembledMessage = buildAssistantMessageWithThinking(fullContent, fullThinking, finalToolCalls, providerMetadata);
+        AssistantMessage assembledMessage = buildAssistantMessageWithThinking(fullContent, fullThinking, finalToolCalls, providerMetadata, nativeMessage);
 
         // Cache reasoning_content for MiMo-style providers that require it on
         // subsequent turns. The cache replays real values instead of empty strings.
@@ -1783,27 +1797,20 @@ public class NodeStreamingChatHelper {
                 partial, errorMsg, ErrorType.NONE, false, cacheReadTok, cacheWriteTok, reasoningTok);
     }
 
-    /**
-     * PR-2 L2 (RFC-049): Build an {@link AssistantMessage} that persists the per-turn
-     * {@code fullThinking} into the message's properties under key {@code "reasoningContent"}.
-     *
-     * <p>This is the linchpin of the structural fix: without writing thinking back into
-     * the AssistantMessage that enters the next ReAct round's state, the outbound
-     * request's {@code reasoning_content} is lost (Spring AI 1.1.4's
-     * {@code OpenAiChatModel.lambda$createRequest$20} hardcodes {@code null} on the
-     * outbound conversion, so the relay in {@code AssistantThinkingRelay} is the only
-     * way back — see RFC-049 §2.3 L3).
-     *
-     * <p>Note the Spring AI naming asymmetry: the builder method is
-     * {@code .properties(Map)} but the reader is {@code getMetadata()} (see
-     * {@link #stripThinkingFromPrompt} L937).
-     */
+    /** Preserve native ordered parts and retain legacy metadata for saved histories and plugins. */
     private static AssistantMessage buildAssistantMessageWithThinking(
             String fullContent, String fullThinking, List<AssistantMessage.ToolCall> finalToolCalls,
-            Map<String, Object> providerMetadata) {
-        AssistantMessage.Builder builder = AssistantMessage.builder().content(fullContent);
-        if (finalToolCalls != null && !finalToolCalls.isEmpty()) {
+            Map<String, Object> providerMetadata, AssistantMessage nativeMessage) {
+        AssistantMessage.Builder<?> builder = nativeMessage == null ? AssistantMessage.builder() : nativeMessage.mutate();
+        if (nativeMessage == null || !java.util.Objects.equals(nativeMessage.getText(), fullContent)) {
+            builder.content(fullContent);
+        }
+        if (finalToolCalls != null && (nativeMessage == null || !finalToolCalls.equals(nativeMessage.getToolCalls()))) {
             builder.toolCalls(finalToolCalls);
+        }
+        if (fullThinking != null && !fullThinking.isEmpty()
+                && (nativeMessage == null || nativeMessage.getReasoning().isEmpty())) {
+            builder.reasoning(ReasoningPart.of(fullThinking));
         }
         Map<String, Object> metadata = new LinkedHashMap<>(providerMetadata);
         if (fullThinking != null && !fullThinking.isEmpty()) {
@@ -1908,19 +1915,11 @@ public class NodeStreamingChatHelper {
             // Only strip prior-turn assistant thinking (i <= lastUserIdx); in-turn (i > lastUserIdx) stays
             if (msg instanceof AssistantMessage am && i <= lastUserIdx) {
                 Map<String, Object> meta = am.getMetadata();
-                if (meta != null && meta.containsKey("reasoningContent")) {
+                if (meta.containsKey("reasoningContent") || !am.getReasoning().isEmpty()) {
                     Map<String, Object> cleanMeta = new java.util.HashMap<>(meta);
                     cleanMeta.remove("reasoningContent");
-                    AssistantMessage.Builder builder = AssistantMessage.builder()
-                            .content(am.getText())
-                            .properties(cleanMeta);
-                    if (am.getToolCalls() != null && !am.getToolCalls().isEmpty()) {
-                        builder.toolCalls(am.getToolCalls());
-                    }
-                    if (am.getMedia() != null && !am.getMedia().isEmpty()) {
-                        builder.media(am.getMedia());
-                    }
-                    cleaned.add(builder.build());
+                    cleanMeta.remove("reasoning_content");
+                    cleaned.add(AssistantMessageParts.withoutReasoning(am, true, cleanMeta));
                     strippedCount++;
                     continue;
                 }
@@ -2008,16 +2007,9 @@ public class NodeStreamingChatHelper {
             if (rebuilt == null) {
                 rebuilt = new ArrayList<>(messages.subList(0, i));
             }
-            AssistantMessage.Builder builder = AssistantMessage.builder()
-                    .content(am.getText() == null ? "" : am.getText())
-                    .toolCalls(fixedCalls);
-            if (am.getMetadata() != null && !am.getMetadata().isEmpty()) {
-                builder.properties(am.getMetadata());
-            }
-            if (am.getMedia() != null && !am.getMedia().isEmpty()) {
-                builder.media(am.getMedia());
-            }
-            rebuilt.add(builder.build());
+            rebuilt.add(AssistantMessageParts.mapToolCalls(am, tc ->
+                    new AssistantMessage.ToolCall(tc.id(), tc.type(), tc.name(),
+                            sanitizeToolCallArguments(tc.name(), tc.arguments()))));
         }
         if (rebuilt == null) {
             return prompt;
@@ -2319,7 +2311,7 @@ public class NodeStreamingChatHelper {
     }
 
     private static boolean isOutputLimitFinishReason(String reason) {
-        return "length".equalsIgnoreCase(reason) || "max_tokens".equalsIgnoreCase(reason);
+        return FinishReasonCategory.categorize(reason) == FinishReasonCategory.TRUNCATED;
     }
 
     /**
@@ -2401,7 +2393,9 @@ public class NodeStreamingChatHelper {
             if (stopped || hasToolCalls || errorType != ErrorType.NONE) return false;
             if ("thinking_token_limit".equals(errorMessage)) return true;
             return errorMessage == null && assistantMessage != null
-                    && isOutputLimitFinishReason(String.valueOf(assistantMessage.getMetadata().get("generationFinishReason")));
+                    && (FinishReasonCategory.TRUNCATED.name().equals(
+                            assistantMessage.getMetadata().get("generationFinishReasonCategory"))
+                        || isOutputLimitFinishReason(String.valueOf(assistantMessage.getMetadata().get("generationFinishReason"))));
         }
 
         /** 是否有任何可保存的内容（text/thinking/toolCalls） */
@@ -2414,22 +2408,9 @@ public class NodeStreamingChatHelper {
 
     // ==================== 内部方法 ====================
 
-    /**
-     * 从 AssistantMessage 的 properties 中提取 reasoningContent
-     * <p>
-     * Spring AI 1.1.3 的 OpenAiChatModel 在流式路径中会将 delta.reasoning_content
-     * 放入 properties 的 "reasoningContent" key。
-     */
+    /** Native parts carry reasoning deltas; older providers expose reasoningContent metadata. */
     private String extractReasoningContent(AssistantMessage msg) {
-        Map<String, Object> metadata = msg.getMetadata();
-        if (metadata == null) {
-            return null;
-        }
-        Object rc = metadata.get("reasoningContent");
-        if (rc instanceof String s && !s.isEmpty()) {
-            return s;
-        }
-        return null;
+        return AssistantMessageParts.reasoningText(msg);
     }
 
     /**
